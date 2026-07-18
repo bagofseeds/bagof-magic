@@ -1,11 +1,19 @@
 """Unit tests for the bagof.magic module."""
+from typing import ClassVar as TypingClassVar
+from typing import Optional, Type, Union
+
 import pytest
+import typing_extensions as tx
 from bagof.validators.exceptions import ValidationError
 from typing_extensions import Annotated
 
+import bagof.magic as m
 from bagof.magic import (
+    HIDE_IF_NONE,
+    ClassVar,
     ConvertTo,
     Default,
+    Doc,
     Factory,
     Field,
     Frozen,
@@ -20,11 +28,27 @@ from bagof.magic import (
     NoRepr,
     NotFrozen,
     NotKey,
+    NotKw,
+    PositionalOnly,
     Validate,
     magic,
 )
-from bagof.magic.constants import _FIELDS, _OPTIONS, MISSING
+from bagof.magic.constants import (
+    _FIELDS,
+    _OPTIONS,
+    MISSING,
+    REQUIRED,
+    SHOW_ATTR,
+)
+from bagof.magic.constants import (
+    HIDE_IF_NONE as HideIfNoneCls,
+)
 from bagof.magic.options import Options
+from bagof.magic.utils import (
+    _update_func_cell_for__class__,
+    rebuild_cls,
+    slots,
+)
 
 # ======================================================================
 # Constants
@@ -751,8 +775,6 @@ class TestField:
                 x = Field()
 
 
-
-
 # ======================================================================
 # Mapping
 # ======================================================================
@@ -997,3 +1019,692 @@ class TestPickle:
 
         restored = pickle.loads(pickle.dumps(PickleFrozen(5)))
         assert restored == PickleFrozen(5)
+
+
+# ======================================================================
+# Constants: REQUIRED / SHOW_ATTR / HIDE_IF_NONE
+# ======================================================================
+
+
+class TestConstants:
+
+    def test_required_repr(self) -> None:
+        assert repr(REQUIRED) == "<REQUIRED>"
+
+    def test_required_bool(self) -> None:
+        assert bool(REQUIRED) is True
+
+    def test_required_singleton(self) -> None:
+        from bagof.magic.constants import _RequiredType
+        assert _RequiredType() is REQUIRED
+
+    def test_show_attr_call_false(self) -> None:
+        assert SHOW_ATTR(False)("anything") is False
+
+    def test_show_attr_call_hide_if_none(self) -> None:
+        show = SHOW_ATTR("k", hide_if_none=True)
+        assert show(None) is False
+        assert show(1) is True
+
+    def test_show_attr_str(self) -> None:
+        assert str(SHOW_ATTR("k")) == "k"
+
+    def test_show_attr_repr_false(self) -> None:
+        assert repr(SHOW_ATTR(False)) == "False"
+
+    def test_show_attr_repr_true_hide(self) -> None:
+        assert repr(SHOW_ATTR(True, hide_if_none=True)) == "<if not None>"
+
+    def test_show_attr_repr_key_hide(self) -> None:
+        assert repr(SHOW_ATTR("k", hide_if_none=True)) == "'k' <if not None>"
+
+    def test_show_attr_repr_key(self) -> None:
+        assert repr(SHOW_ATTR("k")) == "'k'"
+
+    def test_hide_if_none_init(self) -> None:
+        h = HideIfNoneCls("k")
+        assert h.hide_if_none is True
+        assert h.key == "k"
+
+
+# ======================================================================
+# utils: SlotsBase / rebuild_cls / slots
+# ======================================================================
+
+
+class TestUtils:
+
+    def test_update_cell_none(self) -> None:
+        assert _update_func_cell_for__class__(None, int, str) is False
+
+    def test_update_cell_not_oldcls(self) -> None:
+        class A:
+            def method(self) -> type:
+                return __class__  # noqa: F821
+
+        assert A().method() is A
+        # Cell points at A, but we claim oldcls is B -> no update.
+        assert _update_func_cell_for__class__(A.method, str, int) is False
+
+    def test_rebuild_cls_with_property(self) -> None:
+        class Src:
+            @property
+            def prop(self) -> type:
+                return __class__  # noqa: F821
+
+        new = rebuild_cls(Src)
+        # The property closure is rebound to the new class (covers `break`).
+        assert new().prop is new
+
+    def test_slots_with_kwslots(self) -> None:
+        @slots("x", y=None)
+        class C:
+            pass
+
+        assert set(C.__slots__) == {"x", "y"}
+
+    def test_slotsbase_getattr_unknown(self) -> None:
+        f = Field()
+        with pytest.raises(AttributeError):
+            _ = f.totally_unknown_attribute
+
+    def test_slotsbase_getattr_unset_slot(self) -> None:
+        # An unset (deleted) but declared slot resolves to MISSING via
+        # __getattr__ rather than raising.
+        f = Field(name="x")
+        del f.name
+        assert f.name is MISSING
+
+    def test_slotsbase_copy(self) -> None:
+        f = Field(name="x", doc="hi")
+        c = f.copy()
+        assert c is not f
+        assert c.name == "x"
+        assert c.doc == "hi"
+
+    def test_slotsbase_deepcopy(self) -> None:
+        f = Field(name="x", metadata={"a": [1]})
+        c = f.deepcopy()
+        assert c is not f
+        assert c.metadata == {"a": [1]}
+        assert c.metadata is not f.metadata
+
+
+# ======================================================================
+# fields.py: Field internals
+# ======================================================================
+
+
+class TestFieldInternals:
+
+    def test_field_positional_bool_arg(self) -> None:
+        assert Field(True).var is False
+        assert Field(False).var is True
+
+    def test_field_class_getitem(self) -> None:
+        ann = Field[int]
+        t, f = tx.get_args(ann)
+        assert t is int
+        assert isinstance(f, Field)
+        assert f.var is False
+
+    def test_public_name_alias_false(self) -> None:
+        assert Field(name="_x", alias=False).public_name == "_x"
+
+    def test_public_name_alias_set(self) -> None:
+        assert Field(name="_x", alias="renamed").public_name == "renamed"
+
+    def test_public_name_strip_underscore(self) -> None:
+        assert Field(name="_x").public_name == "x"
+
+    def test_public_key_none(self) -> None:
+        assert Field(name="x", key=False).public_key is None
+
+    def test_public_key_show_attr_str(self) -> None:
+        f = Field(name="x", key=SHOW_ATTR("thekey"))
+        assert f.public_key == "thekey"
+
+    def test_public_key_str(self) -> None:
+        assert Field(name="x", key="strkey").public_key == "strkey"
+
+    def test_from_hint_typing_classvar(self) -> None:
+        class C(Magic):
+            x: int
+            c: TypingClassVar[int] = 9
+
+        assert C(1).x == 1
+        assert C.c == 9
+        assert getattr(C, _FIELDS)["c"].var is True
+
+    def test_from_hint_annotated_typing_classvar(self) -> None:
+        class C(Magic):
+            x: int
+            c: Annotated[TypingClassVar[int], "meta"] = 3
+
+        assert C(1).x == 1
+        assert C.c == 3
+        assert getattr(C, _FIELDS)["c"].var is True
+
+    def test_from_hint_doc_annotation(self) -> None:
+        f = Field.from_hint("x", Annotated[int, tx.Doc("the docs")])
+        assert f.doc == "the docs"
+
+    def test_kw_only_and_positional_only_error(self) -> None:
+        with pytest.raises(ValueError, match="Cannot set both"):
+            class Bad(Magic, kw_only=True, positional_only=True):
+                x: int
+
+    def test_factory_true_optional(self) -> None:
+        class A(Magic, factory=True):
+            x: Optional[list]
+
+        assert A().x == []
+
+    def test_factory_true_type_field(self) -> None:
+        # factory=True with a ``Type[...]`` field builds a factory closure
+        # at class-creation time (its body is exercised on instantiation,
+        # which is currently blocked by a source bug -- see report).
+        class A(Magic, factory=True):
+            x: Type[int]
+
+        (field,) = m.fields(A)
+        assert callable(field.factory)
+
+    def test_annotated_field_missing_required_call(self) -> None:
+        with pytest.raises(TypeError, match="Missing required argument"):
+            Default()
+
+    def test_annotated_field_missing_required_getitem(self) -> None:
+        with pytest.raises(TypeError, match="Missing required argument"):
+            Default[int, REQUIRED]
+
+    def test_doc_annotation_init(self) -> None:
+        d = Doc("hello docs")
+        assert d.doc == "hello docs"
+        assert d.documentation == "hello docs"
+
+
+# ======================================================================
+# _add_fields (inheritance ordering helper)
+# ======================================================================
+
+
+class TestAddFields:
+
+    def test_replace_no_reverse_inherit_missing(self) -> None:
+        fields = {"a": Field(name="a", doc="olddoc")}
+        # new field has doc MISSING -> the inherit loop hits `continue`.
+        new = Field(name="a")
+        assert new.doc is MISSING
+        m._add_fields(fields, [new], replace=True, reverse=False)
+        assert fields["a"] is new
+
+    def test_replace_no_reverse_inherit_copy(self) -> None:
+        fields = {"a": Field(name="a", doc="olddoc")}
+        new = Field(name="a", doc="newdoc")
+        m._add_fields(fields, [new], replace=True, reverse=False)
+        # inherit copies the *old* doc onto the new field.
+        assert fields["a"].doc == "olddoc"
+
+    def test_replace_no_inherit(self) -> None:
+        fields = {"a": Field(name="a", doc="olddoc")}
+        new = Field(name="a", doc="newdoc")
+        m._add_fields(fields, [new], replace=True, inherit=())
+        assert fields["a"] is new
+        assert fields["a"].doc == "newdoc"
+
+    def test_replace_reverse(self) -> None:
+        fields = {
+            "a": Field(name="a", doc="da"),
+            "b": Field(name="b", doc="db"),
+        }
+        new = Field(name="a")  # overrides 'a', doc MISSING
+        assert new.doc is MISSING
+        m._add_fields(fields, [new], replace=True, reverse=True)
+        # new fields go first; the overriding 'a' inherits the old doc.
+        assert list(fields) == ["a", "b"]
+        assert fields["a"] is new
+        assert fields["a"].doc == "da"
+
+    def test_not_replace_no_reverse(self) -> None:
+        fields = {"a": Field(name="a")}  # doc MISSING
+        new_a = Field(name="a", doc="fromnew")
+        new_b = Field(name="b", doc="db")
+        m._add_fields(fields, [new_a, new_b], replace=False, reverse=False)
+        # existing 'a' preserved, 'b' appended; 'a' inherits new doc.
+        assert list(fields) == ["a", "b"]
+        assert fields["a"].doc == "fromnew"
+
+    def test_not_replace_reverse(self) -> None:
+        fields = {"a": Field(name="a")}  # doc MISSING
+        new_a = Field(name="a", doc="fromnew")
+        new_b = Field(name="b", doc="db")
+        m._add_fields(fields, [new_a, new_b], replace=False, reverse=True)
+        assert list(fields) == ["a", "b"]
+        assert fields["a"].doc == "fromnew"
+
+    def test_reverse_option_inheritance(self) -> None:
+        class Base(Magic, reverse=True):
+            x: int
+
+        class Derived(Base):
+            y: int
+
+        # reverse=True places derived fields before base fields.
+        assert list(getattr(Derived, _FIELDS)) == ["y", "x"]
+
+
+# ======================================================================
+# _FuncBuilder
+# ======================================================================
+
+
+class TestFuncBuilder:
+
+    def test_decorator_and_no_return_type(self) -> None:
+        fb = m._FuncBuilder({"deco": lambda f: f})
+        fb.add_fn(
+            name="foo", args=["self"], body=["return 1"], decorator="@deco"
+        )
+        ns = {"__qualname__": "C"}
+        fb.insert_fns("C", ns)
+        assert "foo" in ns
+
+    def test_unconditional_add(self) -> None:
+        fb = m._FuncBuilder({})
+        fb.add_fn(
+            name="foo",
+            args=["self"],
+            body=["return 2"],
+            unconditional_add=True,
+        )
+        ns = {"__qualname__": "C", "foo": "already here"}
+        fb.insert_fns("C", ns)
+        assert callable(ns["foo"])
+
+    def test_overwrite_error_with_message(self) -> None:
+        fb = m._FuncBuilder({})
+        fb.add_fn(
+            name="foo",
+            args=["self"],
+            body=["return 3"],
+            overwrite_error="extra hint",
+        )
+        ns = {"__qualname__": "C", "foo": "already here"}
+        with pytest.raises(TypeError, match="Cannot overwrite.*extra hint"):
+            fb.insert_fns("C", ns)
+
+    def test_overwrite_error_true(self) -> None:
+        fb = m._FuncBuilder({})
+        fb.add_fn(
+            name="foo",
+            args=["self"],
+            body=["return 4"],
+            overwrite_error=True,
+        )
+        ns = {"__qualname__": "C", "foo": "already here"}
+        with pytest.raises(TypeError, match="Cannot overwrite attribute foo"):
+            fb.insert_fns("C", ns)
+
+    def test_empty_builder(self) -> None:
+        fb = m._FuncBuilder({})
+        ns = {"__qualname__": "C"}
+        fb.insert_fns("C", ns)
+        assert ns == {"__qualname__": "C"}
+
+
+# ======================================================================
+# Metaclass feature coverage
+# ======================================================================
+
+
+class TestMetaclassFeatures:
+
+    def test_custom_module_globals(self) -> None:
+        # A class whose __module__ is not importable falls back to empty
+        # globals but still functions.
+        cls = m.MetaMagic(
+            "Custom",
+            (),
+            {
+                "__module__": "no.such.module.exists",
+                "__qualname__": "Custom",
+                "__annotations__": {"a": int},
+            },
+        )
+        assert cls(3).a == 3
+
+    def test_dunder_annotation_ignored(self) -> None:
+        class C(Magic):
+            __private__: int = 5
+            x: int
+
+        # The dunder annotation is not treated as a field.
+        assert "__private__" not in getattr(C, _FIELDS)
+        assert C(1).x == 1
+
+    def test_class_attr_field_no_default(self) -> None:
+        class C(Magic):
+            x: int = Field(repr=False)
+            y: int
+
+        p = C(1, 2)
+        assert repr(p) == "C(y=2)"
+
+    def test_class_attr_field_with_default(self) -> None:
+        class C(Magic):
+            x: int = Field(default=5)
+
+        assert C().x == 5
+        assert C.x == 5
+
+    def test_pre_init(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+            s: InitVar[int]
+
+            def __pre_init__(self, s: int) -> None:
+                seen.append(s)
+
+            def __post_init__(self, s: int) -> None:
+                self.x += s
+
+        c = C(1, 3)
+        assert c.x == 4
+        assert seen == [3]
+
+    def test_hash_disabled(self) -> None:
+        class C(Magic, frozen=True, eq=True, hash=False):
+            x: int
+
+        assert C.__hash__ is None
+
+    def test_unsafe_hash_explicit_hash_error(self) -> None:
+        with pytest.raises(TypeError, match="Cannot overwrite attribute"):
+            class Bad(Magic, unsafe_hash=True):
+                x: int
+                __hash__ = object.__hash__
+
+    def test_repr_hide_if_none_field(self) -> None:
+        class C(Magic):
+            x: Annotated[Optional[int], Field(repr=HIDE_IF_NONE)]
+            y: int
+
+        assert repr(C(None, 2)) == "C(y=2)"
+        assert repr(C(5, 2)) == "C(x=5, y=2)"
+
+    def test_repr_hide_if_none_var_field(self) -> None:
+        class C(Magic):
+            x: int
+            c: Annotated[int, ClassVar(), Field(repr=HIDE_IF_NONE)] = 0
+
+        assert repr(C(5)) == "C(x=5)"
+
+    def test_setattr_converter(self) -> None:
+        class C(Magic):
+            x: ConvertTo[int]
+
+        c = C("1")
+        c.x = "42"
+        assert c.x == 42
+        assert isinstance(c.x, int)
+
+    def test_setattr_validator(self) -> None:
+        class C(Magic):
+            x: Validate[int]
+
+        c = C(3)
+        c.x = 7
+        assert c.x == 7
+        with pytest.raises(ValidationError):
+            c.x = "bad"
+
+    def test_frozen_delete_non_field(self) -> None:
+        class C(Magic, frozen=True):
+            x: int
+
+        c = C(1)
+        with pytest.raises(
+            AttributeError, match="Cannot delete attribute"
+        ):
+            del c.missing
+
+    def test_frozen_set_non_field(self) -> None:
+        class C(Magic, frozen=True):
+            x: int
+
+        c = C(1)
+        with pytest.raises(AttributeError, match="Cannot set attribute"):
+            c.missing = 1
+
+    def test_field_named_self(self) -> None:
+        class C(Magic):
+            self: int
+            x: int
+
+        c = C(1, 2)
+        assert c.self == 1
+        assert c.x == 2
+
+    def test_positional_only_field(self) -> None:
+        # A single positional-only field (via NotKw).
+        class C(Magic):
+            x: NotKw[int]
+
+        assert C(5).x == 5
+        with pytest.raises(TypeError):
+            C(x=5)
+
+    def test_positional_only_initvar(self) -> None:
+        class C(Magic):
+            s: Annotated[
+                int, Field(var=True, init=True, positional=True, kw=False)
+            ]
+
+            def __post_init__(self, s: int) -> None:
+                object.__setattr__(self, "doubled", s * 2)
+
+        assert C(4).doubled == 8
+
+    def test_kw_only_initvar(self) -> None:
+        class C(Magic):
+            x: int
+            s: Annotated[
+                int, Field(var=True, init=True, positional=False, kw=True)
+            ]
+
+            def __post_init__(self, s: int) -> None:
+                self.x += s
+
+        assert C(1, s=5).x == 6
+
+    def test_param_without_default_after_default(self) -> None:
+        with pytest.raises(
+            SyntaxError, match="parameter without a default follows"
+        ):
+            class Bad(Magic):
+                x: int = 0
+                y: int
+
+    def test_fields_function(self) -> None:
+        class C(Magic):
+            x: int
+            c: ClassVar[int] = 1
+
+        result = m.fields(C)
+        names = [f.name for f in result]
+        assert names == ["x"]
+
+
+# ======================================================================
+# Mapping: HIDE_IF_NONE key
+# ======================================================================
+
+
+class TestMappingHideKey:
+
+    def test_key_hide_if_none(self) -> None:
+        class C(Magic, mapping=True):
+            x: Annotated[Optional[int], Field(key=HIDE_IF_NONE)]
+            y: int
+
+        assert dict(C(None, 2)) == {"y": 2}
+        assert dict(C(5, 2)) == {"x": 5, "y": 2}
+
+    def test_getitem_hidden_key(self) -> None:
+        class C(Magic, mapping=True):
+            x: Annotated[Optional[int], Field(key=HIDE_IF_NONE)]
+
+        with pytest.raises(KeyError):
+            C(None)["x"]
+        assert C(5)["x"] == 5
+
+
+# ======================================================================
+# Documentation generation
+# ======================================================================
+
+
+class TestDocGeneration:
+
+    def test_doc_class_with_unions(self) -> None:
+        class C(Magic, doc=True):
+            """Header."""
+
+            a: Optional[int] = None
+            b: Union[int, str] = 0
+
+        doc = C.__doc__
+        assert "Attributes" in doc
+        assert "a : int, optional" in doc
+        assert "b : int | str" in doc
+
+    def test_doc_field_docstring(self) -> None:
+        class C(Magic, doc=True):
+            x: Annotated[int, Doc("the x value")]
+
+        assert "the x value" in C.__doc__
+
+    def test_doc_class_attributes_section(self) -> None:
+        class C(Magic, doc=True):
+            x: int
+            c: Annotated[int, ClassVar(), Doc("a classvar")] = 5
+
+        doc = C.__doc__
+        assert "Class Attributes" in doc
+        assert "a classvar" in doc
+
+    def test_make_doc_elem_annotated_type(self) -> None:
+        # `field.type` being a bare Annotated is only reachable by building
+        # a Field directly (the public API always strips Annotated).
+        field = Field(name="x", type=Annotated[int, "meta"], doc="hi")
+        doc = m._make_doc_elem(field)
+        assert doc.startswith("x : int")
+        assert "hi" in doc
+
+
+# ======================================================================
+# Slots inheritance corner cases
+# ======================================================================
+
+
+class SlotStrMixin:
+    __slots__ = "foo"
+
+
+class SlotPlainMixin:
+    pass
+
+
+class TestSlotsCorners:
+
+    def test_slots_plain_base(self) -> None:
+        class C(SlotPlainMixin, Magic, slots=True):
+            x: int
+
+        assert C.__slots__ == ("x",)
+
+    def test_slots_str_base(self) -> None:
+        class C(SlotStrMixin, Magic, slots=True):
+            x: int
+
+        assert "x" in C.__slots__
+
+    def test_slots_iterator_base_error(self) -> None:
+        class IterMixin:
+            __slots__ = iter(["foo"])
+
+        with pytest.raises(TypeError, match="cannot be determined"):
+            class C(IterMixin, Magic, slots=True):
+                x: int
+
+    def test_slots_inherited_field(self) -> None:
+        class Base(Magic, slots=True):
+            x: int
+
+        class Derived(Base, slots=True):
+            x: int
+            y: int
+
+        assert Derived.__slots__ == ("y",)
+
+    def test_slots_with_doc(self) -> None:
+        class C(Magic, slots=True):
+            x: Annotated[int, Doc("the x")]
+
+        assert C.__slots__ == {"x": "the x"}
+
+
+# ======================================================================
+# Positional-only / factory features (fixed bugs)
+# ======================================================================
+
+
+class TestPositionalOnly:
+
+    def test_positional_only_class_option(self) -> None:
+        class P(Magic, positional_only=True):
+            x: int
+            y: int
+
+        p = P(1, 2)
+        assert (p.x, p.y) == (1, 2)
+        # both fields are positional-only: keywords are rejected
+        with pytest.raises(TypeError):
+            P(x=1, y=2)
+
+    def test_positional_only_field_marker(self) -> None:
+        class R(Magic):
+            x: PositionalOnly[int]
+            y: int
+
+        # x is positional-only, y is normal -- and each keeps its own value
+        r = R(1, 2)
+        assert (r.x, r.y) == (1, 2)
+        r2 = R(1, y=3)
+        assert (r2.x, r2.y) == (1, 3)
+
+    def test_positional_only_multiple_fields_keep_values(self) -> None:
+        # Regression: positional-only fields used to be assigned from the
+        # wrong argument in a multi-field class.
+        class R(Magic):
+            a: NotKw[int]
+            b: NotKw[int]
+            c: int
+
+        r = R(1, 2, c=3)
+        assert (r.a, r.b, r.c) == (1, 2, 3)
+
+
+class TestTypeFactory:
+
+    def test_factory_from_type_hint(self) -> None:
+        import typing_extensions as tx
+
+        class C(Magic, factory=True):
+            x: tx.Type[int]
+
+        # the default factory yields the parametrised type
+        assert C().x is int

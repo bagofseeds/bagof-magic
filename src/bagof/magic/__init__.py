@@ -243,7 +243,9 @@ def _namespace_annotations(namespace: dict) -> dict:
     # From 3.14 (PEP 649/749) annotations are lazy: the namespace instead
     # carries an ``__annotate__`` function, retrieved via ``annotationlib``.
     if "__annotations__" in namespace:
-        return namespace["__annotations__"]
+        # Python <= 3.13: coverage runs on 3.14+, where annotations are lazy
+        # and the namespace never carries __annotations__, so this is dead.
+        return namespace["__annotations__"]  # pragma: no cover
     try:
         import annotationlib
     except ImportError:  # pragma: no cover  -- Python < 3.14
@@ -830,7 +832,7 @@ def _make_init(
     body = []
     if "pre" in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
-    for field in positional_onlys.values():
+    for name, field in positional_onlys.items():
         body.append(_make_body_elem(name, field))
     for name, field in args.items():
         body.append(_make_body_elem(name, field))

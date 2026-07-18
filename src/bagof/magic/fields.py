@@ -250,7 +250,7 @@ class Field(SlotsBase):
             if self.positional is MISSING:
                 self.positional = False
         elif options.positional_only:
-            if self.initkw_only is MISSING:
+            if self.kw is MISSING:
                 self.kw = False
             if self.positional is MISSING:
                 self.positional = True
@@ -277,8 +277,10 @@ class Field(SlotsBase):
             if origin in (_UnionType, tx.Union, tx.Optional):
                 factory = tx.get_args(factory)[0]
             elif origin in (type, tx.Type):
+                hint = factory
+
                 def factory() -> tx.Any:
-                    return tx.get_args(factory)[0]
+                    return tx.get_args(hint)[0]
             else:
                 factory = origin
             self.factory = factory
@@ -493,7 +495,7 @@ class NotKwOnly(Kw, Positional): ...
 
 
 @slots
-class PositionalOnly(NotKw, Positional): ...
+class PositionalOnly(Positional, NotKw): ...
 
 
 @slots
