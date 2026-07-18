@@ -7,7 +7,7 @@
 #   This is already done for __init__, but not for the other ones.
 """
 A `Magic` acts like a python `dataclass`, except that it operates
-via inheritence, rather than via a decorator (although the @magic
+via inheritance, rather than via a decorator (although the @magic
 decorator can be used if preferred).
 
 The options typically specified in the @dataclass decorator are instead
@@ -235,6 +235,29 @@ def _add_fields(
                     setattr(fields[f.name], attr, getattr(f, attr))
 
 
+def _namespace_annotations(namespace: dict) -> dict:
+    # The annotations declared in a class body, read from the namespace the
+    # metaclass receives -- before the class object exists.
+    #
+    # Up to Python 3.13 the namespace holds ``__annotations__`` directly.
+    # From 3.14 (PEP 649/749) annotations are lazy: the namespace instead
+    # carries an ``__annotate__`` function, retrieved via ``annotationlib``.
+    if "__annotations__" in namespace:
+        return namespace["__annotations__"]
+    try:
+        import annotationlib
+    except ImportError:  # pragma: no cover  -- Python < 3.14
+        return {}
+    annotate = annotationlib.get_annotate_from_class_namespace(namespace)
+    if annotate is None:
+        return {}
+    # FORWARDREF never raises on not-yet-defined names (they become
+    # ``ForwardRef``), which keeps class creation robust.
+    return annotationlib.call_annotate_function(
+        annotate, annotationlib.Format.FORWARDREF
+    )
+
+
 def __pre_new__(
     metacls: MetaMagic,
     clsname: str,
@@ -308,7 +331,7 @@ def __pre_new__(
     # actual default value.  Pseudo-fields ClassVars and InitVars are
     # included, despite the fact that they're not real fields.  That's
     # dealt with later.
-    cls_annotations = namespace.get('__annotations__', {})
+    cls_annotations = _namespace_annotations(namespace)
 
     # Now find fields in our class.  While doing so, validate some
     # things, and set the d
@@ -887,7 +910,7 @@ def _make_assign(cls: type) -> type:
     fields = getattr(cls, _FIELDS, {})
     fields = {name: field for name, field in fields.items() if not field.var}
 
-    # We are calling object methods instead of super(), beause
+    # We are calling object methods instead of super(), because
     # super() falls back to inherited magic methods, which we don't want.
 
     def __delattr__(self: Magic, name: str) -> None:
@@ -1085,7 +1108,7 @@ mapping : bool, default=False
     Implement the `Mapping` protocol.
 reverse : bool, default=False
     Use the reverse MRO order to determine field order.
-    This only affects the relaive order of the fields of one class
+    This only affects the relative order of the fields of one class
     with respect to the fields of its base classes.
 doc : bool | str, default=True
     Add field documentation to class docstring
