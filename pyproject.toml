@@ -29,6 +29,7 @@ dependencies = [
     "bagof-core-magic @ git+https://github.com/bagofseeds/bagof-core-magic.git",
     "bagof-validators @ git+https://github.com/bagofseeds/bagof-validators.git",
     "bagof-converters @ git+https://github.com/bagofseeds/bagof-converters.git",
+    "bagof-factories @ git+https://github.com/bagofseeds/bagof-factories.git",
 ]
 
 [project.urls]

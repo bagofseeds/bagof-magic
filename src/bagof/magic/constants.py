@@ -6,11 +6,11 @@ T = tx.TypeVar("T")
 
 # The name of an attribute on the class where we store the StructField
 # objects.  Also used to check if a class is a @magic.
-_FIELDS = '__struct_fields__'
+_FIELDS = '__magic_fields__'
 
 # The name of an attribute on the class that stores the parameters to
 # @magic.
-_OPTIONS = '__struct_options__'
+_OPTIONS = '__magic_options__'
 
 # The name of a method that is called before the __init__ method,
 # if it exists.
@@ -23,26 +23,26 @@ _POST_INIT_NAME = "__post_init__"
 
 # Name we give to classes that are only created temporarily to build the
 # MRO and then discarded.
-_DISCARD = "__struct_discard__"
+_DISCARD = "__magic_discard__"
 
 # Name we give to the `self` variable, in cases where a field named `self`
 # already exists.
-_SELF = "__struct_self__"
+_SELF = "__magic_self__"
 
 # Name given to the local type variable when generating __init__
-def _TYPE(x: str) -> str: return f"__struct_{x}_type__"
+def _TYPE(x: str) -> str: return f"__magic_{x}_type__"
 
 # Name given to the local default variable when generating __init__
-def _DEFAULT(x: str) -> str: return f"__struct_{x}_default__"
+def _DEFAULT(x: str) -> str: return f"__magic_{x}_default__"
 
 # Name given to the local converter variable when generating __init__
-def _CONVERTER(x: str) -> str: return f"__struct_{x}_converter__"
+def _CONVERTER(x: str) -> str: return f"__magic_{x}_converter__"
 
 # Name given to the local validator variable when generating __init__
-def _VALIDATOR(x: str) -> str: return f"__struct_{x}_validator__"
+def _VALIDATOR(x: str) -> str: return f"__magic_{x}_validator__"
 
 # Name given to a method's return type variable when generating it
-def _RETURN_TYPE(x: str) -> str: return f"__struct_{x}_return_type__"
+def _RETURN_TYPE(x: str) -> str: return f"__magic_{x}_return_type__"
 
 
 class _MissingType:

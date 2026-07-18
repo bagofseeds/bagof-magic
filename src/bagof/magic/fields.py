@@ -36,9 +36,9 @@ __all__ = [
     "Doc",
 ]
 import typing_extensions as tx
-from bagof.core.magic import UnionType as _UnionType
 
 from ._resolve import make_converter as _make_converter
+from ._resolve import make_factory as _make_factory
 from ._resolve import make_validator as _make_validator
 from .constants import MISSING, REQUIRED, SHOW_ATTR, MaybeMissing
 from .options import Options
@@ -272,18 +272,9 @@ class Field(SlotsBase):
         if self.factory is MISSING:
             self.factory = options.factory
         if self.factory is True:
-            factory = self.type
-            origin = _get_origin(factory)
-            if origin in (_UnionType, tx.Union, tx.Optional):
-                factory = tx.get_args(factory)[0]
-            elif origin in (type, tx.Type):
-                hint = factory
-
-                def factory() -> tx.Any:
-                    return tx.get_args(hint)[0]
-            else:
-                factory = origin
-            self.factory = factory
+            # Resolve the default factory from the field's type hint, the
+            # same way converters/validators are resolved from their bag.
+            self.factory = _make_factory(self.type)
 
 
 # ----------------------------------------------------------------------

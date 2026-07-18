@@ -1,6 +1,6 @@
 """Unit tests for the bagof.magic module."""
 from typing import ClassVar as TypingClassVar
-from typing import Optional, Type, Union
+from typing import Optional, Union
 
 import pytest
 import typing_extensions as tx
@@ -1195,20 +1195,24 @@ class TestFieldInternals:
                 x: int
 
     def test_factory_true_optional(self) -> None:
+        # factory=True resolves through bagof-factories, which defaults an
+        # Optional to None (rather than the wrapped type's empty value).
         class A(Magic, factory=True):
             x: Optional[list]
 
-        assert A().x == []
+        assert A().x is None
 
-    def test_factory_true_type_field(self) -> None:
-        # factory=True with a ``Type[...]`` field builds a factory closure
-        # at class-creation time (its body is exercised on instantiation,
-        # which is currently blocked by a source bug -- see report).
+    def test_factory_true_resolves_from_bagof_factories(self) -> None:
         class A(Magic, factory=True):
-            x: Type[int]
+            items: list
+            mapping: dict
+            count: int
 
-        (field,) = m.fields(A)
-        assert callable(field.factory)
+        a = A()
+        assert a.items == [] and a.mapping == {} and a.count == 0
+        # each instance gets a fresh default
+        a.items.append(1)
+        assert A().items == []
 
     def test_annotated_field_missing_required_call(self) -> None:
         with pytest.raises(TypeError, match="Missing required argument"):
@@ -1696,15 +1700,3 @@ class TestPositionalOnly:
 
         r = R(1, 2, c=3)
         assert (r.a, r.b, r.c) == (1, 2, 3)
-
-
-class TestTypeFactory:
-
-    def test_factory_from_type_hint(self) -> None:
-        import typing_extensions as tx
-
-        class C(Magic, factory=True):
-            x: tx.Type[int]
-
-        # the default factory yields the parametrised type
-        assert C().x is int
