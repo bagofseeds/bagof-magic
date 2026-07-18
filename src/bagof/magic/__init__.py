@@ -7,7 +7,7 @@
 #   This is already done for __init__, but not for the other ones.
 """
 A `Magic` acts like a python `dataclass`, except that it operates
-via inheritence, rather than via a decorator (although the @struct
+via inheritence, rather than via a decorator (although the @magic
 decorator can be used if preferred).
 
 The options typically specified in the @dataclass decorator are instead
@@ -21,7 +21,7 @@ class Point(Magic, frozen=True):
 
 # --- or ---
 
-@struct(frozen=True)
+@magic(frozen=True)
 class Point:
     x: float
     y: float
@@ -113,32 +113,45 @@ x: Annotated[int, Frozen(False)]
 ```
 """
 from __future__ import annotations
-__all__ = ["Magic", "struct", "HIDE_IF_NONE"]
+
+__all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 # stdlib
 import sys
-import types as _t
 from abc import ABCMeta
 from collections import abc as _abc
 from functools import partial
 from textwrap import dedent, indent
 
 # externals
-import typing_extensions as _tx
-
+import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
 # internals
 from .constants import (
-    _FIELDS, _OPTIONS, _DISCARD, _POST_INIT_NAME, _PRE_INIT_NAME, _RETURN_TYPE,
-    _SELF, SHOW_ATTR, _HasFactory, _DEFAULT, _TYPE, _CONVERTER, _VALIDATOR, MISSING,
-    HIDE_IF_NONE
+    _CONVERTER,
+    _DEFAULT,
+    _DISCARD,
+    _FIELDS,
+    _OPTIONS,
+    _POST_INIT_NAME,
+    _PRE_INIT_NAME,
+    _RETURN_TYPE,
+    _SELF,
+    _TYPE,
+    _VALIDATOR,
+    HIDE_IF_NONE,
+    MISSING,
+    SHOW_ATTR,
+    _HasFactory,
 )
-from .utils import _get_origin, rebuild_cls
-from .options import *
-from .fields import *
-
-from .options import __all__ as __all_options__
+from .fields import *  # noqa: F401, F403
+from .fields import Field
 from .fields import __all__ as __all_fields__
+from .options import *  # noqa: F401, F403
+from .options import Options
+from .options import __all__ as __all_options__
+from .utils import _get_origin, rebuild_cls
+
 __all__ += __all_fields__
 __all__ += __all_options__
 
@@ -166,10 +179,10 @@ def __post_new__(cls: type) -> type:
 
 def _add_fields(
     fields: dict[str, Field],
-    new_fields: _tx.Iterable[Field],
+    new_fields: tx.Iterable[Field],
     replace: bool = False,
     reverse: bool = False,
-    inherit: _tx.List[str] = ("doc",),
+    inherit: tx.List[str] = ("doc",),
 ) -> None:
     # Add fields to an existing dict of fields.
     #
@@ -223,7 +236,7 @@ def _add_fields(
 
 
 def __pre_new__(
-    metacls: "MetaMagic",
+    metacls: MetaMagic,
     clsname: str,
     bases: tuple[type, ...],
     namespace: dict,
@@ -356,7 +369,7 @@ def __pre_new__(
 
     # Do we have any Field members that don't also have annotations?
     for attr_name, value in namespace.items():
-        if isinstance(value, Field) and not attr_name in cls_annotations:
+        if isinstance(value, Field) and attr_name not in cls_annotations:
             raise TypeError(
                 f'{attr_name!r} is a field but has no type annotation'
             )
@@ -424,7 +437,11 @@ def __pre_new__(
         namespace.setdefault(fnname, _make_hash(qualname, real_fields))
 
     if options.match_args:
-        fnname = options.match_args if isinstance(options.match_args, str) else "__match_args__"
+        fnname = (
+            options.match_args
+            if isinstance(options.match_args, str)
+            else "__match_args__"
+        )
         namespace.setdefault("__match_args__", tuple(
             f.public_name for f in fields.values() if f.init and f.positional
         ))
@@ -475,13 +492,13 @@ class _FuncBuilder:
         self.unconditional_adds = {}
 
     def add_fn(
-        self, name: str, args: _tx.List[str], body: _tx.List[str], *,
-        doc: _tx.Optional[_tx.List[str]] = None,
-        locals: _tx.Optional[dict] = None,
-        return_type: _tx.Any = MISSING,
-        overwrite_error: _tx.Union[bool, str] = False,
+        self, name: str, args: tx.List[str], body: tx.List[str], *,
+        doc: tx.Optional[tx.List[str]] = None,
+        locals: tx.Optional[dict] = None,
+        return_type: tx.Any = MISSING,
+        overwrite_error: tx.Union[bool, str] = False,
         unconditional_add: bool = False,
-        decorator: _tx.Optional[str] = None
+        decorator: tx.Optional[str] = None
     ) -> None:
         if locals is not None:
             self.locals.update(locals)
@@ -568,7 +585,7 @@ def _hash_set_none(qualname: str, fields: dict) -> None:
     return None
 
 
-def _hash_exception(qualname: str, fields: dict) -> _tx.NoReturn:
+def _hash_exception(qualname: str, fields: dict) -> tx.NoReturn:
     raise TypeError(
         f'Cannot overwrite attribute __hash__ in class {qualname}')
 
@@ -579,7 +596,7 @@ def _hash_add(qualname: str, fields: dict) -> int:
         if (f.compare if f.hash is None else f.hash)
     ]
 
-    def __hash__(self) -> int:
+    def __hash__(self: Magic) -> int:
         values = tuple(getattr(self, f.name) for f in fields)
         return hash(values)
 
@@ -631,7 +648,7 @@ def _make_doc_class(fields: dict[str, Field]) -> str:
     return "\n\n".join([attrdocs, classattrdocs])
 
 
-def _make_doc_elem(field: Field, name: _tx.Optional[str] = None) -> str:
+def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
 
     name = name or field.public_name
 
@@ -640,19 +657,19 @@ def _make_doc_elem(field: Field, name: _tx.Optional[str] = None) -> str:
         default = _HasFactory(field.factory)
 
     doctype = field.type
-    if _get_origin(doctype) in (_tx.Optional, _tx.Annotated):
-        doctype = _tx.get_args(doctype)[0]
-    elif _get_origin(doctype) in (_tx.Union, _UnionType):
+    if _get_origin(doctype) in (tx.Optional, tx.Annotated):
+        doctype = tx.get_args(doctype)[0]
+    elif _get_origin(doctype) in (tx.Union, _UnionType):
         # Simplify the representation of optional unions.
         if (
-            len(_tx.get_args(doctype)) == 2 and (
-                None in _tx.get_args(doctype) or
-                type(None) in _tx.get_args(doctype)
+            len(tx.get_args(doctype)) == 2 and (
+                None in tx.get_args(doctype) or
+                type(None) in tx.get_args(doctype)
             )
         ):
             doctype = next(iter(
                 arg
-                for arg in _tx.get_args(doctype)
+                for arg in tx.get_args(doctype)
                 if arg not in (None, type(None))
             ))
         else:
@@ -660,7 +677,7 @@ def _make_doc_elem(field: Field, name: _tx.Optional[str] = None) -> str:
                 arg.__qualname__
                 if isinstance(arg, type) else
                 repr(arg)
-                for arg in _tx.get_args(doctype)
+                for arg in tx.get_args(doctype)
             ])
     doctype = (
         doctype
@@ -701,7 +718,7 @@ def _make_init(
         if name == "self":
             SELF = _SELF
 
-    def _make_signature_elem(field: Field) -> _tx.Tuple[str, str]:
+    def _make_signature_elem(field: Field) -> tx.Tuple[str, str]:
         name = field.public_name
         default = field.default
         if field.factory:
@@ -715,7 +732,7 @@ def _make_init(
         doc = _make_doc_elem(field, name)
         return signature, doc
 
-    def _check_signature(signature: _tx.List[str]) -> None:
+    def _check_signature(signature: tx.List[str]) -> None:
         has_default = False
         for elem in signature:
             if elem == "*":
@@ -729,19 +746,19 @@ def _make_init(
                                   f"parameter with a default: {elem}")
 
     signature, doc = [], ["Parameters", "----------"]
-    for name, field in positional_onlys.items():
+    for _name, field in positional_onlys.items():
         signature_elem, doc_elem = _make_signature_elem(field)
         signature.append(signature_elem)
         doc.append(doc_elem)
     if positional_onlys:
         signature.append("/")
-    for name, field in args.items():
+    for _name, field in args.items():
         signature_elem, doc_elem = _make_signature_elem(field)
         signature.append(signature_elem)
         doc.append(doc_elem)
     if kw_onlys:
         signature.append("*")
-    for name, field in kw_onlys.items():
+    for _name, field in kw_onlys.items():
         signature_elem, doc_elem = _make_signature_elem(field)
         signature.append(signature_elem)
         doc.append(doc_elem)
@@ -808,9 +825,9 @@ def _make_init(
     }
 
 
-def _make_repr(qualname: str, fields: dict[str, Field]) -> _tx.Callable:
+def _make_repr(qualname: str, fields: dict[str, Field]) -> tx.Callable:
 
-    def __repr__(self) -> str:
+    def __repr__(self: Magic) -> str:
         params = [
             f"{field.public_name}={getattr(self, field.name)!r}"
             for field in fields.values()
@@ -823,9 +840,9 @@ def _make_repr(qualname: str, fields: dict[str, Field]) -> _tx.Callable:
     return __repr__
 
 
-def _make_eq(qualname: str, fields: dict[str, Field]) -> _tx.Callable:
+def _make_eq(qualname: str, fields: dict[str, Field]) -> tx.Callable:
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self: Magic, other: tx.Any) -> bool:
         if self is other:
             return True
         if other.__class__ is self.__class__:
@@ -840,9 +857,9 @@ def _make_eq(qualname: str, fields: dict[str, Field]) -> _tx.Callable:
     return __eq__
 
 
-def _make_lt(qualname: str, fields: dict[str, Field]) -> _tx.Callable:
+def _make_lt(qualname: str, fields: dict[str, Field]) -> tx.Callable:
 
-    def __lt__(self, other) -> bool:
+    def __lt__(self: Magic, other: tx.Any) -> bool:
         if other.__class__ is self.__class__:
             this_value = tuple(
                 getattr(self, field.name)
@@ -863,14 +880,17 @@ def _make_lt(qualname: str, fields: dict[str, Field]) -> _tx.Callable:
 
 def _make_assign(cls: type) -> type:
 
-    __class__ = cls
+    # Bind the `__class__` closure cell so that a zero-arg super() would
+    # resolve to `cls` inside the generated methods below. Intentionally
+    # retained to preserve behavior; must not be removed.
+    __class__ = cls  # noqa: F841
     fields = getattr(cls, _FIELDS, {})
     fields = {name: field for name, field in fields.items() if not field.var}
 
     # We are calling object methods instead of super(), beause
-    # super() falls back to inherited struct methods, which we don't want.
+    # super() falls back to inherited magic methods, which we don't want.
 
-    def __delattr__(self, name: str) -> None:
+    def __delattr__(self: Magic, name: str) -> None:
         field = fields.get(name)
         if field:
             if getattr(field, 'frozen', False):
@@ -881,7 +901,7 @@ def _make_assign(cls: type) -> type:
             )
         object.__delattr__(self, name)
 
-    def __setattr__(self, name: str, value: _tx.Any) -> None:
+    def __setattr__(self: Magic, name: str, value: tx.Any) -> None:
         field = fields.get(name)
         if field and not field.var:
             if field.frozen:
@@ -901,15 +921,15 @@ def _make_assign(cls: type) -> type:
     return __delattr__, __setattr__
 
 
-def _make_state(qualname: str, fields: dict[str, Field]) -> _tx.Callable:
+def _make_state(qualname: str, fields: dict[str, Field]) -> tx.Callable:
 
-    def __getstate__(self) -> _tx.Tuple:
-        fields = [f for f in fields.values() if not f.var]
-        return tuple(getattr(self, f.name) for f in fields)
+    def __getstate__(self: Magic) -> tx.Tuple:
+        kept = [f for f in fields.values() if not f.var]
+        return tuple(getattr(self, f.name) for f in kept)
 
-    def __setstate__(self, state: _tx.Tuple) -> None:
-        fields = [f for f in fields.values() if not f.var]
-        for field, value in zip(fields, state):
+    def __setstate__(self: Magic, state: tx.Tuple) -> None:
+        kept = [f for f in fields.values() if not f.var]
+        for field, value in zip(kept, state):
             # use setattr because dataclass may be frozen
             object.__setattr__(self, field.name, value)
 
@@ -918,7 +938,7 @@ def _make_state(qualname: str, fields: dict[str, Field]) -> _tx.Callable:
     return __getstate__, __setstate__
 
 
-def _get_slots(cls: type) -> _tx.Iterator[str]:
+def _get_slots(cls: type) -> tx.Iterator[str]:
     slots = cls.__dict__.get('__slots__')
     if slots is None:
         # `__dictoffset__` and `__weakrefoffset__` can tell us whether
@@ -943,7 +963,7 @@ def _make_slots(
     bases: tuple[type, ...],
     fields: dict[str, Field],
     weakref_slot: bool = False,
-) -> _tx.Union[tuple[str, ...], dict[str, _tx.Optional[str]]]:
+) -> tx.Union[tuple[str, ...], dict[str, tx.Optional[str]]]:
     mro = type(_DISCARD, bases, {}).__mro__[1:-1]
     inherited_slots = set(
         slot
@@ -968,9 +988,11 @@ def _make_slots(
     return slots
 
 
-def _make_mapping(qualname: str, fields: dict[str, Field]) -> _tx.Mapping[str, _tx.Callable]:
+def _make_mapping(
+    qualname: str, fields: dict[str, Field]
+) -> tx.Mapping[str, tx.Callable]:
 
-    def __getitem__(self, key: str) -> _tx.Any:
+    def __getitem__(self: Magic, key: str) -> tx.Any:
         field = fields.get(key)
         if field:
             value = getattr(self, field.name)
@@ -979,28 +1001,28 @@ def _make_mapping(qualname: str, fields: dict[str, Field]) -> _tx.Mapping[str, _
             return value
         raise KeyError(key)
 
-    def __setitem__(self, key: str, value: _tx.Any) -> None:
+    def __setitem__(self: Magic, key: str, value: tx.Any) -> None:
         field = fields.get(key)
         if field:
             setattr(self, field.name, value)
         else:
             raise KeyError(key)
 
-    def __delitem__(self, key: str) -> None:
+    def __delitem__(self: Magic, key: str) -> None:
         field = fields.get(key)
         if field:
             delattr(self, field.name)
         else:
             raise KeyError(key)
 
-    def __iter__(self) -> _tx.Iterator[str]:
+    def __iter__(self: Magic) -> tx.Iterator[str]:
         for key, field in fields.items():
             if field:
                 if not field.key(getattr(self, field.name)):
                     continue
                 yield key
 
-    def __len__(self) -> int:
+    def __len__(self: Magic) -> int:
         return sum(
             field.key(getattr(self, field.name))
             for field in fields.values()
@@ -1084,7 +1106,7 @@ class MetaMagic(ABCMeta):
         ...
 
     # Decorator API
-    @struct(**options)
+    @magic(**options)
     class MyStruct:
         ...
     ```
@@ -1108,8 +1130,16 @@ class MetaMagic(ABCMeta):
         The class being defined.
     """
 
-    def __new__(metacls, name, bases, namespace, **kwargs) -> type:
-        name, bases, namespace = __pre_new__(metacls, name, bases, namespace, **kwargs)
+    def __new__(
+        metacls,
+        name: str,
+        bases: tx.Tuple[type, ...],
+        namespace: tx.Dict[str, tx.Any],
+        **kwargs,
+    ) -> type:
+        name, bases, namespace = __pre_new__(
+            metacls, name, bases, namespace, **kwargs
+        )
         cls = super().__new__(metacls, name, bases, namespace)
         cls = __post_new__(cls)
         return cls
@@ -1145,21 +1175,21 @@ Magic.__doc__ = Magic.__doc__.format(DOC_OPTIONS=_DOC_OPTIONS)
 # ----------------------------------------------------------------------
 
 
-@_tx.overload
-def struct(**kwargs) -> _tx.Callable[[type], type]: ...
+@tx.overload
+def magic(**kwargs) -> tx.Callable[[type], type]: ...
 
 
-@_tx.overload
-def struct(cls: type, **kwargs) -> type: ...
+@tx.overload
+def magic(cls: type, **kwargs) -> type: ...
 
 
-def struct(cls: _tx.Optional[type] = None, **kwargs):
+def magic(cls: tx.Optional[type] = None, **kwargs):
     """
     Decorator for defining a Magic class.
     See `MetaMagic` for parameters and examples.
     """
     if cls is None:
-        return partial(struct, **kwargs)
+        return partial(magic, **kwargs)
     return rebuild_cls(cls, partial(MetaMagic, **kwargs))
 
 
@@ -1168,7 +1198,7 @@ def struct(cls: _tx.Optional[type] = None, **kwargs):
 # ----------------------------------------------------------------------
 
 
-def fields(cls: type) -> _tx.Tuple[Field]:
+def fields(cls: type) -> tx.Tuple[Field]:
     """
     Get the fields of a Magic class.
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 __all__ = [
     "Field",
     "Default",
@@ -34,40 +35,47 @@ __all__ = [
     "NotKey",
     "Doc",
 ]
-import types as _t
-import typing_extensions as _tx
-
+import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
-from .constants import MISSING, REQUIRED, MaybeMissing, SHOW_ATTR, HIDE_IF_NONE
 from ._resolve import make_converter as _make_converter
 from ._resolve import make_validator as _make_validator
+from .constants import MISSING, REQUIRED, SHOW_ATTR, MaybeMissing
 from .options import Options
-from .utils import SlotsBase, slots, _get_origin
+from .utils import SlotsBase, _get_origin, slots
 
-T = _tx.TypeVar("T")
+T = tx.TypeVar("T")
 
 
 @slots(
     'name',             # Field name
     'type',             # Field type (or type hint)
     'default',          # Default value for this field.
-    'factory',          # A factory function that generates a default value for this field.
+    # A factory function that generates a default value for this field.
+    'factory',
     'init',             # Include this field in the generated __init__ method.
     'repr',             # Include this field in the generated __repr__ method.
     'hash',             # Include this field in the generated __hash__ method.
     'eq',               # Include this field in the generated __eq__ method.
     'order',            # Include this field in the generated __lt__ methods.
     'metadata',         # User-defined metadata
-    'kw',               # Make this field a keyword in the generated __init__ method.
-    'positional',       # Make this field a positional argument in the generated __init__ method.
+    # Make this field a keyword in the generated __init__ method.
+    'kw',
+    # Make this field a positional argument in the generated __init__
+    # method.
+    'positional',
     'frozen',           # Make this field immutable after initialization.
-    'converter',        # A function that converts the input value for this field.
-    'validator',        # A function that validates the input value for this field.
-    'var',              # Whether this field is a pseudo-field (InitVar or ClassVar).
+    # A function that converts the input value for this field.
+    'converter',
+    # A function that validates the input value for this field.
+    'validator',
+    # Whether this field is a pseudo-field (InitVar or ClassVar).
+    'var',
     'doc',              # Docstring for this field.
-    'key',              # Include this field in the generated dict-like interface.
-    'alias',            # Alternative names for this field in the generated methods.
+    # Include this field in the generated dict-like interface.
+    'key',
+    # Alternative names for this field in the generated methods.
+    'alias',
 )
 class Field(SlotsBase):
     """A field in a `Magic`."""
@@ -155,7 +163,7 @@ class Field(SlotsBase):
         # set slots from keywords
         super().__init__(**kwargs)
 
-    def __class_getitem__(cls, t: _tx.Union[type, _tx.Tuple]) -> _tx.TypeAlias:
+    def __class_getitem__(cls, t: tx.Union[type, tx.Tuple]) -> tx.TypeAlias:
         # Allow using Field as an annotation.
         # It will likely never be used directly on the `Field` class,
         # but will be useful for subclasses: e.g., `Factory[list]` is
@@ -163,7 +171,7 @@ class Field(SlotsBase):
         if not isinstance(t, tuple):
             t = (t,)
         t, *args = t
-        return _tx.Annotated[(t, cls(True)) + tuple(args)]
+        return tx.Annotated[(t, cls(True)) + tuple(args)]
 
     @property
     def public_name(self) -> str:
@@ -175,8 +183,9 @@ class Field(SlotsBase):
         return self.name.lstrip("_")
 
     @property
-    def public_key(self) -> _tx.Optional[str]:
-        """The key to use for this field in the generated dict-like interface."""
+    def public_key(self) -> tx.Optional[str]:
+        """The key to use for this field in the generated dict-like
+        interface."""
         if not self.key:
             return None
         if isinstance(self.key, SHOW_ATTR) and isinstance(self.key.key, str):
@@ -187,27 +196,27 @@ class Field(SlotsBase):
 
     @classmethod
     def from_hint(
-        cls, name: str, hint: _tx.Any, default: _tx.Any = MISSING
-    ) -> "Field":
+        cls, name: str, hint: tx.Any, default: tx.Any = MISSING
+    ) -> Field:
         type = hint
         origin = _get_origin(hint)
 
-        if origin is _tx.ClassVar:
+        if origin is tx.ClassVar:
             # Replace python's ClassVar with our own.
-            hint = ClassVar[_tx.get_args(hint)]
+            hint = ClassVar[tx.get_args(hint)]
             return cls.from_hint(name, hint, default)
 
         field = Field()
-        if origin is _tx.Annotated:
-            type, *hints = _tx.get_args(hint)
-            if _tx.get_origin(type) is _tx.ClassVar:
+        if origin is tx.Annotated:
+            type, *hints = tx.get_args(hint)
+            if tx.get_origin(type) is tx.ClassVar:
                 # Replace python's ClassVar with our own.
-                type = _tx.get_args(type)[0]
+                type = tx.get_args(type)[0]
                 hints = (ClassVar(), *hints)
             for hint in hints:
                 if isinstance(hint, Field):
                     field.update(hint)
-                elif isinstance(hint, _tx.Doc):
+                elif isinstance(hint, tx.Doc):
                     field.doc = hint.documentation
         field.update(Field(name=name, type=type, default=default))
         return field
@@ -265,10 +274,11 @@ class Field(SlotsBase):
         if self.factory is True:
             factory = self.type
             origin = _get_origin(factory)
-            if origin in (_UnionType, _tx.Union, _tx.Optional):
-                factory = _tx.get_args(factory)[0]
-            elif origin in (type, _tx.Type):
-                factory = lambda: _tx.get_args(factory)[0]
+            if origin in (_UnionType, tx.Union, tx.Optional):
+                factory = tx.get_args(factory)[0]
+            elif origin in (type, tx.Type):
+                def factory() -> tx.Any:
+                    return tx.get_args(factory)[0]
             else:
                 factory = origin
             self.factory = factory
@@ -286,15 +296,15 @@ class AnnotatedField(Field):
     __set_slots__ = {}
 
     @classmethod
-    def _set_slots(cls) -> _tx.Dict[str, _tx.Any]:
+    def _set_slots(cls) -> tx.Dict[str, tx.Any]:
         set_slots = {}
-        for cls in reversed(cls.__mro__):
-            cls_set_slots = getattr(cls, '__set_slots__', {})
+        for base in reversed(cls.__mro__):
+            cls_set_slots = getattr(base, '__set_slots__', {})
             if isinstance(cls_set_slots, str):
                 cls_set_slots = (cls_set_slots,)
             if isinstance(cls_set_slots, tuple):
                 cls_set_slots = {
-                    slot: cls.__set_value__
+                    slot: base.__set_value__
                     for slot in cls_set_slots
                 }
             set_slots.update(cls_set_slots)
@@ -313,8 +323,8 @@ class AnnotatedField(Field):
         super().__init__(**kwvalues)
 
     def __class_getitem__(
-        cls, args: _tx.Union[type, _tx.Tuple]
-    ) -> _tx.TypeAlias:
+        cls, args: tx.Union[type, tx.Tuple]
+    ) -> tx.TypeAlias:
         set_slots = cls._set_slots()
         values = ()
         if not isinstance(args, tuple):
@@ -323,8 +333,10 @@ class AnnotatedField(Field):
         if args:
             values, args = args[:len(set_slots)], args[len(set_slots):]
         if any(value is REQUIRED for value in values):
-            raise TypeError(f"Missing required argument for {cls.__name__!r}[]")
-        return _tx.Annotated[(t, cls(*values)) + tuple(args)]
+            raise TypeError(
+                f"Missing required argument for {cls.__name__!r}[]"
+            )
+        return tx.Annotated[(t, cls(*values)) + tuple(args)]
 
 
 @slots
@@ -333,12 +345,12 @@ class BoolAnnotatedField(AnnotatedField):
     __set_value__ = True
 
     def __class_getitem__(
-        cls, args: _tx.Union[type, _tx.Tuple]
-    ) -> _tx.TypeAlias:
+        cls, args: tx.Union[type, tx.Tuple]
+    ) -> tx.TypeAlias:
         if not isinstance(args, tuple):
             args = (args,)
         t, *args = args
-        return _tx.Annotated[(t, cls(True)) + tuple(args)]
+        return tx.Annotated[(t, cls(True)) + tuple(args)]
 
 
 @slots
@@ -556,7 +568,8 @@ class NoRepr(Repr, InversedBoolAnnotatedField): ...
 
 @slots
 class Eq(BoolAnnotatedField):
-    """ Specifiy that a field should [not] be included in the generated `__eq__` method.
+    """ Specifiy that a field should [not] be included in the generated
+    `__eq__` method.
 
     ```python
     Eq()       ~> Field(eq=True)
@@ -575,7 +588,8 @@ class NoEq(Eq, InversedBoolAnnotatedField): ...
 
 @slots
 class Order(BoolAnnotatedField):
-    """ Specifiy that a field should [not] be included in the generated `__lt__` method.
+    """ Specifiy that a field should [not] be included in the generated
+    `__lt__` method.
 
     ```python
     Order()       ~> Field(order=True)
@@ -641,7 +655,7 @@ class NotKey(Key, InversedBoolAnnotatedField): ...
 
 
 @slots
-class Doc(AnnotatedField, _tx.Doc):
+class Doc(AnnotatedField, tx.Doc):
     """
     Specifiy the docstring for a field.
 
@@ -654,5 +668,5 @@ class Doc(AnnotatedField, _tx.Doc):
     __set_slots__ = ('doc',)
 
     def __init__(self, documentation: str, /) -> None:
-        _tx.Doc.__init__(self, documentation)
+        tx.Doc.__init__(self, documentation)
         AnnotatedField.__init__(self, documentation)

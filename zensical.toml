@@ -4,24 +4,29 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
   {"All the Bags" = "https://bagofseeds.github.io/bagof/"},
-  {"Bag of Things" = "index.md"},
+  {"Bag of Magic" = "index.md"},
+  {"API" = [
+    "api/index.md",
+    {"fields" = "api/fields.md"},
+    {"options" = "api/options.md"},
+  ]},
 ]
 
 # The site_name is shown in the page header and the browser window title
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_name
-site_name = "bagof-things"
+site_name = "bagof-magic"
 
-site_description = "A template repository for useful things in a bag."
+site_description = "Dataclass-like structures built on hint-based magic."
 
 # The site_author attribute. This is used in the HTML head element.
 #
 # Read more: https://zensical.org/docs/setup/basics/#site_author
 site_author = "Yael Balbastre"
 
-site_url = "https://bagofseeds.github.io/bagof-things/"
-repo_url = "https://github.com/bagofseeds/bagof-things"
-repo_name = "bagofseeds/bagof-things"
+site_url = "https://bagofseeds.github.io/bagof-magic/"
+repo_url = "https://github.com/bagofseeds/bagof-magic"
+repo_name = "bagofseeds/bagof-magic"
 
 copyright = """
 Copyright &copy; 2026 The authors
@@ -81,7 +86,7 @@ repo = "fontawesome/brands/github"
 # ----------------------------------------------------------------------------
 # [[project.extra.social]]
 # icon = "fontawesome/brands/github"
-# link = "https://github.com/bagofseeds/bagof-things"
+# link = "https://github.com/bagofseeds/bagof-magic"
 
 # ----------------------------------------------------------------------------
 # mkdocstrings

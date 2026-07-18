@@ -1,8 +1,9 @@
 from __future__ import annotations
+
 __all__ = ["Options"]
-import typing_extensions as _tx
-from .constants import MISSING
-from .utils import slots, SlotsBase
+import typing_extensions as tx
+
+from .utils import SlotsBase, slots
 
 
 @slots(
@@ -27,7 +28,7 @@ from .utils import slots, SlotsBase
 )
 class Options(SlotsBase):
 
-    _DEFAULTS: _tx.Dict[str, bool] = dict(
+    _DEFAULTS: tx.Dict[str, bool] = dict(
         init=True,
         repr=True,
         eq=True,
@@ -49,5 +50,5 @@ class Options(SlotsBase):
     )
 
     @staticmethod
-    def make_default() -> _tx.Self:
+    def make_default() -> tx.Self:
         return Options(**Options._DEFAULTS)

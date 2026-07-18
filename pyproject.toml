@@ -75,6 +75,16 @@ file = "src/bagof/magic/_version.py"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.coverage.run]
+source = ["bagof.magic"]
+omit = ["*/_version.py"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if tx.TYPE_CHECKING:",
+    "if tx.TYPE_CHECKING or",
+]
+
 [tool.ruff]
 line-length = 79
 target-version = "py38"

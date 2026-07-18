@@ -3,21 +3,22 @@ from __future__ import annotations
 __all__ = ["SlotsBase", "rebuild_cls", "slots"]
 import copy as copy_
 import inspect
-import types as _t
-import typing_extensions as _tx
+import types
+
+import typing_extensions as tx
 
 from .constants import MISSING
 
 
-def _get_origin(type: _tx.Any) -> _tx.Any:
-    origin = _tx.get_origin(type)
+def _get_origin(type: tx.Any) -> tx.Any:
+    origin = tx.get_origin(type)
     if origin is None:
         return type
     return origin
 
 
 def _update_func_cell_for__class__(
-    f: _tx.Optional[_tx.Callable], oldcls: type, newcls: type
+    f: tx.Optional[tx.Callable], oldcls: type, newcls: type
 ) -> bool:
     # Returns True if we update a cell, else False.
     if f is None:
@@ -41,7 +42,7 @@ def _update_func_cell_for__class__(
 
 def rebuild_cls(
     cls: type,
-    type_func: _tx.Callable[[str, tuple[type, ...], dict], type] = type,
+    type_func: tx.Callable[[str, tuple[type, ...], dict], type] = type,
 ) -> type:
     namespace = dict(cls.__dict__)
 
@@ -71,7 +72,7 @@ def rebuild_cls(
         # If this is a wrapped function, unwrap it.
         member = inspect.unwrap(member)
 
-        if isinstance(member, _t.FunctionType):
+        if isinstance(member, types.FunctionType):
             if _update_func_cell_for__class__(member, cls, newcls):
                 break
         elif isinstance(member, property):
@@ -83,11 +84,11 @@ def rebuild_cls(
     return newcls
 
 
-@_tx.overload
-def slots(cls: type, *_slots: _tx.Tuple[str]) -> type: ...
+@tx.overload
+def slots(cls: type, *_slots: tx.Tuple[str]) -> type: ...
 
-@_tx.overload
-def slots(*_slots: _tx.Tuple[str]) -> _tx.Callable[[type], type]: ...
+@tx.overload
+def slots(*_slots: tx.Tuple[str]) -> tx.Callable[[type], type]: ...
 
 
 def slots(*aslots, **kwslots):
@@ -125,7 +126,7 @@ class SlotsBase:
         params = ", ".join(params)
         return f"{self.__class__.__name__}({params})"
 
-    def __getattr__(self, name: str) -> _tx.Any:
+    def __getattr__(self, name: str) -> tx.Any:
         if name in self._slots():
             return MISSING
         raise AttributeError(
@@ -133,26 +134,26 @@ class SlotsBase:
         )
 
     @classmethod
-    def _slots(cls) -> _tx.Iterator[str]:
+    def _slots(cls) -> tx.Iterator[str]:
         seen = dict()
-        for cls in reversed(cls.__mro__):
-            for slot in getattr(cls, '__slots__', ()):
+        for base in reversed(cls.__mro__):
+            for slot in getattr(base, '__slots__', ()):
                 if slot not in seen:
                     seen[slot] = True
                     yield slot
 
-    def update(self, options: _tx.Self) -> None:
+    def update(self, options: tx.Self) -> None:
         for slot in self._slots():
             if getattr(options, slot, MISSING) is not MISSING:
                 setattr(self, slot, getattr(options, slot, MISSING))
 
-    def setdefault(self, options: _tx.Self) -> None:
+    def setdefault(self, options: tx.Self) -> None:
         for slot in self._slots():
             if getattr(self, slot, MISSING) is MISSING:
                 setattr(self, slot, getattr(options, slot, MISSING))
 
-    def copy(self) -> _tx.Self:
+    def copy(self) -> tx.Self:
         return copy_.copy(self)
 
-    def deepcopy(self) -> _tx.Self:
+    def deepcopy(self) -> tx.Self:
         return copy_.deepcopy(self)
