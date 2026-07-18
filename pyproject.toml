@@ -1,16 +1,15 @@
 [project]
-name = "bagof-things"
-# Replace these template contacts before publishing.
+name = "bagof-magic"
 authors = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "Yael Balbastre", email = "yael.balbastre@gmail.com"},
 ]
 maintainers = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "Yael Balbastre", email = "yael.balbastre@gmail.com"},
 ]
-description = "Template package for bagof.things"
+description = "Dataclass-like structures built on hint-based magic."
 readme = "README.md"
 license = {text = "MIT"}
-keywords = ["bagof", "template", "python"]
+keywords = ["bagof", "magic", "struct", "dataclass", "python"]
 classifiers = [
     "Development Status :: 1 - Planning",
     "Intended Audience :: Developers",
@@ -27,13 +26,17 @@ dynamic = ["version"]
 requires-python = ">=3.8"
 dependencies = [
     "typing_extensions>=4.13",
+    "bagof-core-magic @ git+https://github.com/bagofseeds/bagof-core-magic.git",
+    "bagof-validators @ git+https://github.com/bagofseeds/bagof-validators.git",
+    "bagof-converters @ git+https://github.com/bagofseeds/bagof-converters.git",
+    "bagof-factories @ git+https://github.com/bagofseeds/bagof-factories.git",
 ]
 
 [project.urls]
-Homepage = "https://github.com/bagofseeds/bagof-things"
-Documentation = "https://github.com/bagofseeds/bagof-things#readme"
-Issues = "https://github.com/bagofseeds/bagof-things/issues"
-Repository = "https://github.com/bagofseeds/bagof-things"
+Homepage = "https://github.com/bagofseeds/bagof-magic"
+Documentation = "https://github.com/bagofseeds/bagof-magic#readme"
+Issues = "https://github.com/bagofseeds/bagof-magic/issues"
+Repository = "https://github.com/bagofseeds/bagof-magic"
 
 [project.optional-dependencies]
 test = [
@@ -68,10 +71,20 @@ dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
 distance-dirty = "{base_version}+{distance}.{vcs}{rev}.dirty"
 
 [tool.versioningit.write]
-file = "src/bagof/things/_version.py"
+file = "src/bagof/magic/_version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["bagof.magic"]
+omit = ["*/_version.py"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if tx.TYPE_CHECKING:",
+    "if tx.TYPE_CHECKING or",
+]
 
 [tool.ruff]
 line-length = 79
