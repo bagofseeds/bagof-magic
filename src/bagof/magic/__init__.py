@@ -32,19 +32,19 @@ some differences. Additional options are also implemented:
 
 Parameters
 ----------
-init: bool, default=True
+init : bool | str, default=True
     Generate `__init__` method
-repr : bool, default=True
+repr : bool | str, default=True
     Generate `__repr__` method
-eq : bool, default=True
+eq : bool | str, default=True
     Generate `__eq__` method
-order : bool, default=False
+order : bool | str, default=False
     Generate `__lt__` method
 unsafe_hash : bool, default=False
     Always generate `__hash__` method
 frozen : bool, default=False
     Disable `__setattr__` and `__delattr__`
-match_args : bool, default=True
+match_args : bool | str, default=False
     Generate `__match_args__` for pattern matching
 kw_only : bool, default=False
     Make all fields keyword-only by default
@@ -59,17 +59,19 @@ convert : bool, default=False
 validate : bool, default=False
     Use field type as validator if none is provided
 
+Examples
+--------
 It also differs from a standard dataclass in that field-specific options
 are assigned via annotations, rather than via a `field` function:
 
 ```python
 # - Default factories
 #   instead of x: list = field(factory=list)
-x: DefaultFactory[list, list_factory]
-x: Annotated[list, DefaultFactory(list_factory)]
+x: Factory[list, list_factory]
+x: Annotated[list, Factory(list_factory)]
 
 #   if no factory is provided, it will use the type as the default factory
-x: DefaultFactory[list] -> x: Annotated[list, DefaultFactory(list)]
+x: Factory[list] -> x: Annotated[list, Factory(list)]
 
 # - Include in the init method
 #   instead of x: int = field(init=True)
@@ -90,7 +92,7 @@ x: Annotated[int, NotKwOnly()]
 x: Annotated[int, KwOnly(False)]
 ```
 
-It supports additional features such as  automatic conversion of field
+It supports additional features such as automatic conversion of field
 values via annotations:
 
 ```python
@@ -1075,13 +1077,13 @@ def _make_mapping(
 
 
 _DOC_OPTIONS = """
-init: bool | str, default=`True`
+init : bool | str, default=True
     Generate `__init__` method.
 repr : bool | str, default=True
     Generate `__repr__` method.
 eq : bool | str, default=True
     Generate `__eq__` method.
-order : bool, default=False
+order : bool | str, default=False
     Generate `__lt__` method.
 hash : bool | str, default=None
     Generate `__hash__` method.
@@ -1090,7 +1092,7 @@ unsafe_hash : bool, default=False
     Always generate `__hash__` method.
 frozen : bool, default=False
     Disable `__setattr__` and `__delattr__`.
-match_args : bool, default=True
+match_args : bool | str, default=False
     Generate `__match_args__` for pattern matching.
 kw_only : bool, default=False
     Make all fields keyword-only by default.
@@ -1113,8 +1115,7 @@ reverse : bool, default=False
     This only affects the relative order of the fields of one class
     with respect to the fields of its base classes.
 doc : bool | str, default=True
-    Add field documentation to class docstring
-   .
+    Add field documentation to class docstring.
 """.strip()
 
 
@@ -1147,7 +1148,45 @@ class MetaMagic(ABCMeta):
 
     Other Parameters
     ----------------
-    {DOC_OPTIONS}
+    init : bool | str, default=True
+        Generate `__init__` method.
+    repr : bool | str, default=True
+        Generate `__repr__` method.
+    eq : bool | str, default=True
+        Generate `__eq__` method.
+    order : bool | str, default=False
+        Generate `__lt__` method.
+    hash : bool | str, default=None
+        Generate `__hash__` method.
+        If `None`, decide automatically.
+    unsafe_hash : bool, default=False
+        Always generate `__hash__` method.
+    frozen : bool, default=False
+        Disable `__setattr__` and `__delattr__`.
+    match_args : bool | str, default=False
+        Generate `__match_args__` for pattern matching.
+    kw_only : bool, default=False
+        Make all fields keyword-only by default.
+    positional_only : bool, default=False
+        Make all fields positional-only by default.
+    slots : bool, default=False
+        Generate `__slots__` and remove `__dict__`.
+    weakref_slot : bool, default=False
+        Generate a weakref slot in `__slots__`.
+    factory : bool, default=False
+        Use field type as factory if none is provided.
+    convert : bool, default=False
+        Use field type as converter if none is provided.
+    validate : bool, default=False
+        Use field type as validator if none is provided.
+    mapping : bool, default=False
+        Implement the `Mapping` protocol.
+    reverse : bool, default=False
+        Use the reverse MRO order to determine field order.
+        This only affects the relative order of the fields of one class
+        with respect to the fields of its base classes.
+    doc : bool | str, default=True
+        Add field documentation to class docstring.
 
     Returns
     -------
@@ -1184,7 +1223,45 @@ class Magic(metaclass=MetaMagic):
 
     Parameters
     ----------
-    {DOC_OPTIONS}
+    init : bool | str, default=True
+        Generate `__init__` method.
+    repr : bool | str, default=True
+        Generate `__repr__` method.
+    eq : bool | str, default=True
+        Generate `__eq__` method.
+    order : bool | str, default=False
+        Generate `__lt__` method.
+    hash : bool | str, default=None
+        Generate `__hash__` method.
+        If `None`, decide automatically.
+    unsafe_hash : bool, default=False
+        Always generate `__hash__` method.
+    frozen : bool, default=False
+        Disable `__setattr__` and `__delattr__`.
+    match_args : bool | str, default=False
+        Generate `__match_args__` for pattern matching.
+    kw_only : bool, default=False
+        Make all fields keyword-only by default.
+    positional_only : bool, default=False
+        Make all fields positional-only by default.
+    slots : bool, default=False
+        Generate `__slots__` and remove `__dict__`.
+    weakref_slot : bool, default=False
+        Generate a weakref slot in `__slots__`.
+    factory : bool, default=False
+        Use field type as factory if none is provided.
+    convert : bool, default=False
+        Use field type as converter if none is provided.
+    validate : bool, default=False
+        Use field type as validator if none is provided.
+    mapping : bool, default=False
+        Implement the `Mapping` protocol.
+    reverse : bool, default=False
+        Use the reverse MRO order to determine field order.
+        This only affects the relative order of the fields of one class
+        with respect to the fields of its base classes.
+    doc : bool | str, default=True
+        Add field documentation to class docstring.
     """
 
     # Set __slots__ so that inheriting classes can have slot=True
@@ -1211,7 +1288,7 @@ def magic(cls: type, **kwargs) -> type: ...
 def magic(cls: tx.Optional[type] = None, **kwargs):
     """
     Decorator for defining a Magic class.
-    See `MetaMagic` for parameters and examples.
+    See `Magic` for parameters and examples.
     """
     if cls is None:
         return partial(magic, **kwargs)

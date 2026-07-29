@@ -2,8 +2,8 @@
 
 `Magic` is a `dataclass`-like base built on hint-based *magic*: field
 behaviour is driven by type hints and resolved through the sibling
-[`bagof-validators`](https://github.com/bagofseeds/bagof-validators) and
-[`bagof-converters`](https://github.com/bagofseeds/bagof-converters)
+[`bagof-validators`](https://bagofseeds.github.io/bagof-validators/) and
+[`bagof-converters`](https://bagofseeds.github.io/bagof-converters/)
 packages.
 
 Unlike a `dataclass`, options are given as class keyword arguments and are
