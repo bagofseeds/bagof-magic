@@ -126,6 +126,19 @@ class SHOW_ATTR:
 
 
 class HIDE_IF_NONE(SHOW_ATTR):
+    """
+    Sentinel for `Field.repr` / `Field.key`: include the field in the
+    generated `__repr__` / dict-like interface only when its value is not
+    `None` at runtime, instead of unconditionally.
+
+    ```python
+    class C(Magic):
+        x: Annotated[Optional[int], Field(repr=HIDE_IF_NONE)]
+
+    repr(C(None))  # "C()"
+    repr(C(5))     # "C(x=5)"
+    ```
+    """
 
     def __init__(self, key: tx.Optional[str] = None) -> None:
         super().__init__(key=key, hide_if_none=True)

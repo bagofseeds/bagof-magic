@@ -27,6 +27,20 @@ from .utils import SlotsBase, slots
     'doc',              # Generate class docstring from field docstrings
 )
 class Options(SlotsBase):
+    """
+    The resolved set of class-level options for a `Magic` class.
+
+    `MetaMagic` builds one `Options` instance per class from the keyword
+    arguments passed to the class statement (or to the `magic` decorator),
+    merged with the options inherited from base classes in MRO order --
+    a base class's value is used unless a derived class explicitly sets
+    its own. The result is stored on the class as `cls.__magic_options__`
+    and, together with each field's own overrides, decides which dunder
+    methods (`__init__`, `__repr__`, `__eq__`, ...) get generated and how.
+
+    See `Magic` for the full list of supported options and their
+    defaults.
+    """
 
     _DEFAULTS: tx.Dict[str, bool] = dict(
         init=True,
@@ -51,4 +65,5 @@ class Options(SlotsBase):
 
     @staticmethod
     def make_default() -> tx.Self:
+        """Return a new `Options` instance populated with default values."""
         return Options(**Options._DEFAULTS)

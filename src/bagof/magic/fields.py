@@ -426,6 +426,7 @@ class Init(BoolAnnotatedField):
     NoInit()    ~> Field(init=False)
     Init[int]   ~> Annotated[T, Field(init=True)]
     NoInit[int] ~> Annotated[T, Field(init=False)]
+    ```
     """
 
     __set_slots__ = 'init'
@@ -447,6 +448,7 @@ class Kw(BoolAnnotatedField):
     Kw[int]     ~> Annotated[T, Field(kw=True)]
     NotKw[int]  ~> Annotated[T, Field(kw=False)]
     KwOnly[int] ~> Annotated[T, Field(kw=True, positional=False)]
+    ```
     """
 
     __set_slots__ = 'kw'
@@ -468,6 +470,7 @@ class Positional(BoolAnnotatedField):
     Positional[int]     ~> Annotated[T, Field(positional=True)]
     NotPositional[int]  ~> Annotated[T, Field(positional=False)]
     PositionalOnly[int] ~> Annotated[T, Field(positional=True, kw=False)]
+    ```
     """
 
     __set_slots__ = 'positional'
@@ -503,6 +506,7 @@ class Frozen(BoolAnnotatedField):
     NotFrozen()    ~> Field(frozen=False)
     Frozen[int]    ~> Annotated[T, Field(frozen=True)]
     NotFrozen[int] ~> Annotated[T, Field(frozen=False)]
+    ```
     """
 
     __set_slots__ = 'frozen'
@@ -550,6 +554,7 @@ class Repr(BoolAnnotatedField):
     NoRepr()     ~> Field(repr=False)
     Repr[int]    ~> Annotated[T, Field(repr=True)]
     NoRepr[int]  ~> Annotated[T, Field(repr=False)]
+    ```
     """
 
     __set_slots__ = ('repr',)
@@ -630,7 +635,7 @@ class NoHash(Hash, InversedBoolAnnotatedField): ...
 @slots
 class Key(BoolAnnotatedField):
     """ Specify that a field should [not] be included in the generated
-    `__hash__` method.
+    dict-like interface.
 
     ```python
     Key()       ~> Field(key=True)
