@@ -364,12 +364,25 @@ class InversedBoolAnnotatedField(BoolAnnotatedField):
 @slots
 class Default(AnnotatedField):
     """
-    Specify that a field has a default value.
+    Give a field a default value.
 
-    ```python
-    Default(10)      ~> Field(default=10)
-    Default[int, 10] ~> Annotated[T, Field(default=10)]
-    ```
+    !!! example "How it lowers"
+        ```pycon
+        >>> Default(10)
+        Default(default=10)
+        >>> Default[int, 10]
+        typing.Annotated[int, Default(default=10)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Point(Magic):
+        ...     x: Default[float, 0.0]
+        ...     y: Default[float, 0.0]
+        ...
+        >>> Point()
+        Point(x=0.0, y=0.0)
+        ```
     """
 
     __set_slots__ = {'default': REQUIRED}
@@ -378,14 +391,32 @@ class Default(AnnotatedField):
 @slots
 class Factory(AnnotatedField):
     """
-    Specify that a field has a default factory.
+    Build a field's default by calling something, once per instance.
 
-    ```python
-    Factory()             ~> Field(factory=True)
-    Factory(list)         ~> Field(factory=list)
-    Factory[list]         ~> Annotated[T, Field(factory=True)]
-    Factory[list, mylist] ~> Annotated[T, Field(factory=mylist)]
-    ```
+    Use this instead of a plain default for anything mutable: every instance
+    gets its own object. With no argument, the factory is worked out from
+    the field's type.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Factory()
+        Factory(factory=True)
+        >>> Factory(list)
+        Factory(factory=<class 'list'>)
+        >>> Factory[list]
+        typing.Annotated[list, Factory(factory=True)]
+        >>> Factory[list, tuple]
+        typing.Annotated[list, Factory(factory=<class 'tuple'>)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Basket(Magic):
+        ...     items: Factory[list]
+        ...
+        >>> Basket().items is Basket().items
+        False
+        ```
     """
 
     __set_slots__ = {'factory': True}
@@ -394,14 +425,29 @@ class Factory(AnnotatedField):
 @slots
 class ConvertTo(AnnotatedField):
     """
-    Specify that a field has a converter.
+    Convert whatever is passed in to the field's type.
 
-    ```python
-    ConvertTo()             ~> Field(converter=True)
-    ConvertTo(list)         ~> Field(converter=list)
-    ConvertTo[list]         ~> Annotated[T, Field(converter=True)]
-    ConvertTo[list, mylist] ~> Annotated[T, Field(converter=mylist)]
-    ```
+    With no argument the converter is worked out from the type; pass a
+    callable to use your own.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> ConvertTo()
+        ConvertTo(converter=True)
+        >>> ConvertTo(int)
+        ConvertTo(converter=<class 'int'>)
+        >>> ConvertTo[int]
+        typing.Annotated[int, ConvertTo(converter=True)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Server(Magic):
+        ...     port: ConvertTo[int]
+        ...
+        >>> Server("8080")
+        Server(port=8080)
+        ```
     """
 
     __set_slots__ = {'converter': True}
@@ -410,14 +456,31 @@ class ConvertTo(AnnotatedField):
 @slots
 class Validate(AnnotatedField):
     """
-    Specify that a field has a validator.
+    Reject a value that does not match the field's type.
 
-    ```python
-    Validate()                  ~> Field(validator=True)
-    Validate(myvalidator)       ~> Field(validator=myvalidator)
-    Validate[list]              ~> Annotated[T, Field(validator=True)]
-    Validate[list, myvalidator] ~> Annotated[T, Field(validator=myvalidator)]
-    ```
+    With no argument the check is worked out from the type; pass a callable
+    to use your own. Unlike `ConvertTo`, the value is left exactly as it
+    was given.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Validate()
+        Validate(validator=True)
+        >>> Validate[str]
+        typing.Annotated[str, Validate(validator=True)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Server(Magic):
+        ...     host: Validate[str]
+        ...
+        >>> Server("localhost")
+        Server(host='localhost')
+        >>> Server(1234)
+        Traceback (most recent call last):
+        TypeValidationError: ...
+        ```
     """
 
     __set_slots__ = {'validator': True}
@@ -426,15 +489,20 @@ class Validate(AnnotatedField):
 @slots
 class Init(BoolAnnotatedField):
     """
-    Specify that a field should [not] be included in the generated
-    `__init__` method.
+    Include a field in the generated `__init__`, or leave it out.
 
-    ```python
-    Init()      ~> Field(init=True)
-    NoInit()    ~> Field(init=False)
-    Init[int]   ~> Annotated[T, Field(init=True)]
-    NoInit[int] ~> Annotated[T, Field(init=False)]
-    ```
+    A field left out still exists -- it takes its default or factory value --
+    it just cannot be passed in.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Init()
+        Init(init=True)
+        >>> NoInit()
+        NoInit(init=False)
+        >>> NoInit[int]
+        typing.Annotated[int, NoInit(init=False)]
+        ```
     """
 
     __set_slots__ = 'init'
@@ -448,16 +516,23 @@ class NoInit(Init, InversedBoolAnnotatedField):
 @slots
 class Kw(BoolAnnotatedField):
     """
-    Specify that a field is [not] a keyword-only parameter.
+    Allow a field to be passed by keyword, or forbid it.
 
-    ```python
-    Kw()        ~> Field(kw=True)
-    NotKw()     ~> Field(kw=False)
-    KwOnly()    ~> Field(kw=True, positional=False)
-    Kw[int]     ~> Annotated[T, Field(kw=True)]
-    NotKw[int]  ~> Annotated[T, Field(kw=False)]
-    KwOnly[int] ~> Annotated[T, Field(kw=True, positional=False)]
-    ```
+    Pair it with `Positional` to say exactly how a field may be given.
+    `KwOnly` and `PositionalOnly` are the two useful combinations, ready
+    made.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Kw()
+        Kw(kw=True)
+        >>> NotKw()
+        NotKw(kw=False)
+        >>> KwOnly()
+        KwOnly(kw=True, positional=False)
+        >>> KwOnly[int]
+        typing.Annotated[int, KwOnly(kw=True, positional=False)]
+        ```
     """
 
     __set_slots__ = 'kw'
@@ -471,16 +546,21 @@ class NotKw(Kw, InversedBoolAnnotatedField):
 @slots
 class Positional(BoolAnnotatedField):
     """
-    Specify that a field is [not] a positional-only parameter.
+    Allow a field to be passed by position, or forbid it.
 
-    ```python
-    Positional()        ~> Field(positional=True)
-    NotPositional()     ~> Field(positional=False)
-    PositionalOnly()    ~> Field(positional=True, kw=False)
-    Positional[int]     ~> Annotated[T, Field(positional=True)]
-    NotPositional[int]  ~> Annotated[T, Field(positional=False)]
-    PositionalOnly[int] ~> Annotated[T, Field(positional=True, kw=False)]
-    ```
+    Pair it with `Kw` to say exactly how a field may be given.
+    `PositionalOnly` and `KwOnly` are the two useful combinations, ready
+    made.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Positional()
+        Positional(positional=True)
+        >>> NotPositional()
+        NotPositional(positional=False)
+        >>> PositionalOnly()
+        PositionalOnly(kw=False, positional=True)
+        ```
     """
 
     __set_slots__ = 'positional'
@@ -510,14 +590,32 @@ class NotPositionalOnly(Kw, Positional): ...
 @slots
 class Frozen(BoolAnnotatedField):
     """
-    Specify that a field is [not] frozen.
+    Forbid assignment to a field after the object is built.
 
-    ```python
-    Frozen()       ~> Field(frozen=True)
-    NotFrozen()    ~> Field(frozen=False)
-    Frozen[int]    ~> Annotated[T, Field(frozen=True)]
-    NotFrozen[int] ~> Annotated[T, Field(frozen=False)]
-    ```
+    Useful for freezing part of an otherwise mutable class.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Frozen()
+        Frozen(frozen=True)
+        >>> NotFrozen()
+        NotFrozen(frozen=False)
+        >>> Frozen[int]
+        typing.Annotated[int, Frozen(frozen=True)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Account(Magic):
+        ...     id: Frozen[int]
+        ...     balance: float
+        ...
+        >>> account = Account(1, 0.0)
+        >>> account.balance = 10.0
+        >>> account.id = 2
+        Traceback (most recent call last):
+        AttributeError: Cannot set frozen field 'id'
+        ```
     """
 
     __set_slots__ = 'frozen'
@@ -531,17 +629,35 @@ class NotFrozen(Frozen, InversedBoolAnnotatedField):
 @slots
 class Var(BoolAnnotatedField):
     """
-    Specify that a field is a pseudo-field (InitVar or ClassVar).
+    Declare something that is not stored on each instance.
 
-    ```python
-    Var()         ~> Field(var=True)
-    InitVar()     ~> Field(var=True, init=True)
-    ClassVar()    ~> Field(var=True, init=False)
+    `InitVar` is passed to `__init__` and handed on to `__post_init__`;
+    `ClassVar` is a plain class attribute, shared by every instance and
+    absent from `__init__`.
 
-    Var[int]      ~> Annotated[T, Field(var=True)]
-    InitVar[int]  ~> Annotated[T, Field(var=True, init=True)]
-    ClassVar[int] ~> Annotated[T, Field(var=True, init=False)]
-    ```
+    !!! example "How it lowers"
+        ```pycon
+        >>> Var()
+        Var(var=True)
+        >>> InitVar()
+        InitVar(init=True, var=True)
+        >>> ClassVar()
+        ClassVar(init=False, var=True)
+        >>> ClassVar[str]
+        typing.Annotated[str, ClassVar(init=False, var=True)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Counter(Magic):
+        ...     start: int
+        ...     unit: ClassVar[str] = "clicks"
+        ...
+        >>> Counter(3)
+        Counter(start=3)
+        >>> Counter(3).unit
+        'clicks'
+        ```
     """
 
     __set_slots__ = 'var'
@@ -558,15 +674,29 @@ class ClassVar(Var, NoInit): ...
 @slots
 class Repr(BoolAnnotatedField):
     """
-    Specify that a field should [not] be included in the generated
-    `__repr__` method.
+    Show a field in the generated `__repr__`, or hide it.
 
-    ```python
-    Repr()       ~> Field(repr=True)
-    NoRepr()     ~> Field(repr=False)
-    Repr[int]    ~> Annotated[T, Field(repr=True)]
-    NoRepr[int]  ~> Annotated[T, Field(repr=False)]
-    ```
+    Use `HIDE_IF_NONE` to show it only when it has a value.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Repr()
+        Repr(repr=True)
+        >>> NoRepr()
+        NoRepr(repr=False)
+        >>> NoRepr[str]
+        typing.Annotated[str, NoRepr(repr=False)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class User(Magic):
+        ...     name: str
+        ...     password: NoRepr[str]
+        ...
+        >>> User("ada", "hunter2")
+        User(name='ada')
+        ```
     """
 
     __set_slots__ = ('repr',)
@@ -579,15 +709,31 @@ class NoRepr(Repr, InversedBoolAnnotatedField):
 
 @slots
 class Eq(BoolAnnotatedField):
-    """ Specify that a field should [not] be included in the generated
-    `__eq__` method.
+    """
+    Compare a field in the generated `__eq__`, or ignore it.
 
-    ```python
-    Eq()       ~> Field(eq=True)
-    NoEq()     ~> Field(eq=False)
-    Eq[int]    ~> Annotated[T, Field(eq=True)]
-    NoEq[int]  ~> Annotated[T, Field(eq=False)]
-    ```
+    An ignored field takes no part in equality, so two objects that differ
+    only there compare equal.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Eq()
+        Eq(eq=True)
+        >>> NoEq()
+        NoEq(eq=False)
+        >>> NoEq[int]
+        typing.Annotated[int, NoEq(eq=False)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Sample(Magic):
+        ...     value: int
+        ...     measured_at: NoEq[float] = 0.0
+        ...
+        >>> Sample(1, 100.0) == Sample(1, 999.0)
+        True
+        ```
     """
 
     __set_slots__ = ('eq',)
@@ -600,15 +746,20 @@ class NoEq(Eq, InversedBoolAnnotatedField):
 
 @slots
 class Order(BoolAnnotatedField):
-    """ Specify that a field should [not] be included in the generated
-    `__lt__` method.
+    """
+    Compare a field in the generated ordering, or ignore it.
 
-    ```python
-    Order()       ~> Field(order=True)
-    NoOrder()     ~> Field(order=False)
-    Order[int]    ~> Annotated[T, Field(order=True)]
-    NoOrder[int]  ~> Annotated[T, Field(order=False)]
-    ```
+    Ordering is off unless the class asks for it with `order=True`.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Order()
+        Order(order=True)
+        >>> NoOrder()
+        NoOrder(order=False)
+        >>> NoOrder[int]
+        typing.Annotated[int, NoOrder(order=False)]
+        ```
     """
 
     __set_slots__ = ('order',)
@@ -620,7 +771,22 @@ class NoOrder(Order, InversedBoolAnnotatedField):
 
 
 @slots
-class Compare(Eq, Order):  ...
+class Compare(Eq, Order):
+    """
+    Use a field for both equality and ordering, or for neither.
+
+    A shorthand for setting `Eq` and `Order` together.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Compare()
+        Compare(eq=True, order=True)
+        >>> NoCompare()
+        NoCompare(eq=False, order=False)
+        >>> NoCompare[int]
+        typing.Annotated[int, NoCompare(eq=False, order=False)]
+        ```
+    """
 
 
 @slots
@@ -630,15 +796,21 @@ class NoCompare(Compare, InversedBoolAnnotatedField):
 
 @slots
 class Hash(BoolAnnotatedField):
-    """ Specify that a field should [not] be included in the generated
-    `__hash__` method.
+    """
+    Include a field in the generated `__hash__`, or leave it out.
 
-    ```python
-    Hash()      ~> Field(hash=True)
-    NoHash()    ~> Field(hash=False)
-    Hash[int]   ~> Annotated[T, Field(hash=True)]
-    NoHash[int] ~> Annotated[T, Field(hash=False)]
-    ```
+    A field left out of the comparison is left out of the hash too, so you
+    rarely need this on its own.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Hash()
+        Hash(hash=True)
+        >>> NoHash()
+        NoHash(hash=False)
+        >>> NoHash[int]
+        typing.Annotated[int, NoHash(hash=False)]
+        ```
     """
 
     __set_slots__ = ('hash',)
@@ -651,15 +823,33 @@ class NoHash(Hash, InversedBoolAnnotatedField):
 
 @slots
 class Key(BoolAnnotatedField):
-    """ Specify that a field should [not] be included in the generated
-    dict-like interface.
+    """
+    Include a field in the dict-like interface, or leave it out.
 
-    ```python
-    Key()       ~> Field(key=True)
-    NotKey()    ~> Field(key=False)
-    Key[int]    ~> Annotated[T, Field(key=True)]
-    NotKey[int] ~> Annotated[T, Field(key=False)]
-    ```
+    Only relevant on a class built with `mapping=True`. Pass a string to use
+    a different key from the field name.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Key()
+        Key(key=True)
+        >>> NotKey()
+        NotKey(key=False)
+        >>> Key("id")
+        Key(key='id')
+        >>> NotKey[int]
+        typing.Annotated[int, NotKey(key=False)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Row(Magic, mapping=True):
+        ...     name: str
+        ...     cached: NotKey[int] = 0
+        ...
+        >>> dict(Row("ada"))
+        {'name': 'ada'}
+        ```
     """
 
     __set_slots__ = ('key',)
@@ -673,12 +863,18 @@ class NotKey(Key, InversedBoolAnnotatedField):
 @slots
 class Doc(AnnotatedField, tx.Doc):
     """
-    Specify the docstring for a field.
+    Document a field.
 
-    ```python
-    Doc("This is a field")      ~> Field(doc="This is a field")
-    Doc[int, "This is a field"] ~> Annotated[T, Field(doc="This is a field")]
-    ```
+    The text appears in the class docstring and in the documentation of the
+    generated `__init__`.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Doc("how many times to retry")
+        Doc(doc='how many times to retry')
+        >>> Doc[int, "how many times to retry"]
+        typing.Annotated[int, Doc(doc='how many times to retry')]
+        ```
     """
 
     __set_slots__ = ('doc',)
