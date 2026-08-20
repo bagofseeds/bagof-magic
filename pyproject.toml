@@ -45,7 +45,9 @@ test = [
 
 [build-system]
 requires = [
-    "setuptools>=59.0",
+    # 61 is where `[project]` and `[tool.setuptools]` are read at all --
+    # below it this file is ignored and the wheel builds as UNKNOWN-0.0.0.
+    "setuptools>=61",
     "wheel>=0.45.1",
     "versioningit>=1.0",
 ]
@@ -53,9 +55,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-# `LICENSES/` sits outside setuptools' default license-file glob, and the
-# PSF license must ship with the distribution, not just the repository.
-license-files = ["LICENSE", "LICENSES/*.txt", "NOTICE.md"]
+# Listed explicitly because the default glob does not pick up NOTICE.md on
+# every supported setuptools. Keep every entry at the repository root: a
+# subdirectory pattern here is silently ignored before setuptools 77.
+license-files = ["LICENSE", "LICENSE-PSF-2.0.txt", "NOTICE.md"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
