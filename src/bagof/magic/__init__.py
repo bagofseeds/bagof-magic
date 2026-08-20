@@ -171,9 +171,9 @@ def __post_new__(cls: type) -> type:
     fields = getattr(cls, _FIELDS, {})
     fields = {name: field for name, field in fields.items() if not field.var}
     __delattr__, __setattr__ = _make_assign(cls)
-    if "__setattr___" not in cls.__dict__:
+    if "__setattr__" not in cls.__dict__:
         cls.__setattr__ = __setattr__
-    if "__delattr___" not in cls.__dict__:
+    if "__delattr__" not in cls.__dict__:
         cls.__delattr__ = __delattr__
 
     return cls
