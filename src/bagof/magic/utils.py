@@ -1,3 +1,14 @@
+"""
+Class-rebuilding helpers.
+
+`rebuild_cls` and `_update_func_cell_for__class__` are adapted from Python's
+standard library `dataclasses` module.
+Copyright (c) 2001-2026 Python Software Foundation; All Rights Reserved.
+Licensed under the Python Software Foundation License Version 2; see
+LICENSES/PSF-2.0.txt for its text and NOTICE.md for the list of derived
+components and the summary of changes.
+"""
+
 from __future__ import annotations
 
 __all__ = ["SlotsBase", "rebuild_cls", "slots"]
