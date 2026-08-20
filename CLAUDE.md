@@ -146,10 +146,16 @@ file.
 ## Third-party code
 
 Parts of the builder are copied from or derived from CPython's `dataclasses`.
-They carry the PSF license: see `LICENSES/PSF-2.0.txt` and `NOTICE.md`. **If
+They carry the PSF license: see `LICENSE-PSF-2.0.txt` and `NOTICE.md`. **If
 you port more code from the standard library, add it to `NOTICE.md`'s
 component table and to its summary of changes** — the license requires both,
 and an attribution comment alone does not satisfy it.
+
+Every license file must stay **at the repository root** and be listed in
+`pyproject.toml`'s `license-files`. A subdirectory pattern there is accepted
+by the config and then silently ignored by every setuptools before 77, so the
+file never reaches the wheel and the build says nothing.
+`tests/test_licensing.py` enforces both.
 
 ## Gate before a PR
 
