@@ -1964,3 +1964,137 @@ class TestAnnotationPolarity:
     def test_subscript_keeps_extra_metadata(self) -> None:
         hint = NoRepr[int, "some note"]
         assert tx.get_args(hint)[2] == "some note"
+
+
+class TestAlwaysGenerated:
+    """Every generated method is available under its private name."""
+
+    def test_init_false_still_exposes_the_generated_init(self) -> None:
+        class B(Magic, init=False):
+            x: int
+
+            def __init__(self, raw: str) -> None:
+                self.__magic_init__(int(raw))
+
+        assert B("5").x == 5
+        assert "__init__" in B.__dict__          # the user's, not ours
+        assert B.__init__ is not B.__magic_init__
+
+    def test_a_renamed_init_is_also_available_privately(self) -> None:
+        class R(Magic, init="__setup__"):
+            x: int
+
+        assert R.__setup__ is R.__magic_init__
+
+    def test_the_private_init_takes_every_field(self) -> None:
+        # Regression: `init=False` used to turn off `init` on each field
+        # too, leaving the generated init with no parameters at all.
+        class B(Magic, init=False):
+            x: int
+            y: int
+
+        obj = object.__new__(B)
+        obj.__magic_init__(1, 2)
+        assert (obj.x, obj.y) == (1, 2)
+
+    @pytest.mark.parametrize(
+        "option,private",
+        [("repr", "__magic_repr__"), ("eq", "__magic_eq__"),
+         ("order", "__magic_lt__"), ("hash", "__magic_hash__")],
+    )
+    def test_the_private_name_exists_even_when_turned_off(
+        self, option: str, private: str
+    ) -> None:
+        C = m.MetaMagic(
+            "C", (Magic,), {"__annotations__": {"x": int}}, **{option: False}
+        )
+        assert callable(getattr(C, private))
+
+    def test_the_private_repr_still_works_when_repr_is_off(self) -> None:
+        class C(Magic, repr=False):
+            x: int
+
+        assert C(1).__magic_repr__() == "C(x=1)"
+
+
+class TestDisabledOptionsDoNotFallThrough:
+    """Turning an option off must not inherit a *generated* method."""
+
+    def test_eq_false_compares_by_identity(self) -> None:
+        # Regression: `Magic` is itself built with `eq=True` and no
+        # fields, so its generated `__eq__` was `all(())` -- True for
+        # any two instances of the same class. Every subclass that
+        # opted out inherited it.
+        class D(Magic, eq=False):
+            x: int
+
+        assert (D(1) == D(2)) is False
+        assert (D(1) == D(1)) is False
+        obj = D(1)
+        assert obj == obj
+
+    def test_eq_false_leaves_the_class_hashable(self) -> None:
+        # Assigning `__eq__` into a class body makes Python drop
+        # `__hash__` unless one is given too -- but a class that
+        # compares by identity should hash by identity.
+        class D(Magic, eq=False):
+            x: int
+
+        obj = D(1)
+        assert D.__hash__ is not None
+        assert obj in {obj}
+        assert D(1) not in {D(1)}
+
+    def test_repr_false_falls_back_to_object(self) -> None:
+        class C(Magic, repr=False):
+            x: int
+
+        assert repr(C(1)).startswith("<")
+        assert "C object at" in repr(C(1))
+
+    def test_order_false_on_an_ordered_base(self) -> None:
+        class Ordered(Magic, order=True):
+            x: int
+
+        class Unordered(Ordered, order=False):
+            y: int
+
+        assert Ordered(1) < Ordered(2)
+        with pytest.raises(TypeError, match="not supported between"):
+            assert Unordered(1, 2) < Unordered(3, 4)
+
+    def test_hash_false_on_a_frozen_base(self) -> None:
+        class F(Magic, frozen=True):
+            x: int
+
+        class F2(F, hash=False):
+            y: int
+
+        assert isinstance(hash(F(1)), int)
+        assert F2.__hash__ is None
+
+    def test_a_hand_written_method_survives(self) -> None:
+        # Only a *generated* inherited method is neutralised.
+        class Base(Magic, eq=False):
+            x: int
+
+            def __eq__(self, other: tx.Any) -> tx.Any:
+                return "mine"
+
+            __hash__ = None
+
+        class Derived(Base, eq=False):
+            y: int
+
+        assert Base(1) == Base(2) == "mine"
+        assert Derived(1, 2) == Derived(3, 4) == "mine"
+
+    def test_turning_an_option_back_on_works(self) -> None:
+        class A(Magic, eq=False):
+            x: int
+
+        class B(A, eq=True):
+            y: int
+
+        assert B(1, 2) == B(1, 2)
+        assert B(1, 2) != B(1, 3)

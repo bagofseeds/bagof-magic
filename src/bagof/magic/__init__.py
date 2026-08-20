@@ -134,6 +134,8 @@ from .constants import (
     _DEFAULT,
     _DISCARD,
     _FIELDS,
+    _GENERATED,
+    _MAGIC,
     _OPTIONS,
     _POST_INIT_NAME,
     _PRE_INIT_NAME,
@@ -263,6 +265,76 @@ def _namespace_annotations(namespace: dict) -> dict:
     return annotationlib.call_annotate_function(
         annotate, annotationlib.Format.FORWARDREF
     )
+
+
+def _generated(fn: tx.Any) -> tx.Any:
+    """Mark a callable as one this package generated."""
+    try:
+        setattr(fn, _GENERATED, True)
+    except AttributeError:
+        # A slot wrapper or a builtin -- nothing to mark, and nothing
+        # that could be mistaken for one of ours either.
+        pass
+    return fn
+
+
+def _inherited(mro: tx.Tuple[type, ...], name: str) -> tx.Any:
+    """The attribute `name` resolves to in the bases, or `MISSING`."""
+    for base in mro:
+        if name in base.__dict__:
+            return base.__dict__[name]
+    return MISSING
+
+
+def _inherits_generated(mro: tx.Tuple[type, ...], name: str) -> bool:
+    """Whether `name` resolves to a method *we* generated."""
+    return getattr(_inherited(mro, name), _GENERATED, False)
+
+
+def _no_order(self: Magic, other: tx.Any) -> tx.Any:
+    """Stand-in for a generated ordering a derived class turned off."""
+    return NotImplemented
+
+
+#: What a turned-off option leaves behind, when the method it would have
+#: written is otherwise inherited from a generated one. `object` has no
+#: `__lt__`, so ordering falls back to a `NotImplemented` -- which lets
+#: Python raise its usual "not supported between instances" rather than
+#: "NoneType is not callable".
+_NEUTRAL = {
+    "__repr__": object.__repr__,
+    "__eq__": object.__eq__,
+    "__lt__": _no_order,
+    "__hash__": None,
+}
+
+
+def _install(
+    namespace: dict,
+    mro: tx.Tuple[type, ...],
+    public: str,
+    private: str,
+    fn: tx.Any,
+    enabled: bool,
+) -> None:
+    """
+    Bind a generated method.
+
+    The private name is always bound, so a hand-written method can
+    delegate to the generated one. The public name is bound only when
+    the option asks for it -- and when it does not, an inherited
+    *generated* method of the same name is neutralised, because it was
+    built for a different class's fields and would otherwise answer in
+    this one's place.
+    """
+    _generated(fn)
+    namespace.setdefault(private, fn)
+    if enabled:
+        namespace.setdefault(public, fn)
+    elif _inherits_generated(mro, public):
+        namespace.setdefault(public, _generated(_NEUTRAL[public])
+                             if callable(_NEUTRAL[public])
+                             else _NEUTRAL[public])
 
 
 def __pre_new__(
@@ -434,10 +506,20 @@ def __pre_new__(
         prepost += ["post"]
     prepost = "+".join(prepost)
 
-    # Build __init__
-    if options.init:
-        fnname = "__init__" if options.init is True else options.init
-        fnbuilder.add_fn(name=fnname, **_make_init(fields, prepost))
+    # Every generated method is bound under a private name whatever the
+    # options say, so a hand-written one can delegate to it:
+    #     def __init__(self, raw): self.__magic_init__(int(raw))
+    # The public name is bound only when the option asks for it. `mro`
+    # is the probe class built above; its tail is this class's bases.
+    base_mro = mro[1:]
+
+    # Build __init__. The builder writes the source, so the aliasing has
+    # to wait until `insert_fns` has compiled it (below).
+    fnbuilder.add_fn(name=_MAGIC("init"), **_make_init(fields, prepost))
+    init_name = (
+        ("__init__" if options.init is True else options.init)
+        if options.init else None
+    )
 
     # TODO
     # _set_new_attribute(cls, '__replace__', _replace)
@@ -445,18 +527,27 @@ def __pre_new__(
     # Include only real fields.  This is used in all of the following methods.
     real_fields = {name: f for name, f in fields.items() if not f.var}
 
-    if options.repr:
-        repr_fields = {name: f for name, f in fields.items() if f.repr}
-        fnname = options.repr if isinstance(options.repr, str) else "__repr__"
-        namespace.setdefault(fnname, _make_repr(qualname, repr_fields))
+    repr_fields = {name: f for name, f in fields.items() if f.repr}
+    _install(
+        namespace, base_mro,
+        options.repr if isinstance(options.repr, str) else "__repr__",
+        _MAGIC("repr"), _make_repr(qualname, repr_fields),
+        bool(options.repr),
+    )
 
-    if options.eq:
-        fnname = options.eq if isinstance(options.eq, str) else "__eq__"
-        namespace.setdefault(fnname, _make_eq(qualname, real_fields))
+    _install(
+        namespace, base_mro,
+        options.eq if isinstance(options.eq, str) else "__eq__",
+        _MAGIC("eq"), _make_eq(qualname, real_fields),
+        bool(options.eq),
+    )
 
-    if options.order:
-        fnname = options.order if isinstance(options.order, str) else "__lt__"
-        namespace.setdefault(fnname, _make_lt(qualname, real_fields))
+    _install(
+        namespace, base_mro,
+        options.order if isinstance(options.order, str) else "__lt__",
+        _MAGIC("lt"), _make_lt(qualname, real_fields),
+        bool(options.order),
+    )
 
     # Decide if/how we're going to create a hash function.
     # A truthy `hash` means "generate one", the same force the
@@ -472,9 +563,20 @@ def __pre_new__(
     if options.hash is False:
         _make_hash = False
 
+    # The field-wise hash is always available privately; what lands on
+    # `__hash__` is whatever the table above decided.
+    namespace.setdefault(
+        _MAGIC("hash"), _generated(_hash_add(qualname, real_fields))
+    )
+    fnname = options.hash if isinstance(options.hash, str) else "__hash__"
     if _make_hash:
-        fnname = options.hash if isinstance(options.hash, str) else "__hash__"
-        namespace.setdefault(fnname, _make_hash(qualname, real_fields))
+        namespace.setdefault(fnname, _generated(_make_hash(qualname,
+                                                           real_fields)))
+    elif _inherits_generated(base_mro, fnname):
+        # Nothing to write, but a generated hash from a base would
+        # answer over this class's fields. `hash=False` in particular
+        # means "not hashable", not "use the base's".
+        namespace.setdefault(fnname, None)
 
     if options.match_args:
         fnname = (
@@ -509,6 +611,22 @@ def __pre_new__(
         namespace["__slots__"] = _make_slots(bases, real_fields, weakref_slot)
 
     fnbuilder.insert_fns(clsname, namespace)
+
+    # `__magic_init__` is compiled by now; bind the public name to the
+    # same object when `init` asks for it.
+    magic_init = namespace.get(_MAGIC("init"))
+    if magic_init is not None:
+        _generated(magic_init)
+        if init_name:
+            namespace.setdefault(init_name, magic_init)
+
+    # Assigning `__eq__` into a class body makes Python set `__hash__`
+    # to None unless one is given too. That is right for the field-wise
+    # `__eq__` we generate, and wrong for the identity one installed
+    # when `eq` is off: a class that compares by identity should hash by
+    # identity. Only fill in when the hash policy above wrote nothing.
+    if namespace.get("__eq__") is object.__eq__:
+        namespace.setdefault("__hash__", object.__hash__)
 
     # Add attributes to class documentation
     # `python -OO` asks for docstrings to be dropped; a generated one is

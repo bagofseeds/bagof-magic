@@ -232,18 +232,28 @@ class Field(SlotsBase):
             self.doc = None
         if self.var is MISSING:
             self.var = False
+        # `init`, `repr`, `eq` and `order` are deliberately *not* read
+        # from the class options. Those decide whether a method is
+        # generated at all; this decides whether a field takes part in
+        # one. Conflating them made every generated method on a class
+        # that had opted out cover no fields -- so `__magic_eq__` on an
+        # `eq=False` class compared nothing and answered True for any
+        # two instances.
         if self.init is MISSING:
-            self.init = options.init
+            self.init = True
         if self.repr is MISSING:
-            self.repr = options.repr if not self.var else False
+            self.repr = not self.var
         if self.hash is MISSING:
             self.hash = True
         if self.key is MISSING:
             self.key = options.mapping
         if self.eq is MISSING:
-            self.eq = options.eq
+            self.eq = True
         if self.order is MISSING:
-            self.order = options.order
+            # A field out of the comparison is out of the ordering too.
+            # Only an explicit `Field(eq=False, order=True)` is a
+            # contradiction, and that is still an error.
+            self.order = self.eq
         if options.kw_only:
             if self.kw is MISSING:
                 self.kw = True
