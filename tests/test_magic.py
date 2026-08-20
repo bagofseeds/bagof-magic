@@ -2098,3 +2098,192 @@ class TestDisabledOptionsDoNotFallThrough:
 
         assert B(1, 2) == B(1, 2)
         assert B(1, 2) != B(1, 3)
+
+
+class TestHashResolution:
+    """What lands on `__hash__` when no field-wise hash is generated."""
+
+    def test_hash_false_wins_over_identity_equality(self) -> None:
+        # `eq=False` installs an identity `__eq__`, which would
+        # otherwise pull in an identity `__hash__` and quietly undo the
+        # `hash=False` the class asked for.
+        class C(Magic, eq=False, hash=False):
+            x: int
+
+        assert C.__hash__ is None
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(C(1))
+
+    def test_hashability_does_not_depend_on_the_base(self) -> None:
+        # The same resolved options must give the same class, whether
+        # they were inherited or written here.
+        class Frozen(Magic, frozen=True):
+            x: int
+
+        class Inherited(Frozen, eq=False):
+            pass
+
+        class Direct(Magic, frozen=True, eq=False):
+            x: int
+
+        assert isinstance(hash(Inherited(1)), int)
+        assert isinstance(hash(Direct(1)), int)
+
+    def test_a_hand_written_inherited_hash_is_kept(self) -> None:
+        class Base(Magic):
+            x: int
+
+            def __hash__(self) -> int:
+                return 99
+
+        class Sub(Base, eq=False):
+            pass
+
+        assert hash(Base(1)) == 99
+        assert hash(Sub(1)) == 99
+
+    def test_a_base_that_declares_itself_unhashable_is_respected(
+        self,
+    ) -> None:
+        # `collections.abc.Mapping` sets `__hash__ = None` on purpose.
+        # Our own `__hash__ = None` on `Magic` is an artefact and is
+        # skipped; a real one from someone else is not.
+        class M(Magic, mapping=True, frozen=True, eq=False):
+            x: int
+
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(M(1))
+
+    def test_a_frozen_class_still_hashes_by_field(self) -> None:
+        class F(Magic, frozen=True):
+            x: int
+
+        assert hash(F(1)) == hash(F(1))
+        assert hash(F(1)) != hash(F(2))
+
+
+class TestOrderRequiresEq:
+
+    def test_class_level_contradiction_raises(self) -> None:
+        # Total ordering over the fields with identity equality gives
+        # `not (a < b) and not (b < a) and a != b`.
+        with pytest.raises(ValueError, match="eq must be true"):
+            class C(Magic, eq=False, order=True):
+                x: int
+
+    def test_field_level_contradiction_raises(self) -> None:
+        with pytest.raises(ValueError, match="eq must be true"):
+            class C(Magic):
+                x: Annotated[int, Field(eq=False, order=True)]
+
+    def test_a_field_out_of_eq_is_out_of_order(self) -> None:
+        # `NoEq` on its own is not a contradiction: it takes the field
+        # out of the ordering too.
+        class C(Magic, order=True):
+            x: int
+            y: NoEq[int]
+
+        assert C(1, 9) < C(2, 0)
+        assert not C(1, 0) < C(1, 9)
+
+
+class TestInitFalseIsAnEscapeHatch:
+    """`init=False` must not be blocked by the generated signature."""
+
+    def test_a_non_default_after_a_default(self) -> None:
+        class D(Magic, init=False):
+            x: int = 0
+            y: int
+
+            def __init__(self, y: int) -> None:
+                object.__setattr__(self, "x", 0)
+                object.__setattr__(self, "y", y)
+
+        assert D(5).y == 5
+
+    def test_two_fields_sharing_a_public_name(self) -> None:
+        class X(Magic, init=False):
+            a: Annotated[int, Field(alias="v")]
+            b: Annotated[int, Field(alias="v")]
+
+        assert X.__name__ == "X"
+
+    def test_the_same_layouts_still_raise_when_init_is_on(self) -> None:
+        with pytest.raises(SyntaxError, match="without a default"):
+            class D(Magic):
+                x: int = 0
+                y: int
+
+        with pytest.raises(TypeError, match="both map to"):
+            class X(Magic):
+                a: Annotated[int, Field(alias="v")]
+                b: Annotated[int, Field(alias="v")]
+
+
+class TestGeneratedMethodNames:
+
+    def test_init_is_named_init(self) -> None:
+        # It shows up in every TypeError, traceback and `help()`.
+        class Point(Magic):
+            x: int
+            y: int
+
+        assert Point.__init__.__name__ == "__init__"
+        assert Point.__init__.__qualname__.endswith("Point.__init__")
+        with pytest.raises(TypeError, match=r"__init__\(\) missing"):
+            Point(1)
+
+    def test_a_renamed_init_is_named_after_the_option(self) -> None:
+        class R(Magic, init="__setup__"):
+            x: int
+
+        assert R.__setup__.__name__ == "__setup__"
+
+    def test_a_reserved_private_name_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="__magic_init__"):
+            class U(Magic):
+                x: int
+
+                def __magic_init__(self) -> None:
+                    ...
+
+        with pytest.raises(TypeError, match="__magic_eq__"):
+            class V(Magic):
+                x: int
+
+                def __magic_eq__(self, other: tx.Any) -> bool:
+                    return True
+
+
+class TestRenamedOptionsAreNeutralised:
+
+    def test_a_renamed_repr_turned_off_by_a_subclass(self) -> None:
+        class R(Magic, repr="__show__"):
+            x: int
+
+        class RS(R, repr=False):
+            pass
+
+        assert R(3).__show__() == "R(x=3)"
+        assert "RS object at" in RS(3).__show__()
+
+    def test_a_renamed_eq_turned_off_by_a_subclass(self) -> None:
+        class A(Magic, eq="__same__"):
+            x: int
+
+        class B(A, eq=False):
+            y: int
+
+        assert A(1).__same__(A(1)) is True
+        assert B(1, 2).__same__(B(1, 3)) is NotImplemented
+
+
+class TestClassLevelHideIfNone:
+
+    def test_the_sentinel_reaches_every_field(self) -> None:
+        class C(Magic, repr=HIDE_IF_NONE):
+            x: Optional[int] = None
+            y: int = 1
+
+        assert repr(C()) == "C(y=1)"
+        assert repr(C(5)) == "C(x=5, y=1)"

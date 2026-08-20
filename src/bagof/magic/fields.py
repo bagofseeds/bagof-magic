@@ -40,7 +40,7 @@ import typing_extensions as tx
 from ._resolve import make_converter as _make_converter
 from ._resolve import make_factory as _make_factory
 from ._resolve import make_validator as _make_validator
-from .constants import MISSING, REQUIRED, SHOW_ATTR
+from .constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
 from .options import Options
 from .utils import SlotsBase, _get_origin, slots
 
@@ -93,16 +93,20 @@ class Field(SlotsBase):
             The default value for the field.
         factory : Callable[[], any], default=`Options().factory`
             A factory function that generates a default value for the field.
-        init : bool, default=`Options().init`
-            Whether to include this field in the generated `__init__` method.
-        repr : bool, default=`Options().repr`
-            Whether to include this field in the generated `__repr__` method.
+        init : bool, default=True
+            Whether this field is a parameter of the generated `__init__`.
+            Whether that method is generated at all is the class-level
+            `init` option, which is a separate question.
+        repr : bool, default=True (False for a pseudo-field)
+            Whether to include this field in the generated `__repr__`.
         hash : bool, default=`Options().hash`
             Whether to include this field in the generated `__hash__` method.
-        eq : bool, default=`Options().eq`
-            Whether to include this field in the generated `__eq__` method.
-        order : bool, default=`Options().order`
-            Whether to include this field in the generated `__lt__` methods.
+        eq : bool, default=True
+            Whether to include this field in the generated `__eq__`.
+        order : bool, default=the field's `eq`
+            Whether to include this field in the generated ordering. A
+            field out of the comparison is out of the ordering too;
+            asking for the reverse explicitly is an error.
         metadata : dict, optional
             User-defined metadata for this field.
         kw : bool, default=`not Options().positional_only`
@@ -242,7 +246,16 @@ class Field(SlotsBase):
         if self.init is MISSING:
             self.init = True
         if self.repr is MISSING:
-            self.repr = not self.var
+            # A sentinel on the class option is a per-field instruction
+            # ("show it only when it has a value"), so it propagates;
+            # a plain bool is only about whether `__repr__` is
+            # generated, which is not this field's business.
+            self.repr = (
+                options.repr
+                if isinstance(options.repr, SHOW_ATTR)
+                or options.repr is HIDE_IF_NONE
+                else not self.var
+            )
         if self.hash is MISSING:
             self.hash = True
         if self.key is MISSING:
