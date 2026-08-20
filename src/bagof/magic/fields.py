@@ -99,8 +99,11 @@ class Field(SlotsBase):
             `init` option, which is a separate question.
         repr : bool, default=True (False for a pseudo-field)
             Whether to include this field in the generated `__repr__`.
-        hash : bool, default=`Options().hash`
-            Whether to include this field in the generated `__hash__` method.
+        hash : bool, default=None (follow this field's `eq`)
+            Whether to include this field in the generated `__hash__`.
+            Equal instances must hash equally, so a field left out of
+            the comparison is left out of the hash unless you say
+            otherwise.
         eq : bool, default=True
             Whether to include this field in the generated `__eq__`.
         order : bool, default=the field's `eq`
@@ -250,14 +253,19 @@ class Field(SlotsBase):
             # ("show it only when it has a value"), so it propagates;
             # a plain bool is only about whether `__repr__` is
             # generated, which is not this field's business.
-            self.repr = (
-                options.repr
-                if isinstance(options.repr, SHOW_ATTR)
+            sentinel = (
+                isinstance(options.repr, SHOW_ATTR)
                 or options.repr is HIDE_IF_NONE
-                else not self.var
+            )
+            self.repr = (
+                options.repr if sentinel and not self.var else not self.var
             )
         if self.hash is MISSING:
-            self.hash = True
+            # `None` means "follow `eq`", which `_hash_add` reads. Forcing
+            # True here made a field excluded from `__eq__` still count
+            # towards `__hash__`, so two equal instances hashed apart and
+            # a set kept both.
+            self.hash = None
         if self.key is MISSING:
             self.key = options.mapping
         if self.eq is MISSING:
