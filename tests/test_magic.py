@@ -1703,6 +1703,75 @@ class TestPositionalOnly:
         assert (r.a, r.b, r.c) == (1, 2, 3)
 
 
+class TestHashOption:
+    """The three states of the `hash` option, and per-field `hash=None`."""
+
+    def test_hash_true_generates_a_hash(self) -> None:
+        # Regression: the dispatch table only read `unsafe_hash`, so
+        # `hash=True` landed on the "eq and not frozen" cell and set
+        # `__hash__ = None` -- the opposite of what was asked.
+        class H(Magic, hash=True):
+            x: int
+
+        assert H.__hash__ is not None
+        assert hash(H(1)) == hash(H(1))
+        assert hash(H(1)) != hash(H(2))
+
+    def test_hash_false_disables_it(self) -> None:
+        class H(Magic, hash=False):
+            x: int
+
+        assert H.__hash__ is None
+
+    def test_hash_none_leaves_the_decision_to_eq_and_frozen(self) -> None:
+        class Mutable(Magic):
+            x: int
+
+        class Immutable(Magic, frozen=True):
+            x: int
+
+        assert Mutable.__hash__ is None
+        assert hash(Immutable(1)) == hash(Immutable(1))
+
+    def test_field_hash_none_falls_back_to_eq(self) -> None:
+        # Regression: `_hash_add` read `f.compare`, which is a constructor
+        # alias rather than a slot, so this raised AttributeError.
+        class H(Magic, unsafe_hash=True):
+            x: Annotated[int, Field(hash=None)]
+            y: Annotated[int, Field(hash=None, eq=False)]
+
+        # `y` is out of `__eq__`, so it is out of `__hash__` too.
+        assert hash(H(1, 2)) == hash(H(1, 99))
+        assert hash(H(1, 2)) != hash(H(3, 2))
+
+
+class TestMatchArgsRename:
+
+    def test_match_args_accepts_a_name(self) -> None:
+        # Regression: the name was computed and then discarded, so the
+        # tuple was always written to `__match_args__`.
+        class M(Magic, match_args="__my_args__"):
+            x: int
+            y: int
+
+        assert M.__my_args__ == ("x", "y")
+        assert "__match_args__" not in M.__dict__
+
+    def test_match_args_true_uses_the_dunder(self) -> None:
+        class M(Magic, match_args=True):
+            x: int
+
+        assert M.__match_args__ == ("x",)
+
+
+class TestFunctionalAPI:
+
+    def test_class_without_a_module_entry(self) -> None:
+        # Regression: `namespace["__module__"]` raised KeyError when the
+        # class was built through the metaclass directly.
+        C = m.MetaMagic("C", (Magic,), {"__annotations__": {"x": int}})
+        assert C(1).x == 1
+
 class TestOptimisedInterpreter:
     """`python -OO` strips docstrings; nothing may assume they are there."""
 

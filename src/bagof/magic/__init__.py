@@ -161,8 +161,11 @@ __all__ += __all_options__
 # ----------------------------------------------------------------------
 # Builder
 # ----------------------------------------------------------------------
-# Adapted from Python's standard library `dataclasses` module, which is
-# licensed under the Python Software Foundation License Version 2.
+# Adapted from Python's standard library `dataclasses` module.
+# Copyright (c) 2001-2026 Python Software Foundation; All Rights Reserved.
+# Licensed under the Python Software Foundation License Version 2; see
+# LICENSES/PSF-2.0.txt for its text and NOTICE.md for the list of derived
+# components and the summary of changes.
 
 def __post_new__(cls: type) -> type:
     # These methods have to be assigned post-new, because they
@@ -276,8 +279,12 @@ def __pre_new__(
         return clsname, bases, namespace
 
     # Get globals of the module where this class is defined.
-    if namespace["__module__"] in sys.modules:
-        globals = sys.modules[namespace["__module__"]].__dict__
+    # `__module__` is absent when the class is built through the
+    # functional API (`MetaMagic(name, bases, namespace)`) rather than a
+    # class statement.
+    module = namespace.get("__module__")
+    if module in sys.modules:
+        globals = sys.modules[module].__dict__
     else:
         # Theoretically this can happen if someone writes
         # a custom string to cls.__module__.  In which case
@@ -452,7 +459,13 @@ def __pre_new__(
         namespace.setdefault(fnname, _make_lt(qualname, real_fields))
 
     # Decide if/how we're going to create a hash function.
-    _make_hash = _hash_action[bool(options.unsafe_hash),
+    # A truthy `hash` means "generate one", the same force the
+    # `unsafe_hash` column applies. `False` means never, and `None`
+    # (the default) leaves the table to decide.
+    force_hash = bool(options.unsafe_hash) or bool(
+        options.hash is not None and options.hash
+    )
+    _make_hash = _hash_action[force_hash,
                               bool(options.eq),
                               bool(options.frozen),
                               has_explicit_hash]
@@ -469,7 +482,7 @@ def __pre_new__(
             if isinstance(options.match_args, str)
             else "__match_args__"
         )
-        namespace.setdefault("__match_args__", tuple(
+        namespace.setdefault(fnname, tuple(
             f.public_name for f in fields.values() if f.init and f.positional
         ))
 
@@ -511,7 +524,8 @@ def __pre_new__(
 
 
 class _FuncBuilder:
-    # Also adapted from dataclasses
+    # Also adapted from `dataclasses` (see the notice above the Builder
+    # section, and NOTICE.md).
 
     def __init__(self, globals: dict) -> None:
         self.methods = {}  # name -> function
@@ -620,9 +634,11 @@ def _hash_exception(qualname: str, fields: dict) -> tx.NoReturn:
 
 
 def _hash_add(qualname: str, fields: dict) -> int:
+    # `compare` is a constructor alias for `eq` + `order`, not a slot of
+    # its own -- reading it raised AttributeError for `hash=None`.
     fields = [
         f for f in fields.values()
-        if (f.compare if f.hash is None else f.hash)
+        if (f.eq if f.hash is None else f.hash)
     ]
 
     def __hash__(self: Magic) -> int:
