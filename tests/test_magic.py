@@ -21,6 +21,7 @@ from bagof.magic import (
     Key,
     KwOnly,
     Magic,
+    NoCompare,
     NoEq,
     NoHash,
     NoInit,
@@ -1890,3 +1891,76 @@ class TestPublicName:
             self: int
 
         assert C(1).self == 1
+
+
+class TestAnnotationPolarity:
+    """Every annotation sets its own slots to its own value."""
+
+    # (annotation, expected {slot: value})
+    CASES = [
+        ("Init", {"init": True}),
+        ("NoInit", {"init": False}),
+        ("Kw", {"kw": True}),
+        ("NotKw", {"kw": False}),
+        ("Positional", {"positional": True}),
+        ("NotPositional", {"positional": False}),
+        ("KwOnly", {"kw": True, "positional": False}),
+        ("PositionalOnly", {"kw": False, "positional": True}),
+        ("NotKwOnly", {"kw": True, "positional": True}),
+        ("NotPositionalOnly", {"kw": True, "positional": True}),
+        ("Frozen", {"frozen": True}),
+        ("NotFrozen", {"frozen": False}),
+        ("Repr", {"repr": True}),
+        ("NoRepr", {"repr": False}),
+        ("Eq", {"eq": True}),
+        ("NoEq", {"eq": False}),
+        ("Order", {"order": True}),
+        ("NoOrder", {"order": False}),
+        ("Compare", {"eq": True, "order": True}),
+        ("NoCompare", {"eq": False, "order": False}),
+        ("Hash", {"hash": True}),
+        ("NoHash", {"hash": False}),
+        ("Key", {"key": True}),
+        ("NotKey", {"key": False}),
+        ("Var", {"var": True}),
+        ("InitVar", {"init": True, "var": True}),
+        ("ClassVar", {"init": False, "var": True}),
+    ]
+
+    @pytest.mark.parametrize("name,expected", CASES, ids=[c[0] for c in CASES])
+    def test_called_form(self, name: str, expected: dict) -> None:
+        annotation = getattr(m, name)()
+        for slot, value in expected.items():
+            assert getattr(annotation, slot) is value, slot
+
+    @pytest.mark.parametrize("name,expected", CASES, ids=[c[0] for c in CASES])
+    def test_subscript_form(self, name: str, expected: dict) -> None:
+        # `X[int]` must lower to the same field options as `X()`.
+        (annotation,) = tx.get_args(getattr(m, name)[int])[1:]
+        for slot, value in expected.items():
+            assert getattr(annotation, slot) is value, slot
+
+    def test_multi_slot_inverse_clears_every_slot(self) -> None:
+        # Regression: an inverse only ever flipped its first slot, so
+        # `NoCompare` cleared `order` and left `eq` at True.
+        class C(Magic, order=True):
+            x: int
+            y: NoCompare[int]
+
+        y = {f.name: f for f in m.fields(C)}["y"]
+        assert (y.eq, y.order) == (False, False)
+        assert C(1, 2) == C(1, 99)
+
+    def test_a_mixed_pair_keeps_one_of_each(self) -> None:
+        # `KwOnly` is `Kw` + `NotPositional`: the inverse must not flip
+        # the positive half.
+        class C(Magic):
+            x: KwOnly[int]
+
+        assert C(x=1).x == 1
+        with pytest.raises(TypeError):
+            C(1)
+
+    def test_subscript_keeps_extra_metadata(self) -> None:
+        hint = NoRepr[int, "some note"]
+        assert tx.get_args(hint)[2] == "some note"
