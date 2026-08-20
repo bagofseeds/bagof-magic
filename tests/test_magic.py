@@ -1727,3 +1727,59 @@ class TestOptimisedInterpreter:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "ok"
+
+class TestPublicName:
+    """A field whose parameter name differs from its own name."""
+
+    def test_underscored_field(self) -> None:
+        # Regression: the generated body referenced the field name while
+        # the signature declared the public name, so the class raised
+        # `NameError: name '_x' is not defined` at definition time.
+        class P(Magic):
+            _x: int
+
+        assert P(1)._x == 1
+        assert P(x=2)._x == 2
+        assert repr(P(3)) == "P(x=3)"
+
+    def test_explicit_alias(self) -> None:
+        class A(Magic):
+            x: Annotated[int, Field(alias="ex")]
+
+        assert A(ex=1).x == 1
+        assert A(1).x == 1
+        assert repr(A(1)) == "A(ex=1)"
+
+    def test_alias_false_keeps_the_private_name(self) -> None:
+        class A(Magic):
+            _x: Annotated[int, Field(alias=False)]
+
+        assert A(_x=1)._x == 1
+
+    def test_underscored_field_with_a_converter(self) -> None:
+        class P(Magic, convert=True):
+            _x: int
+
+        assert P("5")._x == 5
+
+    def test_underscored_pseudo_field_reaches_post_init(self) -> None:
+        class C(Magic):
+            x: int
+            _seed: Annotated[int, Field(var=True, init=True)] = 0
+
+            def __post_init__(self, seed: int) -> None:
+                object.__setattr__(self, "x", self.x + seed)
+
+        assert C(1, seed=7).x == 8
+
+    def test_two_fields_mapping_to_one_parameter_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="both map to"):
+            class Bad(Magic):
+                _y: int
+                y: int
+
+    def test_a_field_named_self_still_works(self) -> None:
+        class C(Magic):
+            self: int
+
+        assert C(1).self == 1
