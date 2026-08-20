@@ -1,3 +1,14 @@
+"""
+Sentinels and attribute names used across the package.
+
+`MISSING`, `_HasFactory`, `_FIELDS` and `_POST_INIT_NAME` are adapted from
+Python's standard library `dataclasses` module.
+Copyright (c) 2001-2026 Python Software Foundation; All Rights Reserved.
+Licensed under the Python Software Foundation License Version 2; see
+LICENSES/PSF-2.0.txt for its text and NOTICE.md for the list of derived
+components and the summary of changes.
+"""
+
 from __future__ import annotations
 
 import typing_extensions as tx
