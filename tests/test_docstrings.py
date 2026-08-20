@@ -21,6 +21,21 @@ import bagof.magic as magic
 SOURCES = ["fields.py", "constants.py", "options.py", "__init__.py"]
 
 
+class _Checker(doctest.OutputChecker):
+    """Compare output without the `typing_extensions` spelling.
+
+    Before Python 3.9 `typing_extensions` re-implements `Annotated` and
+    friends rather than re-exporting them, so their repr is
+    `typing_extensions.Annotated[...]`. The examples show the canonical
+    `typing.Annotated[...]`, which is what a reader on any supported
+    version recognises and what all but the oldest actually print.
+    """
+
+    def check_output(self, want: str, got: str, optionflags: int) -> bool:
+        got = got.replace("typing_extensions.", "typing.")
+        return super().check_output(want, got, optionflags)
+
+
 def _globals() -> dict:
     """The namespace the examples are written against."""
     # `bagof.magic` uses `from __future__ import annotations`, and doctest
@@ -66,7 +81,8 @@ def test_pycon_block(name: str, line: int, body: str) -> None:
         body, _globals(), f"{name}:{line}", name, line
     )
     runner = doctest.DocTestRunner(
-        optionflags=doctest.ELLIPSIS | doctest.IGNORE_EXCEPTION_DETAIL
+        checker=_Checker(),
+        optionflags=doctest.ELLIPSIS | doctest.IGNORE_EXCEPTION_DETAIL,
     )
     report = io.StringIO()
     result = runner.run(test, out=report.write)
