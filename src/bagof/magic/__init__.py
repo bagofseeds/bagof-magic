@@ -164,7 +164,7 @@ __all__ += __all_options__
 # Adapted from Python's standard library `dataclasses` module.
 # Copyright (c) 2001-2026 Python Software Foundation; All Rights Reserved.
 # Licensed under the Python Software Foundation License Version 2; see
-# LICENSES/PSF-2.0.txt for its text and NOTICE.md for the list of derived
+# LICENSE-PSF-2.0.txt for its text and NOTICE.md for the list of derived
 # components and the summary of changes.
 
 def __post_new__(cls: type) -> type:

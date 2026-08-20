@@ -6,7 +6,7 @@ Parts of it are copied from, or derived from, CPython's standard library
 `dataclasses` module, which is licensed under the **Python Software Foundation
 License Version 2**. A copy of that license, together with the PSF copyright
 notice its clause 2 requires us to retain, is in
-[`LICENSES/PSF-2.0.txt`](LICENSES/PSF-2.0.txt).
+[`LICENSE-PSF-2.0.txt`](LICENSE-PSF-2.0.txt).
 
 > Copyright (c) 2001-2026 Python Software Foundation; All Rights Reserved
 
