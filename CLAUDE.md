@@ -116,7 +116,13 @@ public docstring:
 
    not an invented `~>` arrow. Every such block should be copy-pasteable and
    true.
-4. **Leanness bar.** If an example does not read as short and natural, that is
+4. **An example must run on the oldest supported Python.** `tests/
+   test_docstrings.py` executes every `pycon` block, and CI runs it on 3.8 as
+   well as current. The usual trap is `typing`: `Annotated` only exists from
+   3.9. Prefer the package's own sugar (`Doc[int, "..."]`, `Frozen[int]`) in
+   examples, which works everywhere and is what the docs should be showing
+   anyway.
+5. **Leanness bar.** If an example does not read as short and natural, that is
    a signal: either a nicer spelling already exists and the example should use
    it, or `magic` is missing sugar — file an `enhancement` issue for the gap
    rather than shipping an awkward example.
