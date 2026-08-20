@@ -155,13 +155,12 @@ class Row(Magic, mapping=True):
 class docstring and in the generated `__init__`:
 
 ```python
-from typing import Annotated
 from bagof.magic import Doc
 
 class Retry(Magic):
     """Retry policy."""
 
-    times: Annotated[int, Doc("how many times to try again")] = 3
+    times: Doc[int, "how many times to try again"] = 3
     delay: Doc[float, "seconds to wait between tries"] = 0.5
 ```
 
@@ -208,8 +207,10 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | `InitVar[T]` | passed in, used, not kept | — |
 | `Doc[T, "..."]` | describe the field | — |
 
-Anything you cannot say with one of these, say with `Field(...)` directly:
-`x: Annotated[int, Field(alias="ex", metadata={"unit": "m"})]`.
+Anything you cannot say with one of these, say with `Field(...)` inside an
+`Annotated`: `x: Annotated[int, Field(alias="ex", metadata={"unit": "m"})]`.
+(On Python 3.8, import `Annotated` from `typing_extensions` rather than
+`typing`.)
 
 ## The class settings
 
