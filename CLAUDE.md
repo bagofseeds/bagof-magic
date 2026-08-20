@@ -1,0 +1,168 @@
+# CLAUDE.md — bagof-magic
+
+Repo-specific guidance for coding agents. bagofseeds publishes two families of
+packages — standalone **`bagof-*`** packages (this repo is one) and the
+**`fiery-*`** namespace matches; they share the same packaging, CI, docs, and
+workflow conventions. For those shared conventions see the org guide
+(`bagofseeds/.github`, `CONTRIBUTING.md` + `CLAUDE.md`). This file records only
+what is specific to `bagof.magic`.
+
+## What this package is
+
+A `dataclass`-like base class whose behaviour is driven by **type hints**.
+`Magic` generates `__init__`, `__repr__`, `__eq__` and the rest, the way
+`dataclasses` does, with three differences that shape everything else:
+
+- **Options are class keyword arguments, and they are inherited.**
+  `class Point(Magic, frozen=True)` rather than `@dataclass(frozen=True)`, and
+  a subclass keeps its base's options unless it overrides them. (An equivalent
+  `@magic(...)` decorator exists, but the class form is the primary one.)
+- **Per-field behaviour lives in the annotation**, not in a `field()` call:
+  `x: ConvertTo[int]`, `y: Annotated[str, Field(alias="why")]`.
+- **Conversion, validation and default construction are resolved from the
+  hint** through the sibling bags — `bagof-converters`, `bagof-validators`,
+  `bagof-factories` — via the thin adapters in `_resolve.py`.
+
+## Layout
+
+```
+src/bagof/magic/
+  __init__.py   # the builder: MetaMagic, Magic, the `magic` decorator, and
+                #   every `_make_*` method generator
+  fields.py     # Field, and the annotation family (Default, Factory,
+                #   ConvertTo, Validate, Init, KwOnly, ClassVar, Doc, ...)
+  options.py    # Options -- the resolved per-class option set
+  constants.py  # sentinels (MISSING, REQUIRED, SHOW_ATTR) and the
+                #   `__magic_*__` attribute names
+  utils.py      # SlotsBase, rebuild_cls, the `slots` decorator
+  _resolve.py   # adapters to bagof-converters / -validators / -factories
+tests/
+  test_magic.py
+  test_import.py
+```
+
+## How the class building works
+
+- **`MetaMagic.__new__` calls `__pre_new__` before the class exists.** It reads
+  the annotations out of the raw namespace, builds a `Field` for each, resolves
+  the class `Options`, and writes the generated methods straight into the
+  namespace. So the class object is complete the moment it is created — nothing
+  is bolted on afterwards.
+- **`__post_new__` runs after**, for the two methods that need to reference the
+  class itself (`__setattr__` / `__delattr__`, which close over it).
+- **Generated methods are written with `namespace.setdefault`**, so a
+  hand-written method in the class body always wins.
+- **`_FuncBuilder` compiles `__init__`** from generated source text, because a
+  real signature (defaults, positional-only markers, keyword-only markers) can
+  only be produced by `exec`. Everything else is a closure.
+- **Options are inherited by merging down the MRO** (`Options.update` per base,
+  in reverse MRO order), so a derived class only overrides what it states.
+
+### Reading annotations
+
+`_namespace_annotations` has two paths and both matter:
+
+- **Python ≤ 3.13** — the namespace carries `__annotations__` directly.
+- **Python 3.14+ (PEP 649/749)** — annotations are lazy; the namespace carries
+  an `__annotate__` function instead, retrieved through `annotationlib` and
+  called with `Format.FORWARDREF` so an undefined name becomes a `ForwardRef`
+  rather than raising during class creation.
+
+CI runs both, so a change here needs testing on both. Coverage of one branch
+will look "dead" on the other — that is expected, not a gap.
+
+## Conventions specific to this repo (do not regress)
+
+1. **Wide Python (3.8+).** Runtime code must stay old-compatible: no walrus in
+   runtime paths that 3.8 would reject, no PEP 604 `|` or PEP 585 `list[...]`
+   in *values*, and never subscript an abc/builtin generic at runtime. Modern
+   typing lives in **annotations only** — every module starts with
+   `from __future__ import annotations`, so they are lazy strings.
+2. **All typing goes through `import typing_extensions as tx`.** `tx.Union`,
+   `tx.Sequence`, `tx.Self`, … — do not import from `typing` or
+   `collections.abc`. This matches the bagof-hints house style.
+3. **Attribute names are namespaced.** Anything stored on a user's class is
+   `__magic_*__` and is defined in `constants.py` — never a bare string
+   literal at the point of use.
+4. **`Field` slots are declared through the `slots` decorator**, not a plain
+   `__slots__`, so `SlotsBase`'s `_slots()` walk sees them. A new slot must be
+   added to the `@slots(...)` list *and* documented in `Field.__init__`'s
+   numpydoc block, which is what the API reference renders.
+5. **Never leak an internal name into a user-facing error.** The generated
+   source uses `__magic_<field>_type__` and friends; an error message must
+   name the *field*, not the local.
+
+## Documentation style (`README.md`, `docs/*.md`, public docstrings)
+
+Docs are for **humans who are not necessarily experts in arcane Python
+features**. They want to know how to use `magic` well — to write correct,
+readable, efficient code. Apply this to every hand-written page and to every
+public docstring:
+
+1. **Show the sugar first.** When several spellings do the same thing, lead
+   with the nicest one and list the rest in `=== "..."` tabs.
+2. **Plain language.** No agentic or internal-monologue phrasing, and no
+   unexplained internal names — those belong in code comments and in this
+   file, not in the docs. Say what a reader needs in order to *use* the
+   library, not what the builder does internally.
+3. **Real `pycon`, not pseudo-code.** An example that shows a value must show
+   the value the interpreter actually prints. For the annotation family in
+   `fields.py` this means showing the lowering as it really is:
+
+   ```pycon
+   >>> Factory[list]
+   typing.Annotated[list, Factory(factory=True)]
+   ```
+
+   not an invented `~>` arrow. Every such block should be copy-pasteable and
+   true.
+4. **Leanness bar.** If an example does not read as short and natural, that is
+   a signal: either a nicer spelling already exists and the example should use
+   it, or `magic` is missing sugar — file an `enhancement` issue for the gap
+   rather than shipping an awkward example.
+
+**This applies equally to every public docstring** (anything without a leading
+underscore, reachable from `bagof.magic`) — the API reference renders them
+directly through `mkdocstrings`, so a docstring *is* a doc page. Concretely, a
+public docstring must **not**:
+
+- reference an issue or PR number, or a review finding — that belongs in a
+  commit message, a code comment, or this file;
+- name an internal mechanism the reader has no reason to know about (which
+  helper resolves it, which private attribute holds it);
+- read like a note to a fellow contributor ("kept for symmetry with X", "this
+  used to be broken") — say what the reader needs, not how it got that way.
+
+Internal rationale and history still belong somewhere — just not in a public
+docstring. Use a code comment near the implementation, or a section of this
+file.
+
+## Third-party code
+
+Parts of the builder are copied from or derived from CPython's `dataclasses`.
+They carry the PSF license: see `LICENSES/PSF-2.0.txt` and `NOTICE.md`. **If
+you port more code from the standard library, add it to `NOTICE.md`'s
+component table and to its summary of changes** — the license requires both,
+and an attribution comment alone does not satisfy it.
+
+## Gate before a PR
+
+```sh
+pip install .[test]
+cd /tmp && python -m pytest <repo>/tests -q     # run from a neutral cwd
+ruff check src tests
+codespell src tests
+```
+
+## Known follow-ups (see the tracking issues)
+
+- **Correctness**: unresolved string/forward annotations breaking
+  `convert`/`validate`/`factory` (#13); fields shared and mutated across
+  classes (#14); `slots=True` with defaults (#15); `order` missing three
+  dunders (#17); generic classes (#18); mutable defaults (#19); a disabled
+  option falling through to `Magic`'s own generated method (#23).
+- **Model**: naming the field kind instead of inferring it from `init` (#16),
+  which also carries the declared/resolved split that makes option inheritance
+  work (#20).
+- **Features**: parity helpers — `replace`, `asdict`, `astuple` (#22);
+  polymorphic construction (#21).
