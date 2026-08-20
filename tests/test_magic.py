@@ -1771,6 +1771,44 @@ class TestFunctionalAPI:
         C = m.MetaMagic("C", (Magic,), {"__annotations__": {"x": int}})
         assert C(1).x == 1
 
+class TestUserDefinedAssignment:
+    """A hand-written `__setattr__` / `__delattr__` must survive."""
+
+    def test_user_setattr_is_kept(self) -> None:
+        # Regression: the guard tested for "__setattr___" (three trailing
+        # underscores), so it never matched and the user's method was
+        # always overwritten.
+        class S(Magic):
+            x: int
+
+            def __setattr__(self, name: str, value: int) -> None:
+                object.__setattr__(self, name, value * 2)
+
+        s = S(1)
+        # `__init__` assigns through `object.__setattr__`, so it is not
+        # doubled at construction...
+        assert s.x == 1
+        # ...but a later assignment goes through the user's method.
+        s.x = 3
+        assert s.x == 6
+
+    def test_user_delattr_is_kept(self) -> None:
+        class D(Magic):
+            x: int = 0
+
+            def __delattr__(self, name: str) -> None:
+                raise RuntimeError("no deleting")
+
+        with pytest.raises(RuntimeError, match="no deleting"):
+            del D(1).x
+
+    def test_frozen_still_applies_without_a_user_method(self) -> None:
+        class F(Magic, frozen=True):
+            x: int
+
+        with pytest.raises(AttributeError, match="frozen"):
+            F(1).x = 2
+
 class TestPublicName:
     """A field whose parameter name differs from its own name."""
 
