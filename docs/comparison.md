@@ -55,12 +55,12 @@ question of what you want the type hints to *do*.
 === "magic"
 
     ```python
-    from bagof.magic import Magic
+    from bagof.magic import Magic, Factory
 
     class User(Magic, frozen=True, convert=True):
         name: str
         age: int
-        tags: list = []
+        tags: Factory[list]
     ```
 
 === "dataclasses"
@@ -236,9 +236,12 @@ Being honest about the gaps, with links to where they are being worked on:
   today, not `<=` and `>=` — [tracked here][order].
 - **Mutable defaults.** `x: list = []` is shared between instances rather than
   caught — [tracked here][mutable].
-- **Editor and type-checker support.** dataclasses and attrs and pydantic all
-  ship type-checker plugins that understand their generated `__init__`.
-  `magic` does not, so your editor will not complete the constructor.
+- **Editor and type-checker support.** The others are understood by mypy and
+  pyright today, so your editor completes the constructor and catches a wrong
+  argument type. `magic` is not, yet — [tracked here][typing]. The route is
+  the same standard the others use, so most of it should follow; the part
+  that will not is a field written purely as an annotation
+  (`tags: Factory[list]`), which a checker cannot see a default for.
 
 [dataclasses]: https://docs.python.org/3/library/dataclasses.html
 [attrs]: https://www.attrs.org
@@ -247,3 +250,4 @@ Being honest about the gaps, with links to where they are being worked on:
 [generics]: https://github.com/bagofseeds/bagof-magic/issues/18
 [order]: https://github.com/bagofseeds/bagof-magic/issues/17
 [mutable]: https://github.com/bagofseeds/bagof-magic/issues/19
+[typing]: https://github.com/bagofseeds/bagof-magic/issues/30

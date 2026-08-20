@@ -74,8 +74,8 @@ frozen=False)`.
 
 ### Per-field behaviour lives in the annotation
 
-There is no `field()` function to call. What a field does is written where the
-field is:
+What a field does is written where the field is, so the default stays where
+you expect it:
 
 ```python
 from bagof.magic import Magic, Factory, KwOnly, NoRepr
@@ -91,6 +91,36 @@ class Task(Magic):
 >>> Task("build", ["ci"], priority=2)
 Task(name='build', tags=['ci'], priority=2)
 ```
+
+If you are coming from `dataclasses` or `attrs`, the spelling you already
+know works too — `Field(...)` as the default value. Both produce the same
+field, so use whichever reads better:
+
+=== "In the annotation"
+
+    ```python
+    from bagof.magic import Magic, Factory, NoRepr
+
+    class Task(Magic):
+        name: str
+        tags: Factory[list]
+        token: NoRepr[str] = ""
+    ```
+
+=== "As the default"
+
+    ```python
+    from bagof.magic import Magic, Field
+
+    class Task(Magic):
+        name: str
+        tags: list = Field(factory=list)
+        token: str = Field(default="", repr=False)
+    ```
+
+The annotation form composes better — several of them stack on one field
+without nesting — and the `Field(...)` form takes anything the annotations
+cannot say.
 
 ### Conversion and validation come from the type
 
