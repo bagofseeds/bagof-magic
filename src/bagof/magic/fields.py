@@ -40,7 +40,7 @@ import typing_extensions as tx
 from ._resolve import make_converter as _make_converter
 from ._resolve import make_factory as _make_factory
 from ._resolve import make_validator as _make_validator
-from .constants import MISSING, REQUIRED, SHOW_ATTR, MaybeMissing
+from .constants import MISSING, REQUIRED, SHOW_ATTR
 from .options import Options
 from .utils import SlotsBase, _get_origin, slots
 
@@ -292,7 +292,11 @@ class AnnotatedField(Field):
     def _set_slots(cls) -> tx.Dict[str, tx.Any]:
         set_slots = {}
         for base in reversed(cls.__mro__):
-            cls_set_slots = getattr(base, '__set_slots__', {})
+            # `__dict__`, not `getattr`: the value each slot is set to
+            # comes from the class that *declares* it, so an inverse
+            # (`NotPositional`) has to restate the slot to flip it, and
+            # cannot flip a sibling's (`KwOnly` keeps `Kw`'s `True`).
+            cls_set_slots = base.__dict__.get('__set_slots__', {})
             if isinstance(cls_set_slots, str):
                 cls_set_slots = (cls_set_slots,)
             if isinstance(cls_set_slots, tuple):
@@ -343,14 +347,18 @@ class BoolAnnotatedField(AnnotatedField):
         if not isinstance(args, tuple):
             args = (args,)
         t, *args = args
-        return tx.Annotated[(t, cls(True)) + tuple(args)]
+        # No positional value: every slot takes the value its own
+        # declaring class set, so an inverse comes out `False` and a
+        # mixed pair (`KwOnly`) keeps one of each. Anything after the
+        # type stays metadata.
+        return tx.Annotated[(t, cls()) + tuple(args)]
 
 
 @slots
 class InversedBoolAnnotatedField(BoolAnnotatedField):
+    """Base for the negative half of a pair (`NoInit`, `NotKw`, ...)."""
 
-    def __init__(self, value: MaybeMissing[bool] = True, /) -> None:
-        super().__init__(not value)
+    __set_value__ = False
 
 
 @slots
@@ -433,7 +441,8 @@ class Init(BoolAnnotatedField):
 
 
 @slots
-class NoInit(Init, InversedBoolAnnotatedField): ...
+class NoInit(Init, InversedBoolAnnotatedField):
+    __set_slots__ = 'init'
 
 
 @slots
@@ -455,7 +464,8 @@ class Kw(BoolAnnotatedField):
 
 
 @slots
-class NotKw(Kw, InversedBoolAnnotatedField): ...
+class NotKw(Kw, InversedBoolAnnotatedField):
+    __set_slots__ = 'kw'
 
 
 @slots
@@ -477,7 +487,8 @@ class Positional(BoolAnnotatedField):
 
 
 @slots
-class NotPositional(Positional, InversedBoolAnnotatedField): ...
+class NotPositional(Positional, InversedBoolAnnotatedField):
+    __set_slots__ = 'positional'
 
 
 @slots
@@ -513,7 +524,8 @@ class Frozen(BoolAnnotatedField):
 
 
 @slots
-class NotFrozen(Frozen, InversedBoolAnnotatedField): ...
+class NotFrozen(Frozen, InversedBoolAnnotatedField):
+    __set_slots__ = 'frozen'
 
 
 @slots
@@ -561,7 +573,8 @@ class Repr(BoolAnnotatedField):
 
 
 @slots
-class NoRepr(Repr, InversedBoolAnnotatedField): ...
+class NoRepr(Repr, InversedBoolAnnotatedField):
+    __set_slots__ = ('repr',)
 
 
 @slots
@@ -581,7 +594,8 @@ class Eq(BoolAnnotatedField):
 
 
 @slots
-class NoEq(Eq, InversedBoolAnnotatedField): ...
+class NoEq(Eq, InversedBoolAnnotatedField):
+    __set_slots__ = ('eq',)
 
 
 @slots
@@ -601,7 +615,8 @@ class Order(BoolAnnotatedField):
 
 
 @slots
-class NoOrder(Order, InversedBoolAnnotatedField): ...
+class NoOrder(Order, InversedBoolAnnotatedField):
+    __set_slots__ = ('order',)
 
 
 @slots
@@ -609,7 +624,8 @@ class Compare(Eq, Order):  ...
 
 
 @slots
-class NoCompare(Compare, InversedBoolAnnotatedField): ...
+class NoCompare(Compare, InversedBoolAnnotatedField):
+    __set_slots__ = ('eq', 'order')
 
 
 @slots
@@ -629,7 +645,8 @@ class Hash(BoolAnnotatedField):
 
 
 @slots
-class NoHash(Hash, InversedBoolAnnotatedField): ...
+class NoHash(Hash, InversedBoolAnnotatedField):
+    __set_slots__ = ('hash',)
 
 
 @slots
@@ -649,7 +666,8 @@ class Key(BoolAnnotatedField):
 
 
 @slots
-class NotKey(Key, InversedBoolAnnotatedField): ...
+class NotKey(Key, InversedBoolAnnotatedField):
+    __set_slots__ = ('key',)
 
 
 @slots
