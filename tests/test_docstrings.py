@@ -9,6 +9,7 @@ prints. This runs them.
 import doctest
 import io
 import re
+import textwrap
 from pathlib import Path
 
 # dependencies
@@ -19,6 +20,9 @@ import typing_extensions as tx
 import bagof.magic as magic
 
 SOURCES = ["fields.py", "constants.py", "options.py", "__init__.py"]
+
+#: Hand-written pages, relative to the repository root.
+PAGES = ["README.md", "docs/comparison.md"]
 
 
 class _Checker(doctest.OutputChecker):
@@ -47,9 +51,62 @@ def _globals() -> dict:
     return namespace
 
 
-def _blocks(filename: str) -> tx.List[tx.Tuple[int, str]]:
-    """Every ``pycon`` block in a source file, with its line number."""
-    path = Path(magic.__file__).parent / filename
+def _root() -> tx.Optional[Path]:
+    """The repository root, or `None` when running from an installed copy."""
+    root = Path(magic.__file__).resolve().parents[3]
+    return root if (root / "README.md").is_file() else None
+
+
+def _as_examples(code: str) -> str:
+    """Turn a ``python`` block into doctest input."""
+    lines = []
+    decorated = False
+    for line in code.splitlines():
+        if not line.strip():
+            continue
+        # A new example starts at column zero -- unless the line before it
+        # was a decorator, which belongs to the statement that follows.
+        top = line == line.lstrip()
+        lines.append(f"{'>>>' if top and not decorated else '...'} {line}")
+        decorated = top and line.lstrip().startswith("@")
+    return "\n".join(lines)
+
+
+#: A page may show the other libraries side by side. Those blocks are
+#: illustrations, not promises about this package, and their imports are
+#: not installed -- so they are rendered but never run.
+FOREIGN = ("dataclasses", "attrs", "pydantic")
+
+
+def _is_ours(code: str) -> bool:
+    return not any(f"from {name} import" in code or f"import {name}" in code
+                   for name in FOREIGN)
+
+
+def _page(path: Path) -> str:
+    """A whole page as one doctest.
+
+    A page defines its classes in ``python`` blocks and uses them in
+    ``pycon`` blocks, so the two only make sense read together and in
+    order -- unlike a docstring, where each block stands alone.
+    """
+    source = path.read_text()
+    parts = []
+    for match in re.finditer(r"```(python|pycon)\n(.*?)[ ]*```", source, re.S):
+        kind = match.group(1)
+        # A fence inside a `=== "tab"` is indented as a whole; dedent by
+        # the common prefix so real Python indentation survives.
+        body = textwrap.dedent(match.group(2))
+        if kind == "python":
+            if _is_ours(body):
+                parts.append(_as_examples(body))
+        else:
+            parts.append(body)
+    return "\n".join(parts) + "\n"
+
+
+def _blocks(path: Path) -> tx.List[tx.Tuple[int, str]]:
+    """Every ``pycon`` block in a file, with its line number."""
     source = path.read_text()
     found = []
     for match in re.finditer(r"```pycon\n(.*?)[ ]*```", source, re.S):
@@ -62,10 +119,25 @@ def _blocks(filename: str) -> tx.List[tx.Tuple[int, str]]:
     return found
 
 
+def _all_files() -> tx.List[Path]:
+    files = [Path(magic.__file__).parent / name for name in SOURCES]
+    root = _root()
+    if root is not None:
+        # Only present in a checkout; an installed copy ships the
+        # modules but not the hand-written pages.
+        files += [root / page for page in PAGES]
+    return [path for path in files if path.is_file()]
+
+
 CASES = [
-    pytest.param(name, line, body, id=f"{name}:{line}")
-    for name in SOURCES
-    for line, body in _blocks(name)
+    pytest.param(path.name, line, body, id=f"{path.name}:{line}")
+    for path in _all_files()
+    if path.suffix == ".py"
+    for line, body in _blocks(path)
+] + [
+    pytest.param(path.name, 1, _page(path), id=path.name)
+    for path in _all_files()
+    if path.suffix == ".md"
 ]
 
 

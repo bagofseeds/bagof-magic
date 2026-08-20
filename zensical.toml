@@ -5,6 +5,7 @@ extra_css = ["stylesheets/extra.css"]
 nav = [
   {"Bag of" = "https://bagofseeds.github.io/bagof/"},
   {"Magic" = "index.md"},
+  {"Comparison" = "comparison.md"},
   {"API" = [
     "api/index.md",
     {"fields" = "api/fields.md"},
