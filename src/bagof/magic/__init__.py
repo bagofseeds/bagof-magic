@@ -161,8 +161,11 @@ __all__ += __all_options__
 # ----------------------------------------------------------------------
 # Builder
 # ----------------------------------------------------------------------
-# Adapted from Python's standard library `dataclasses` module, which is
-# licensed under the Python Software Foundation License Version 2.
+# Adapted from Python's standard library `dataclasses` module.
+# Copyright (c) 2001-2026 Python Software Foundation; All Rights Reserved.
+# Licensed under the Python Software Foundation License Version 2; see
+# LICENSES/PSF-2.0.txt for its text and NOTICE.md for the list of derived
+# components and the summary of changes.
 
 def __post_new__(cls: type) -> type:
     # These methods have to be assigned post-new, because they
@@ -511,7 +514,8 @@ def __pre_new__(
 
 
 class _FuncBuilder:
-    # Also adapted from dataclasses
+    # Also adapted from `dataclasses` (see the notice above the Builder
+    # section, and NOTICE.md).
 
     def __init__(self, globals: dict) -> None:
         self.methods = {}  # name -> function

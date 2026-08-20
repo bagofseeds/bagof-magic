@@ -53,6 +53,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+# `LICENSES/` sits outside setuptools' default license-file glob, and the
+# PSF license must ship with the distribution, not just the repository.
+license-files = ["LICENSE", "LICENSES/*.txt", "NOTICE.md"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
