@@ -5,7 +5,7 @@ Sentinels and attribute names used across the package.
 Python's standard library `dataclasses` module.
 Copyright (c) 2001-2026 Python Software Foundation; All Rights Reserved.
 Licensed under the Python Software Foundation License Version 2; see
-LICENSES/PSF-2.0.txt for its text and NOTICE.md for the list of derived
+LICENSE-PSF-2.0.txt for its text and NOTICE.md for the list of derived
 components and the summary of changes.
 """
 
@@ -39,6 +39,15 @@ _DISCARD = "__magic_discard__"
 # Name we give to the `self` variable, in cases where a field named `self`
 # already exists.
 _SELF = "__magic_self__"
+
+# Name under which a generated method is *always* available, whatever the
+# option says, so a hand-written method can delegate to it:
+#     def __init__(self, raw): self.__magic_init__(int(raw))
+def _MAGIC(x: str) -> str: return f"__magic_{x}__"
+
+# Attribute set on every method this package generates, so that turning an
+# option off can tell one of ours from a hand-written one.
+_GENERATED = "__magic_generated__"
 
 # Name given to the local type variable when generating __init__
 def _TYPE(x: str) -> str: return f"__magic_{x}_type__"
