@@ -40,7 +40,7 @@ import typing_extensions as tx
 from ._resolve import make_converter as _make_converter
 from ._resolve import make_factory as _make_factory
 from ._resolve import make_validator as _make_validator
-from .constants import MISSING, REQUIRED, SHOW_ATTR
+from .constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
 from .options import Options
 from .utils import SlotsBase, _get_origin, slots
 
@@ -93,16 +93,23 @@ class Field(SlotsBase):
             The default value for the field.
         factory : Callable[[], any], default=`Options().factory`
             A factory function that generates a default value for the field.
-        init : bool, default=`Options().init`
-            Whether to include this field in the generated `__init__` method.
-        repr : bool, default=`Options().repr`
-            Whether to include this field in the generated `__repr__` method.
-        hash : bool, default=`Options().hash`
-            Whether to include this field in the generated `__hash__` method.
-        eq : bool, default=`Options().eq`
-            Whether to include this field in the generated `__eq__` method.
-        order : bool, default=`Options().order`
-            Whether to include this field in the generated `__lt__` methods.
+        init : bool, default=True
+            Whether this field is a parameter of the generated `__init__`.
+            Whether that method is generated at all is the class-level
+            `init` option, which is a separate question.
+        repr : bool, default=True (False for a pseudo-field)
+            Whether to include this field in the generated `__repr__`.
+        hash : bool, default=None (follow this field's `eq`)
+            Whether to include this field in the generated `__hash__`.
+            Equal instances must hash equally, so a field left out of
+            the comparison is left out of the hash unless you say
+            otherwise.
+        eq : bool, default=True
+            Whether to include this field in the generated `__eq__`.
+        order : bool, default=the field's `eq`
+            Whether to include this field in the generated ordering. A
+            field out of the comparison is out of the ordering too;
+            asking for the reverse explicitly is an error.
         metadata : dict, optional
             User-defined metadata for this field.
         kw : bool, default=`not Options().positional_only`
@@ -232,18 +239,42 @@ class Field(SlotsBase):
             self.doc = None
         if self.var is MISSING:
             self.var = False
+        # `init`, `repr`, `eq` and `order` are deliberately *not* read
+        # from the class options. Those decide whether a method is
+        # generated at all; this decides whether a field takes part in
+        # one. Conflating them made every generated method on a class
+        # that had opted out cover no fields -- so `__magic_eq__` on an
+        # `eq=False` class compared nothing and answered True for any
+        # two instances.
         if self.init is MISSING:
-            self.init = options.init
+            self.init = True
         if self.repr is MISSING:
-            self.repr = options.repr if not self.var else False
+            # A sentinel on the class option is a per-field instruction
+            # ("show it only when it has a value"), so it propagates;
+            # a plain bool is only about whether `__repr__` is
+            # generated, which is not this field's business.
+            sentinel = (
+                isinstance(options.repr, SHOW_ATTR)
+                or options.repr is HIDE_IF_NONE
+            )
+            self.repr = (
+                options.repr if sentinel and not self.var else not self.var
+            )
         if self.hash is MISSING:
-            self.hash = True
+            # `None` means "follow `eq`", which `_hash_add` reads. Forcing
+            # True here made a field excluded from `__eq__` still count
+            # towards `__hash__`, so two equal instances hashed apart and
+            # a set kept both.
+            self.hash = None
         if self.key is MISSING:
             self.key = options.mapping
         if self.eq is MISSING:
-            self.eq = options.eq
+            self.eq = True
         if self.order is MISSING:
-            self.order = options.order
+            # A field out of the comparison is out of the ordering too.
+            # Only an explicit `Field(eq=False, order=True)` is a
+            # contradiction, and that is still an error.
+            self.order = self.eq
         if options.kw_only:
             if self.kw is MISSING:
                 self.kw = True

@@ -134,6 +134,8 @@ from .constants import (
     _DEFAULT,
     _DISCARD,
     _FIELDS,
+    _GENERATED,
+    _MAGIC,
     _OPTIONS,
     _POST_INIT_NAME,
     _PRE_INIT_NAME,
@@ -174,10 +176,19 @@ def __post_new__(cls: type) -> type:
     fields = getattr(cls, _FIELDS, {})
     fields = {name: field for name, field in fields.items() if not field.var}
     __delattr__, __setattr__ = _make_assign(cls)
+    # Recorded like everything else this package binds, so that a
+    # rebuild drops them and installs a pair closed over the new
+    # options -- otherwise `@magic(frozen=True)` on an already-built
+    # class kept the unfrozen `__setattr__` from the first build.
+    written = cls.__dict__.get(_GENERATED)
     if "__setattr__" not in cls.__dict__:
         cls.__setattr__ = __setattr__
+        if written is not None:
+            written["__setattr__"] = "setattr"
     if "__delattr__" not in cls.__dict__:
         cls.__delattr__ = __delattr__
+        if written is not None:
+            written["__delattr__"] = "delattr"
 
     return cls
 
@@ -265,7 +276,212 @@ def _namespace_annotations(namespace: dict) -> dict:
     )
 
 
+class _BadSignature(SyntaxError):
+    """A field layout that cannot produce an `__init__` signature."""
+
+
+class _DuplicateParameter(TypeError):
+    """Two fields that would become the same `__init__` parameter."""
+
+
+def _unbuildable_init(clsname: str, reason: str) -> tx.Callable:
+    """Stand-in for an `__init__` this class's fields cannot describe."""
+
+    def __magic_init__(self: Magic, *args, **kwargs) -> tx.NoReturn:
+        raise TypeError(
+            f"no __init__ could be generated for {clsname}: {reason}"
+        )
+
+    return __magic_init__
+
+
+def _no_order(self: Magic, other: tx.Any) -> tx.Any:
+    """Stand-in for a generated ordering a derived class turned off."""
+    return NotImplemented
+
+
+#: What a turned-off option leaves in place of a generated method.
+#: `object` has no `__lt__`, so ordering falls back to a
+#: `NotImplemented` -- which lets Python raise its usual "not supported
+#: between instances" rather than "NoneType is not callable".
+_NEUTRAL = {
+    "repr": object.__repr__,
+    "eq": object.__eq__,
+    "lt": _no_order,
+    "hash": None,
+}
+
+
+def _written(cls: type) -> dict:
+    """The `{name: slot}` this package bound on `cls` itself.
+
+    Recorded per class rather than marked on the function, because a
+    generated slot may hold something unmarkable -- `__hash__ = None`,
+    or a slot wrapper like `object.__eq__` left by a turned-off option.
+    """
+    return cls.__dict__.get(_GENERATED) or {}
+
+
+def _defines(mro: tx.Tuple[type, ...], name: str) -> tx.Any:
+    """The first class in `mro` that defines `name`, or `None`."""
+    for base in mro:
+        if name in base.__dict__:
+            return base
+    return None
+
+
+def _generated_names(mro: tx.Tuple[type, ...], slot: str) -> tx.List[str]:
+    """Names in the bases whose *resolved* method for `slot` is ours.
+
+    More than one, because a base may have bound it under a name of its
+    own (`eq="__same__"`) while an ancestor still holds the dunder. A
+    name is only included when the class that actually provides it --
+    the first in the MRO, which is the one Python will use -- is the
+    class that recorded it, so a hand-written method nearer the front
+    shadows a generated one behind it and is left alone.
+    """
+    names = []
+    for base in mro:
+        for name, base_slot in _written(base).items():
+            if base_slot != slot or name in names:
+                continue
+            owner = _defines(mro, name)
+            if owner is not None and name in _written(owner):
+                names.append(name)
+    return names
+
+
+def _install(
+    namespace: dict,
+    written: dict,
+    mro: tx.Tuple[type, ...],
+    slot: str,
+    public: str,
+    fn: tx.Any,
+    enabled: bool,
+) -> bool:
+    """
+    Bind a generated method, and report whether the public name is ours.
+
+    The private name is always bound, so a hand-written method can
+    delegate to the generated one. The public name is bound only when
+    the option asks for it -- and when it does not, every name in the
+    bases holding a *generated* method for this slot is neutralised,
+    because each was built for another class's fields and would
+    otherwise answer in this one's place. A hand-written method is
+    never replaced -- in this class, or in a base that would win the
+    MRO ahead of any generated one.
+    """
+    private = _MAGIC(slot)
+    if private in namespace:
+        raise TypeError(
+            f"{private!r} is generated; define {public!r} instead and call "
+            f"{private!r} from it"
+        )
+    namespace[private] = fn
+
+    written[private] = slot
+
+    # Whatever names the bases bound for this slot, other than the one
+    # this class is about to use, hold a method built for another
+    # class's fields. That includes the dunder when this class has
+    # renamed the slot: asking for the method under another name is
+    # also a way of saying the dunder should not be generated.
+    for name in _generated_names(mro, slot):
+        if name != public and name not in namespace:
+            namespace[name] = _NEUTRAL[slot]
+            written[name] = slot
+
+    if enabled:
+        if public in namespace:
+            return False
+        namespace[public] = fn
+        written[public] = slot
+        return True
+
+    if public not in namespace and public in _generated_names(mro, slot):
+        namespace[public] = _NEUTRAL[slot]
+        written[public] = slot
+    return False
+
+
+def _install_hash(
+    namespace: dict,
+    written: dict,
+    mro: tx.Tuple[type, ...],
+    options: Options,
+    qualname: str,
+    real_fields: dict,
+    has_explicit_hash: bool,
+    eq_is_identity: bool,
+) -> None:
+    """
+    Decide what `__hash__` should be, and bind it.
+
+    The field-wise hash is always available privately. What lands on the
+    public name is chosen here rather than left to inheritance, because
+    writing `__eq__` into a class body makes Python drop `__hash__`
+    unless one is given too -- so "leave it alone" is not an option once
+    an `__eq__` has been installed.
+    """
+    private = _MAGIC("hash")
+    if private in namespace:
+        raise TypeError(
+            f"{private!r} is generated; define '__hash__' instead and call "
+            f"{private!r} from it"
+        )
+    namespace[private] = _hash_add(qualname, real_fields)
+    written[private] = "hash"
+
+    # A truthy `hash` means "generate one", the same force the
+    # `unsafe_hash` column applies. `False` means never, and `None` (the
+    # default) leaves the table to decide.
+    force = bool(options.unsafe_hash) or bool(
+        options.hash is not None and options.hash
+    )
+    make = _hash_action[force, bool(options.eq), bool(options.frozen),
+                        has_explicit_hash]
+    if options.hash is False:
+        make = False
+
+    public = options.hash if isinstance(options.hash, str) else "__hash__"
+    inherited = _generated_names(mro, "hash")
+
+    if make:
+        # `_hash_exception` raises here, which is the point of it.
+        value = make(qualname, real_fields)
+    elif options.hash is False:
+        # Explicitly unhashable, whatever any base offers.
+        value = None
+    elif eq_is_identity:
+        # Identity equality wants identity hashing -- but a class we did
+        # not generate gets the last word, including when it declares
+        # itself unhashable (`collections.abc.Mapping.__hash__ = None`).
+        # Our own entries are skipped: a `__hash__ = None` on `Magic`
+        # says something about `Magic`, not about this class. `object`
+        # ends the walk, which is how the identity hash is reached.
+        owner = next(
+            (base for base in mro
+             if "__hash__" in base.__dict__
+             and "__hash__" not in _written(base)),
+            None,
+        )
+        value = owner.__dict__["__hash__"] if owner else object.__hash__
+    elif inherited:
+        # Nothing generated here, but a base's field-wise hash would
+        # answer over this class's fields.
+        value = None
+    else:
+        return
+
+    for name in [public] + inherited:
+        if name not in namespace:
+            namespace[name] = value
+            written[name] = "hash"
+
+
 def __pre_new__(
+
     metacls: MetaMagic,
     clsname: str,
     bases: tuple[type, ...],
@@ -277,6 +493,14 @@ def __pre_new__(
         # This is a dummy class used to compute the MRO of our class
         # without including the class itself.
         return clsname, bases, namespace
+
+    # A rebuild (`@magic`, `slots`, anything through `rebuild_cls`) is
+    # handed a namespace copied from an already-built class, carrying
+    # everything the first build bound. Drop those, so this build starts
+    # from the user's own class body -- otherwise they look
+    # hand-written, and are protected from being regenerated.
+    for name in namespace.pop(_GENERATED, None) or ():
+        namespace.pop(name, None)
 
     # Get globals of the module where this class is defined.
     # `__module__` is absent when the class is built through the
@@ -421,7 +645,11 @@ def __pre_new__(
                              (class_hash is None and '__eq__' in namespace))
 
     # If we're generating ordering methods, we must be generating the
-    # eq methods.
+    # eq methods. Total ordering over the fields combined with identity
+    # equality gives `not (a < b) and not (b < a) and a != b`, which
+    # breaks everything that sorts.
+    if options.order and not options.eq:
+        raise ValueError('eq must be true if order is true')
     for field in fields.values():
         if field.order and not field.eq:
             raise ValueError('eq must be true if order is true')
@@ -434,47 +662,52 @@ def __pre_new__(
         prepost += ["post"]
     prepost = "+".join(prepost)
 
-    # Build __init__
-    if options.init:
-        fnname = "__init__" if options.init is True else options.init
-        fnbuilder.add_fn(name=fnname, **_make_init(fields, prepost))
+    # Every generated method is bound under a private name whatever the
+    # options say, so a hand-written one can delegate to it:
+    #     def __init__(self, raw): self.__magic_init__(int(raw))
+    # The public name is bound only when the option asks for it.
+    #
+    # `written` records `{name: slot}` for everything bound here, so a
+    # derived class can tell one of ours from a hand-written method even
+    # when the value cannot carry a marker (`__hash__ = None`, or a slot
+    # wrapper left by a turned-off option).
+    written = {}
+    init_name = (
+        ("__init__" if options.init is True else options.init)
+        if options.init else None
+    )
+
+    # Build __init__. The builder writes source, so binding the public
+    # name has to wait until `insert_fns` has compiled it (below).
+    try:
+        init_kwargs = _make_init(fields, prepost)
+    except (_BadSignature, _DuplicateParameter) as error:
+        if init_name:
+            raise
+        # The class opted out of `__init__`, so the private one is only
+        # a convenience and its absence must not stop the class being
+        # built. It still gets a name of its own: without one, the
+        # documented `self.__magic_init__(...)` would quietly resolve to
+        # a base's, built over a different set of fields.
+        init_kwargs = None
+        namespace.setdefault(
+            _MAGIC("init"), _unbuildable_init(clsname, str(error))
+        )
+    if init_kwargs is not None:
+        fnbuilder.add_fn(
+            name=_MAGIC("init"),
+            overwrite_error=(
+                f"-- define {init_name or '__init__'!r} instead and call it "
+                f"from there"
+            ),
+            **init_kwargs
+        )
 
     # TODO
     # _set_new_attribute(cls, '__replace__', _replace)
 
     # Include only real fields.  This is used in all of the following methods.
     real_fields = {name: f for name, f in fields.items() if not f.var}
-
-    if options.repr:
-        repr_fields = {name: f for name, f in fields.items() if f.repr}
-        fnname = options.repr if isinstance(options.repr, str) else "__repr__"
-        namespace.setdefault(fnname, _make_repr(qualname, repr_fields))
-
-    if options.eq:
-        fnname = options.eq if isinstance(options.eq, str) else "__eq__"
-        namespace.setdefault(fnname, _make_eq(qualname, real_fields))
-
-    if options.order:
-        fnname = options.order if isinstance(options.order, str) else "__lt__"
-        namespace.setdefault(fnname, _make_lt(qualname, real_fields))
-
-    # Decide if/how we're going to create a hash function.
-    # A truthy `hash` means "generate one", the same force the
-    # `unsafe_hash` column applies. `False` means never, and `None`
-    # (the default) leaves the table to decide.
-    force_hash = bool(options.unsafe_hash) or bool(
-        options.hash is not None and options.hash
-    )
-    _make_hash = _hash_action[force_hash,
-                              bool(options.eq),
-                              bool(options.frozen),
-                              has_explicit_hash]
-    if options.hash is False:
-        _make_hash = False
-
-    if _make_hash:
-        fnname = options.hash if isinstance(options.hash, str) else "__hash__"
-        namespace.setdefault(fnname, _make_hash(qualname, real_fields))
 
     if options.match_args:
         fnname = (
@@ -499,6 +732,41 @@ def __pre_new__(
         if not any(issubclass(base, Mapping) for base in bases):
             bases += (Mapping,)
 
+    # The generated methods go in here, after `bases` is final: the
+    # mapping option can add a base, and what an inherited method would
+    # be has to be read from the MRO this class will really have.
+    base_mro = type(_DISCARD, bases, {}).__mro__[1:]
+
+    repr_fields = {name: f for name, f in fields.items() if f.repr}
+    _install(
+        namespace, written, base_mro, "repr",
+        options.repr if isinstance(options.repr, str) else "__repr__",
+        _make_repr(qualname, repr_fields), bool(options.repr),
+    )
+
+    _install(
+        namespace, written, base_mro, "eq",
+        options.eq if isinstance(options.eq, str) else "__eq__",
+        _make_eq(qualname, real_fields), bool(options.eq),
+    )
+
+    _install(
+        namespace, written, base_mro, "lt",
+        options.order if isinstance(options.order, str) else "__lt__",
+        _make_lt(qualname, real_fields), bool(options.order),
+    )
+
+    # The identity-hash signal is read straight from the namespace: what
+    # matters is whether `__eq__` ended up as the identity one, whether
+    # that came from `eq=False` or from the slot being renamed. It is
+    # also `__eq__` specifically -- not a renamed name -- that makes
+    # Python drop `__hash__`.
+    _install_hash(
+        namespace, written, base_mro, options, qualname or clsname,
+        real_fields,
+        has_explicit_hash, namespace.get("__eq__") is object.__eq__,
+    )
+
     # It's an error to specify weakref_slot if slots is False.
     if options.weakref_slot and not options.slots:
         raise TypeError('weakref_slot is True but slots is False')
@@ -509,6 +777,26 @@ def __pre_new__(
         namespace["__slots__"] = _make_slots(bases, real_fields, weakref_slot)
 
     fnbuilder.insert_fns(clsname, namespace)
+
+    # `__magic_init__` is compiled by now; give it the name it will be
+    # known by -- it shows up in every TypeError and traceback -- and
+    # bind the public name to the same object when `init` asks for it.
+    magic_init = namespace.get(_MAGIC("init"))
+    if magic_init is not None:
+        # Recorded here rather than in `_install`, because this one is
+        # written by the builder -- and it has to be recorded, or a
+        # rebuild would not know to drop it.
+        written[_MAGIC("init")] = "init"
+    if magic_init is not None and init_kwargs is not None:
+        magic_init.__name__ = init_name or "__init__"
+        magic_init.__qualname__ = (
+            f"{qualname or clsname}.{magic_init.__name__}"
+        )
+        if init_name and init_name not in namespace:
+            namespace[init_name] = magic_init
+            written[init_name] = "init"
+
+    namespace[_GENERATED] = written
 
     # Add attributes to class documentation
     # `python -OO` asks for docstrings to be dropped; a generated one is
@@ -767,7 +1055,7 @@ def _make_init(
         # generate a signature with a duplicate argument.
         public = field.public_name
         if public in seen_params:
-            raise TypeError(
+            raise _DuplicateParameter(
                 f"fields {seen_params[public]!r} and {name!r} both map to "
                 f"the __init__ parameter {public!r}"
             )
@@ -799,8 +1087,10 @@ def _make_init(
             if "=" in elem:
                 has_default = True
             elif has_default:
-                raise SyntaxError(f"parameter without a default follows "
-                                  f"parameter with a default: {elem}")
+                raise _BadSignature(
+                    f"parameter without a default follows parameter with a "
+                    f"default: {elem}"
+                )
 
     signature, doc = [], ["Parameters", "----------"]
     for _name, field in positional_onlys.items():

@@ -1964,3 +1964,498 @@ class TestAnnotationPolarity:
     def test_subscript_keeps_extra_metadata(self) -> None:
         hint = NoRepr[int, "some note"]
         assert tx.get_args(hint)[2] == "some note"
+
+
+class TestAlwaysGenerated:
+    """Every generated method is available under its private name."""
+
+    def test_init_false_still_exposes_the_generated_init(self) -> None:
+        class B(Magic, init=False):
+            x: int
+
+            def __init__(self, raw: str) -> None:
+                self.__magic_init__(int(raw))
+
+        assert B("5").x == 5
+        assert "__init__" in B.__dict__          # the user's, not ours
+        assert B.__init__ is not B.__magic_init__
+
+    def test_a_renamed_init_is_also_available_privately(self) -> None:
+        class R(Magic, init="__setup__"):
+            x: int
+
+        assert R.__setup__ is R.__magic_init__
+
+    def test_the_private_init_takes_every_field(self) -> None:
+        # Regression: `init=False` used to turn off `init` on each field
+        # too, leaving the generated init with no parameters at all.
+        class B(Magic, init=False):
+            x: int
+            y: int
+
+        obj = object.__new__(B)
+        obj.__magic_init__(1, 2)
+        assert (obj.x, obj.y) == (1, 2)
+
+    @pytest.mark.parametrize(
+        "option,private",
+        [("repr", "__magic_repr__"), ("eq", "__magic_eq__"),
+         ("order", "__magic_lt__"), ("hash", "__magic_hash__")],
+    )
+    def test_the_private_name_exists_even_when_turned_off(
+        self, option: str, private: str
+    ) -> None:
+        C = m.MetaMagic(
+            "C", (Magic,), {"__annotations__": {"x": int}}, **{option: False}
+        )
+        assert callable(getattr(C, private))
+
+    def test_the_private_repr_still_works_when_repr_is_off(self) -> None:
+        class C(Magic, repr=False):
+            x: int
+
+        assert C(1).__magic_repr__() == "C(x=1)"
+
+
+class TestDisabledOptionsDoNotFallThrough:
+    """Turning an option off must not inherit a *generated* method."""
+
+    def test_eq_false_compares_by_identity(self) -> None:
+        # Regression: `Magic` is itself built with `eq=True` and no
+        # fields, so its generated `__eq__` was `all(())` -- True for
+        # any two instances of the same class. Every subclass that
+        # opted out inherited it.
+        class D(Magic, eq=False):
+            x: int
+
+        assert (D(1) == D(2)) is False
+        assert (D(1) == D(1)) is False
+        obj = D(1)
+        assert obj == obj
+
+    def test_eq_false_leaves_the_class_hashable(self) -> None:
+        # Assigning `__eq__` into a class body makes Python drop
+        # `__hash__` unless one is given too -- but a class that
+        # compares by identity should hash by identity.
+        class D(Magic, eq=False):
+            x: int
+
+        obj = D(1)
+        assert D.__hash__ is not None
+        assert obj in {obj}
+        assert D(1) not in {D(1)}
+
+    def test_repr_false_falls_back_to_object(self) -> None:
+        class C(Magic, repr=False):
+            x: int
+
+        assert repr(C(1)).startswith("<")
+        assert "C object at" in repr(C(1))
+
+    def test_order_false_on_an_ordered_base(self) -> None:
+        class Ordered(Magic, order=True):
+            x: int
+
+        class Unordered(Ordered, order=False):
+            y: int
+
+        assert Ordered(1) < Ordered(2)
+        with pytest.raises(TypeError, match="not supported between"):
+            assert Unordered(1, 2) < Unordered(3, 4)
+
+    def test_hash_false_on_a_frozen_base(self) -> None:
+        class F(Magic, frozen=True):
+            x: int
+
+        class F2(F, hash=False):
+            y: int
+
+        assert isinstance(hash(F(1)), int)
+        assert F2.__hash__ is None
+
+    def test_a_hand_written_method_survives(self) -> None:
+        # Only a *generated* inherited method is neutralised.
+        class Base(Magic, eq=False):
+            x: int
+
+            def __eq__(self, other: tx.Any) -> tx.Any:
+                return "mine"
+
+            __hash__ = None
+
+        class Derived(Base, eq=False):
+            y: int
+
+        assert Base(1) == Base(2) == "mine"
+        assert Derived(1, 2) == Derived(3, 4) == "mine"
+
+    def test_turning_an_option_back_on_works(self) -> None:
+        class A(Magic, eq=False):
+            x: int
+
+        class B(A, eq=True):
+            y: int
+
+        assert B(1, 2) == B(1, 2)
+        assert B(1, 2) != B(1, 3)
+
+
+class TestHashResolution:
+    """What lands on `__hash__` when no field-wise hash is generated."""
+
+    def test_hash_false_wins_over_identity_equality(self) -> None:
+        # `eq=False` installs an identity `__eq__`, which would
+        # otherwise pull in an identity `__hash__` and quietly undo the
+        # `hash=False` the class asked for.
+        class C(Magic, eq=False, hash=False):
+            x: int
+
+        assert C.__hash__ is None
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(C(1))
+
+    def test_hashability_does_not_depend_on_the_base(self) -> None:
+        # The same resolved options must give the same class, whether
+        # they were inherited or written here.
+        class Frozen(Magic, frozen=True):
+            x: int
+
+        class Inherited(Frozen, eq=False):
+            pass
+
+        class Direct(Magic, frozen=True, eq=False):
+            x: int
+
+        assert isinstance(hash(Inherited(1)), int)
+        assert isinstance(hash(Direct(1)), int)
+
+    def test_a_hand_written_inherited_hash_is_kept(self) -> None:
+        class Base(Magic):
+            x: int
+
+            def __hash__(self) -> int:
+                return 99
+
+        class Sub(Base, eq=False):
+            pass
+
+        assert hash(Base(1)) == 99
+        assert hash(Sub(1)) == 99
+
+    def test_a_base_that_declares_itself_unhashable_is_respected(
+        self,
+    ) -> None:
+        # `collections.abc.Mapping` sets `__hash__ = None` on purpose.
+        # Our own `__hash__ = None` on `Magic` is an artefact and is
+        # skipped; a real one from someone else is not.
+        class M(Magic, mapping=True, frozen=True, eq=False):
+            x: int
+
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(M(1))
+
+    def test_a_frozen_class_still_hashes_by_field(self) -> None:
+        class F(Magic, frozen=True):
+            x: int
+
+        assert hash(F(1)) == hash(F(1))
+        assert hash(F(1)) != hash(F(2))
+
+
+class TestOrderRequiresEq:
+
+    def test_class_level_contradiction_raises(self) -> None:
+        # Total ordering over the fields with identity equality gives
+        # `not (a < b) and not (b < a) and a != b`.
+        with pytest.raises(ValueError, match="eq must be true"):
+            class C(Magic, eq=False, order=True):
+                x: int
+
+    def test_field_level_contradiction_raises(self) -> None:
+        with pytest.raises(ValueError, match="eq must be true"):
+            class C(Magic):
+                x: Annotated[int, Field(eq=False, order=True)]
+
+    def test_a_field_out_of_eq_is_out_of_order(self) -> None:
+        # `NoEq` on its own is not a contradiction: it takes the field
+        # out of the ordering too.
+        class C(Magic, order=True):
+            x: int
+            y: NoEq[int]
+
+        assert C(1, 9) < C(2, 0)
+        assert not C(1, 0) < C(1, 9)
+
+
+class TestInitFalseIsAnEscapeHatch:
+    """`init=False` must not be blocked by the generated signature."""
+
+    def test_a_non_default_after_a_default(self) -> None:
+        class D(Magic, init=False):
+            x: int = 0
+            y: int
+
+            def __init__(self, y: int) -> None:
+                object.__setattr__(self, "x", 0)
+                object.__setattr__(self, "y", y)
+
+        assert D(5).y == 5
+
+    def test_two_fields_sharing_a_public_name(self) -> None:
+        class X(Magic, init=False):
+            a: Annotated[int, Field(alias="v")]
+            b: Annotated[int, Field(alias="v")]
+
+        assert X.__name__ == "X"
+
+    def test_the_same_layouts_still_raise_when_init_is_on(self) -> None:
+        with pytest.raises(SyntaxError, match="without a default"):
+            class D(Magic):
+                x: int = 0
+                y: int
+
+        with pytest.raises(TypeError, match="both map to"):
+            class X(Magic):
+                a: Annotated[int, Field(alias="v")]
+                b: Annotated[int, Field(alias="v")]
+
+
+class TestGeneratedMethodNames:
+
+    def test_init_is_named_init(self) -> None:
+        # It shows up in every TypeError, traceback and `help()`.
+        class Point(Magic):
+            x: int
+            y: int
+
+        assert Point.__init__.__name__ == "__init__"
+        assert Point.__init__.__qualname__.endswith("Point.__init__")
+        with pytest.raises(TypeError, match=r"__init__\(\) missing"):
+            Point(1)
+
+    def test_a_renamed_init_is_named_after_the_option(self) -> None:
+        class R(Magic, init="__setup__"):
+            x: int
+
+        assert R.__setup__.__name__ == "__setup__"
+
+    def test_a_reserved_private_name_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="__magic_init__"):
+            class U(Magic):
+                x: int
+
+                def __magic_init__(self) -> None:
+                    ...
+
+        with pytest.raises(TypeError, match="__magic_eq__"):
+            class V(Magic):
+                x: int
+
+                def __magic_eq__(self, other: tx.Any) -> bool:
+                    return True
+
+
+class TestRenamedOptionsAreNeutralised:
+
+    def test_a_renamed_repr_turned_off_by_a_subclass(self) -> None:
+        class R(Magic, repr="__show__"):
+            x: int
+
+        class RS(R, repr=False):
+            pass
+
+        assert R(3).__show__() == "R(x=3)"
+        assert "RS object at" in RS(3).__show__()
+
+    def test_a_renamed_eq_turned_off_by_a_subclass(self) -> None:
+        class A(Magic, eq="__same__"):
+            x: int
+
+        class B(A, eq=False):
+            y: int
+
+        assert A(1).__same__(A(1)) is True
+        assert B(1, 2).__same__(B(1, 3)) is NotImplemented
+
+
+class TestClassLevelHideIfNone:
+
+    def test_the_sentinel_reaches_every_field(self) -> None:
+        class C(Magic, repr=HIDE_IF_NONE):
+            x: Optional[int] = None
+            y: int = 1
+
+        assert repr(C()) == "C(y=1)"
+        assert repr(C(5)) == "C(x=5, y=1)"
+
+
+class TestRebuild:
+    """`@magic`, `slots()` and anything else through `rebuild_cls`."""
+
+    def test_decorating_a_magic_subclass(self) -> None:
+        # Regression: `rebuild_cls` copies the class dict, so the second
+        # build was handed the first build's generated methods and took
+        # them for hand-written ones.
+        class P(Magic):
+            x: int
+
+        @magic(frozen=True)
+        class C(P):
+            y: int = 0
+
+        assert C(1).x == 1
+        assert repr(C(1)) == "C(x=1, y=0)"
+        with pytest.raises(AttributeError, match="frozen"):
+            C(1).y = 2
+
+    def test_double_decoration(self) -> None:
+        @magic(frozen=True)
+        @magic()
+        class D:
+            x: int
+
+        assert D(1).x == 1
+
+    def test_the_slots_helper(self) -> None:
+        # locals
+        from bagof.magic.utils import slots as slots_
+
+        @slots_("x")
+        class S(Magic):
+            x: int
+
+        assert S(1).x == 1
+
+    def test_a_rebuilt_class_still_records_what_it_bound(self) -> None:
+        # Otherwise a descendant reads the inherited methods as
+        # hand-written and refuses to neutralise them -- silently
+        # reinstating the fall-through this all exists to close.
+        class P(Magic):
+            x: int
+
+        @magic(frozen=True)
+        class C(P):
+            y: int = 0
+
+        class G(C, eq=False):
+            pass
+
+        assert (G(1) == G(1)) is False
+
+
+class TestPrivateInitIsNeverInherited:
+
+    def test_an_unbuildable_init_raises_rather_than_falling_through(
+        self,
+    ) -> None:
+        # Regression: with no `__magic_init__` of its own, the
+        # documented delegation resolved to the *base's* -- built over
+        # different fields -- and silently set the wrong attributes.
+        class P(Magic):
+            x: int
+
+        class C(P, init=False):
+            y: int = 0
+            z: int
+
+            def __init__(self, z: int) -> None:
+                self.__magic_init__(z)
+
+        assert C.__magic_init__ is not P.__dict__["__magic_init__"]
+        with pytest.raises(TypeError, match="no __init__ could be generated"):
+            C(7)
+
+    def test_an_unrelated_error_is_not_swallowed(self) -> None:
+        # The tolerant path must catch the two signature errors, not
+        # every TypeError -- `_make_init` renders each default's repr,
+        # which runs user code.
+        class Boom:
+            def __repr__(self) -> str:
+                raise TypeError("boom from user __repr__")
+
+        with pytest.raises(TypeError, match="boom from user"):
+            class H(Magic, init=False, doc=False):
+                a: int = Boom()
+
+
+class TestEqualInstancesHashEqually:
+
+    def test_a_field_out_of_eq_is_out_of_the_hash(self) -> None:
+        # Regression (pre-existing): `hash` was forced True, so a field
+        # excluded from `__eq__` still counted towards `__hash__` and
+        # equal instances landed in different buckets.
+        class C(Magic, frozen=True):
+            x: int
+            y: NoEq[int]
+
+        a, b = C(1, 2), C(1, 3)
+        assert a == b
+        assert hash(a) == hash(b)
+        assert len({a, b}) == 1
+        assert {a: "v"}[b] == "v"
+
+    def test_an_explicit_field_hash_still_wins(self) -> None:
+        class C(Magic, frozen=True):
+            x: int
+            y: Annotated[int, Field(eq=False, hash=True)]
+
+        assert C(1, 2) == C(1, 3)
+        assert hash(C(1, 2)) != hash(C(1, 3))
+
+
+class TestSentinelInstanceRepr:
+
+    def test_an_instance_sentinel_still_skips_pseudo_fields(self) -> None:
+        class B(Magic, repr=HIDE_IF_NONE()):
+            x: int
+            tmp: InitVar[int]
+
+            def __post_init__(self, tmp: int) -> None:
+                ...
+
+        assert repr(B(1, 2)) == "B(x=1)"
+
+    def test_an_instance_sentinel_skips_class_vars(self) -> None:
+        class B(Magic, repr=HIDE_IF_NONE()):
+            x: Optional[int] = None
+            z: ClassVar[int] = 99
+
+        assert repr(B()) == "B()"
+
+
+class TestRenamingAlsoNeutralisesTheDunder:
+    """Renaming a slot means the dunder is not wanted either."""
+
+    def test_a_renamed_eq(self) -> None:
+        # Regression (pre-existing): `Magic`'s own zero-field `__eq__`
+        # answered, so any two instances compared equal.
+        class R(Magic, eq="__same__"):
+            x: int
+
+        assert (R(1) == R(2)) is False
+        assert R(1).__same__(R(2)) is False
+        assert R(1).__same__(R(1)) is True
+
+    def test_a_renamed_repr(self) -> None:
+        class P(Magic, repr="__show__"):
+            x: int
+
+        assert repr(P(1)).startswith("<")
+        assert P(1).__show__() == "P(x=1)"
+
+    def test_a_renamed_eq_with_ordering(self) -> None:
+        class R(Magic, eq="__same__", order=True):
+            x: int
+
+        assert R(1) not in [R(2)]
+
+
+class TestReservedPrivateHash:
+
+    def test_magic_hash_cannot_be_hand_written(self) -> None:
+        with pytest.raises(TypeError, match="__magic_hash__"):
+            class E(Magic):
+                x: int
+
+                def __magic_hash__(self) -> int:
+                    return 7
