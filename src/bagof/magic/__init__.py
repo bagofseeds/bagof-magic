@@ -733,6 +733,7 @@ def _make_init(
     positional_onlys, args, kw_onlys = {}, {}, {}
 
     SELF = "self"
+    seen_params = {}
     for name, field in fields.items():
         if field.init and field.positional and not field.kw:
             positional_onlys[name] = field
@@ -742,7 +743,18 @@ def _make_init(
             kw_onlys[name] = field
         else:
             continue
-        if name == "self":
+        # The parameter is named after the field's *public* name, which
+        # differs from the field name for an aliased or underscored
+        # field. Two fields that reduce to the same parameter would
+        # generate a signature with a duplicate argument.
+        public = field.public_name
+        if public in seen_params:
+            raise TypeError(
+                f"fields {seen_params[public]!r} and {name!r} both map to "
+                f"the __init__ parameter {public!r}"
+            )
+        seen_params[public] = name
+        if public == "self":
             SELF = _SELF
 
     def _make_signature_elem(field: Field) -> tx.Tuple[str, str]:
@@ -794,19 +806,24 @@ def _make_init(
 
     def _make_prepost_call(func: str) -> str:
         prepost_args = []
-        for name, field in positional_onlys.items():
+        for field in positional_onlys.values():
             if field.var:
-                prepost_args.append(f"{name}")
-        for name, field in args.items():
+                prepost_args.append(f"{field.public_name}")
+        for field in args.values():
             if field.var:
-                prepost_args.append(f"{name}")
-        for name, field in kw_onlys.items():
+                prepost_args.append(f"{field.public_name}")
+        for field in kw_onlys.values():
             if field.var:
+                name = field.public_name
                 prepost_args.append(f"{name}={name}")
         prepost_args = ", ".join(prepost_args)
         return f"{SELF}.{func}({prepost_args})"
 
-    def _make_body_elem(name: str, field: Field) -> str:
+    def _make_body_elem(field: Field) -> str:
+        # The body reads the *parameter*, which is named after the
+        # field's public name, and writes the *field*, which keeps its
+        # own name.
+        name = field.public_name
         body = ""
         if field.factory:
             body += dedent(f"""
@@ -834,12 +851,12 @@ def _make_init(
     body = []
     if "pre" in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
-    for name, field in positional_onlys.items():
-        body.append(_make_body_elem(name, field))
-    for name, field in args.items():
-        body.append(_make_body_elem(name, field))
-    for name, field in kw_onlys.items():
-        body.append(_make_body_elem(name, field))
+    for field in positional_onlys.values():
+        body.append(_make_body_elem(field))
+    for field in args.values():
+        body.append(_make_body_elem(field))
+    for field in kw_onlys.values():
+        body.append(_make_body_elem(field))
     if "post" in prepost:
         body.append(_make_prepost_call(_POST_INIT_NAME))
 
