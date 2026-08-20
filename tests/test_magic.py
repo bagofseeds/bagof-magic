@@ -1700,3 +1700,30 @@ class TestPositionalOnly:
 
         r = R(1, 2, c=3)
         assert (r.a, r.b, r.c) == (1, 2, 3)
+
+
+class TestOptimisedInterpreter:
+    """`python -OO` strips docstrings; nothing may assume they are there."""
+
+    def test_import_and_class_creation_under_OO(self) -> None:
+        # stdlib
+        import subprocess
+        import sys
+
+        # Regression: the module ran `MetaMagic.__doc__.format(...)` at
+        # import time, which is an AttributeError once `-OO` has replaced
+        # every docstring with None.
+        source = (
+            "from bagof.magic import Magic\n"
+            "class C(Magic):\n"
+            "    x: int = 1\n"
+            "assert C(2).x == 2\n"
+            "assert C.__doc__ is None\n"
+            "print('ok')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-OO", "-c", source],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "ok"

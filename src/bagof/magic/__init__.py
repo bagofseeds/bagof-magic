@@ -498,7 +498,9 @@ def __pre_new__(
     fnbuilder.insert_fns(clsname, namespace)
 
     # Add attributes to class documentation
-    if options.doc:
+    # `python -OO` asks for docstrings to be dropped; a generated one is
+    # no different, so honour the flag rather than reintroducing them.
+    if options.doc and sys.flags.optimize < 2:
         docname = '__doc__' if options.doc is True else options.doc
         doc = namespace.get(docname, '') or ''
         doc = doc.rstrip("\n")
@@ -1268,8 +1270,11 @@ class Magic(metaclass=MetaMagic):
     __slots__ = ()
 
 
-MetaMagic.__doc__ = MetaMagic.__doc__.format(DOC_OPTIONS=_DOC_OPTIONS)
-Magic.__doc__ = Magic.__doc__.format(DOC_OPTIONS=_DOC_OPTIONS)
+# `python -OO` strips docstrings, so there may be nothing to format.
+if MetaMagic.__doc__:
+    MetaMagic.__doc__ = MetaMagic.__doc__.format(DOC_OPTIONS=_DOC_OPTIONS)
+if Magic.__doc__:
+    Magic.__doc__ = Magic.__doc__.format(DOC_OPTIONS=_DOC_OPTIONS)
 
 
 # ----------------------------------------------------------------------
