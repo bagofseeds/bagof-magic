@@ -143,6 +143,39 @@ Internal rationale and history still belong somewhere — just not in a public
 docstring. Use a code comment near the implementation, or a section of this
 file.
 
+### Code comments, private docstrings and error messages
+
+Same standard, different reader. The audience here is a contributor opening
+the file for the first time, with no background on how the builder works —
+not you, later, remembering why you did it.
+
+1. **Say what the code does, not what you decided.** "Replace any inherited
+   generated method for this option" is useful. "Rather than try to tell them
+   apart, we now raise" is a changelog entry; put that in the commit message.
+2. **Name a helper for what it actually does**, not for the shape of what it
+   returns. `_defines` sounded like a predicate and returned a class;
+   `_defining_class` says it.
+3. **An error message is read by someone stuck**, not by whoever wrote the
+   check. It must name what happened, in the reader's vocabulary, and what to
+   write instead. Never mention metaclasses, namespaces, rebuilding, or any
+   private helper — a user has no reason to know those exist, and naming them
+   makes a fixable mistake feel like a library bug. Compare:
+
+   > `Chord has already been built by Magic, so it cannot be rebuilt: pass
+   > the options to the class statement instead`
+
+   with what it became:
+
+   > `Chord is already a Magic class, so it cannot be built a second time.
+   > This happens when @magic is used twice on the same class, or when it is
+   > used on a class that already inherits from Magic. Put the options on the
+   > class statement instead — `class Chord(Magic, frozen=True)` — which does
+   > the same job.`
+
+4. **Don't reference an internal name a user could not have typed.** The
+   `slots` helper in `utils.py` is ours; an error that mentions it sends the
+   reader looking for something they never used.
+
 ## Third-party code
 
 Parts of the builder are copied from or derived from CPython's `dataclasses`.
