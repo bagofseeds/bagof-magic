@@ -1332,8 +1332,8 @@ class PicklePseudoField(Magic, frozen=True):
     a: int
     b: InitVar[int]
 
-    def __post_init__(self, b: int) -> None:
-        object.__setattr__(self, "b", b * 2)
+    def __post_init__(self, arguments: Arguments) -> None:
+        object.__setattr__(self, "b", arguments.b * 2)
 
 
 def _round_trips(obj: tx.Any) -> tx.List[tx.Any]:
