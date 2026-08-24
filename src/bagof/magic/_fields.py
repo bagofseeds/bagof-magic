@@ -37,12 +37,12 @@ __all__ = [
 ]
 import typing_extensions as tx
 
+from ._constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
+from ._options import Options
 from ._resolve import make_converter as _make_converter
 from ._resolve import make_factory as _make_factory
 from ._resolve import make_validator as _make_validator
-from .constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
-from .options import Options
-from .utils import SlotsBase, _get_origin, slots
+from ._utils import SlotsBase, _get_origin, slots
 
 T = tx.TypeVar("T")
 

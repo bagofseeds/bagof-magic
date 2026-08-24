@@ -19,7 +19,7 @@ Upstream source: [`Lib/dataclasses.py`](https://github.com/python/cpython/blob/m
 in CPython. Where a helper changed shape across Python versions, the version we
 followed is noted.
 
-### `src/bagof/magic/__init__.py`
+### `src/bagof/magic/_magic.py`
 
 | Ours | Upstream |
 | --- | --- |
@@ -36,14 +36,14 @@ followed is noted.
 | `_make_slots` | the slot-computing half of `_add_slots` |
 | the `slots` handling in `__pre_new__` | the field defaults `_add_slots` drops from the class dict |
 
-### `src/bagof/magic/utils.py`
+### `src/bagof/magic/_utils.py`
 
 | Ours | Upstream |
 | --- | --- |
 | `_update_func_cell_for__class__` | the same name (a helper of `_add_slots`, 3.12+) |
 | `rebuild_cls` | the class-rebuilding half of `_add_slots` |
 
-### `src/bagof/magic/constants.py`
+### `src/bagof/magic/_constants.py`
 
 | Ours | Upstream |
 | --- | --- |

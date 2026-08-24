@@ -10,7 +10,8 @@ import typing_extensions as tx
 from bagof.validators.exceptions import ValidationError
 from typing_extensions import Annotated
 
-import bagof.magic as m
+import bagof.magic._api as _api
+import bagof.magic._magic as m
 from bagof.magic import (
     HIDE_IF_NONE,
     Arguments,
@@ -38,7 +39,7 @@ from bagof.magic import (
     Validate,
     magic,
 )
-from bagof.magic.constants import (
+from bagof.magic._constants import (
     _FIELDS,
     _GENERATED,
     _OPTIONS,
@@ -46,11 +47,11 @@ from bagof.magic.constants import (
     REQUIRED,
     SHOW_ATTR,
 )
-from bagof.magic.constants import (
+from bagof.magic._constants import (
     HIDE_IF_NONE as HideIfNoneCls,
 )
-from bagof.magic.options import Options
-from bagof.magic.utils import (
+from bagof.magic._options import Options
+from bagof.magic._utils import (
     _update_func_cell_for__class__,
     rebuild_cls,
     slots,
@@ -65,7 +66,7 @@ class TestMissing:
 
     def test_singleton(self) -> None:
         assert MISSING is MISSING
-        from bagof.magic.constants import _MissingType
+        from bagof.magic._constants import _MissingType
         assert _MissingType() is MISSING
 
     def test_bool_is_false(self) -> None:
@@ -1586,7 +1587,7 @@ class TestConstants:
         assert bool(REQUIRED) is True
 
     def test_required_singleton(self) -> None:
-        from bagof.magic.constants import _RequiredType
+        from bagof.magic._constants import _RequiredType
         assert _RequiredType() is REQUIRED
 
     def test_show_attr_call_false(self) -> None:
@@ -1896,7 +1897,7 @@ class TestFieldInheritance:
         class Derived(Base):
             y: int = 2
 
-        assert m.fields(Base)[0] is not m.fields(Derived)[0]
+        assert _api.fields(Base)[0] is not _api.fields(Derived)[0]
 
     def test_diamond_leaves_bases_alone(self) -> None:
         class A(Magic):
@@ -1909,10 +1910,10 @@ class TestFieldInheritance:
             pass
 
         # Defining C must not rewrite A or B.
-        assert m.fields(A)[0].doc == "A doc"
-        assert m.fields(B)[0].doc == "B doc"
+        assert _api.fields(A)[0].doc == "A doc"
+        assert _api.fields(B)[0].doc == "B doc"
         # C follows its MRO: A comes first, so A's doc wins.
-        assert m.fields(C)[0].doc == "A doc"
+        assert _api.fields(C)[0].doc == "A doc"
 
     def test_child_keeps_its_own_doc(self) -> None:
         class Base(Magic):
@@ -1921,8 +1922,8 @@ class TestFieldInheritance:
         class Derived(Base):
             x: Annotated[int, Doc("child doc")] = 2
 
-        assert m.fields(Derived)[0].doc == "child doc"
-        assert m.fields(Base)[0].doc == "base doc"
+        assert _api.fields(Derived)[0].doc == "child doc"
+        assert _api.fields(Base)[0].doc == "base doc"
 
     def test_child_inherits_the_base_doc(self) -> None:
         class Base(Magic):
@@ -1931,7 +1932,7 @@ class TestFieldInheritance:
         class Derived(Base):
             x: int = 2
 
-        assert m.fields(Derived)[0].doc == "base doc"
+        assert _api.fields(Derived)[0].doc == "base doc"
 
     def test_subclass_does_not_share_fields_with_base_reverse(self) -> None:
         class Base(Magic, reverse=True):
@@ -1940,7 +1941,7 @@ class TestFieldInheritance:
         class Derived(Base):
             y: int = 2
 
-        assert m.fields(Base)[0] is not m.fields(Derived)[-1]
+        assert _api.fields(Base)[0] is not _api.fields(Derived)[-1]
 
     def test_diamond_leaves_bases_alone_reverse(self) -> None:
         class A(Magic, reverse=True):
@@ -1952,9 +1953,9 @@ class TestFieldInheritance:
         class C(A, B):
             pass
 
-        assert m.fields(A)[0].doc == "A doc"
-        assert m.fields(B)[0].doc == "B doc"
-        assert m.fields(C)[0].doc == "A doc"
+        assert _api.fields(A)[0].doc == "A doc"
+        assert _api.fields(B)[0].doc == "B doc"
+        assert _api.fields(C)[0].doc == "A doc"
 
     def test_child_keeps_its_own_doc_reverse(self) -> None:
         class Base(Magic, reverse=True):
@@ -1963,8 +1964,8 @@ class TestFieldInheritance:
         class Derived(Base):
             x: Annotated[int, Doc("child doc")] = 2
 
-        assert m.fields(Derived)[0].doc == "child doc"
-        assert m.fields(Base)[0].doc == "base doc"
+        assert _api.fields(Derived)[0].doc == "child doc"
+        assert _api.fields(Base)[0].doc == "base doc"
 
     def test_child_inherits_the_base_doc_reverse(self) -> None:
         class Base(Magic, reverse=True):
@@ -1973,7 +1974,7 @@ class TestFieldInheritance:
         class Derived(Base):
             x: int = 2
 
-        assert m.fields(Derived)[0].doc == "base doc"
+        assert _api.fields(Derived)[0].doc == "base doc"
 
 
 # ======================================================================
@@ -2215,7 +2216,7 @@ class TestMetaclassFeatures:
             x: int
             c: ClassVar[int] = 1
 
-        result = m.fields(C)
+        result = _api.fields(C)
         names = [f.name for f in result]
         assert names == ["x"]
 
@@ -2624,7 +2625,7 @@ class TestAnnotationPolarity:
             x: int
             y: NoCompare[int]
 
-        y = {f.name: f for f in m.fields(C)}["y"]
+        y = {f.name: f for f in _api.fields(C)}["y"]
         assert (y.eq, y.order) == (False, False)
         assert C(1, 2) == C(1, 99)
 
@@ -3510,7 +3511,7 @@ class TestInheritableUnsetValues:
         class Child(Base):
             x: int = 2
 
-        assert {f.name: f.doc for f in m.fields(Child)}["x"] == "base doc"
+        assert {f.name: f.doc for f in _api.fields(Child)}["x"] == "base doc"
 
     def test_every_inheritable_attribute_declares_its_unset_values(
         self,
@@ -3908,7 +3909,7 @@ class TestGenericClasses:
     def test_a_generic_class_can_be_defined(self) -> None:
         # Regression: `Generic` used to refuse the class outright.
         assert GenericBox.__parameters__ == (_T,)
-        assert [f.name for f in m.fields(GenericBox)] == ["item"]
+        assert [f.name for f in _api.fields(GenericBox)] == ["item"]
 
     def test_the_generated_methods_work(self) -> None:
         box = GenericBox(1)

@@ -27,18 +27,17 @@ A `dataclass`-like base class whose behaviour is driven by **type hints**.
 
 ```
 src/bagof/magic/
-  __init__.py   # the builder: MetaMagic, Magic, the `magic` decorator, the
-                #   module-level `fields()` helper, and every `_make_*` method
-                #   generator
+  __init__.py   # re-exports, and nothing else -- the package's public face
+  _api.py       # the functions you call on a class or an instance: fields()
+  _magic.py     # the builder: MetaMagic, Magic, the `magic` decorator, and
+                #   every `_make_*` method generator
+  _arguments.py # Arguments -- what the init hooks are handed
   _fields.py    # Field, and the annotation family (Default, Factory,
-                #   ConvertTo, Validate, Init, KwOnly, ClassVar, Doc, ...) --
-                #   named with a leading underscore so the module doesn't
-                #   shadow the top-level `fields()` function at the dotted
-                #   path `bagof.magic.fields` in griffe's API-reference model
-  options.py    # Options -- the resolved per-class option set
-  constants.py  # sentinels (MISSING, REQUIRED, SHOW_ATTR) and the
+                #   ConvertTo, Validate, Init, KwOnly, ClassVar, Doc, ...)
+  _options.py   # Options -- the resolved per-class option set
+  _constants.py # sentinels (MISSING, REQUIRED, SHOW_ATTR) and the
                 #   `__magic_*__` attribute names
-  utils.py      # SlotsBase, rebuild_cls, the `slots` decorator
+  _utils.py     # SlotsBase, rebuild_cls, the `slots` decorator
   _resolve.py   # adapters to bagof-converters / -validators / -factories
 tests/
   test_magic.py                 # the builder, option by option
@@ -47,6 +46,18 @@ tests/
   test_licensing.py             # the license files reach the wheel
   test_import.py
 ```
+
+**Every module is private, and `__init__.py` holds no code.** A name a user
+should reach is re-exported there and listed in `__all__`; everything else is
+free to move. Two reasons it is worth keeping that way: griffe builds its
+API-reference model from dotted paths, so a public function and a module of
+the same name collide (which is why `fields.py` became `_fields.py` — the
+`fields()` function owns `bagof.magic.fields`); and the builder was a
+1759-line module that was also the package, which made "where does this
+live?" unanswerable.
+
+Tests that exercise internals import them from the module that defines them
+(`import bagof.magic._magic as m`), not from the package.
 
 ## How the class building works
 
@@ -89,7 +100,7 @@ will look "dead" on the other — that is expected, not a gap.
    `tx.Sequence`, `tx.Self`, … — do not import from `typing` or
    `collections.abc`. This matches the bagof-hints house style.
 3. **Attribute names are namespaced.** Anything stored on a user's class is
-   `__magic_*__` and is defined in `constants.py` — never a bare string
+   `__magic_*__` and is defined in `_constants.py` — never a bare string
    literal at the point of use.
 4. **`Field` slots are declared through the `slots` decorator**, not a plain
    `__slots__`, so `SlotsBase`'s `_slots()` walk sees them. A new slot must be
@@ -99,8 +110,8 @@ will look "dead" on the other — that is expected, not a gap.
    source uses `__magic_<field>_type__` and friends; an error message must
    name the *field*, not the local.
 6. **A new class option has to be registered in six places.** The `@slots`
-   list and `_DEFAULTS` in `options.py`, the option list written out three
-   times — the module docstring at the top of `__init__.py`, and the
+   list and `_DEFAULTS` in `_options.py`, the option list written out three
+   times — the module docstring at the top of `_magic.py`, and the
    `MetaMagic` and `Magic` docstrings — and the settings table in
    `README.md`. `tests/test_options_are_documented.py` checks all six, so a
    missing one is a test failure rather than a doc page that quietly
@@ -192,7 +203,7 @@ not you, later, remembering why you did it.
    > the same job.`
 
 4. **Don't reference an internal name a user could not have typed.** The
-   `slots` helper in `utils.py` is ours; an error that mentions it sends the
+   `slots` helper in `_utils.py` is ours; an error that mentions it sends the
    reader looking for something they never used.
 
 ## Third-party code
