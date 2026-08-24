@@ -315,6 +315,10 @@ def _generated_methods(cls: type) -> dict:
     it -- `{"__eq__": "eq"}` normally, `{"__same__": "eq"}` if the class
     asked for `eq="__same__"`.
 
+    Only the names a subclass might have to replace are listed, so the
+    private `__magic_*__` names are left out: every class writes its own,
+    and they must never be mistaken for something inherited.
+
     This is not the same question as "is this a Magic class". A Magic
     class can perfectly well have a hand-written `__eq__`, because a
     method in the class body always wins over the generated one. Only
@@ -397,8 +401,6 @@ def _install(
         )
     namespace[private] = fn
 
-    generated[private] = slot
-
     # Replace any inherited generated method for this option, apart from
     # the one this class is about to write. This also covers a class
     # that renamed the method: asking for it under another name is a way
@@ -448,7 +450,6 @@ def _install_hash(
             f"{private!r} from it"
         )
     namespace[private] = _hash_add(qualname, real_fields)
-    generated[private] = "hash"
 
     # A truthy `hash` means "generate one", the same force the
     # `unsafe_hash` column applies. `False` means never, and `None` (the
@@ -803,10 +804,6 @@ def __pre_new__(
     # will see -- it appears in error messages and tracebacks -- and
     # bind the public name to the same function if the class wants one.
     magic_init = namespace.get(_MAGIC("init"))
-    if magic_init is not None:
-        # Recorded here rather than in `_install`, because `__init__` is
-        # the one method compiled from source instead of being a closure.
-        generated[_MAGIC("init")] = "init"
     if magic_init is not None and init_kwargs is not None:
         # When the class asked for no `__init__`, the only name this is
         # reachable by is the private one, so that is what it is called.

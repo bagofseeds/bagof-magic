@@ -2494,3 +2494,54 @@ class TestReservedPrivateHash:
 
                 def __magic_hash__(self) -> int:
                     return 7
+
+
+class TestInstallInternals:
+    """Corners of the method-installing helpers."""
+
+    def test_a_hand_written_method_is_not_replaced(self) -> None:
+        # `eq` is on, so one would normally be generated -- but a method
+        # in the class body always wins.
+        class C(Magic):
+            x: int
+
+            def __eq__(self, other: tx.Any) -> bool:
+                return "mine"
+
+        assert C(1) == C(2) == "mine"
+        assert C.__magic_eq__(C(1), C(2)) is False
+
+    def test_defining_class_of_an_unknown_name(self) -> None:
+        assert m._defining_class((int, object), "__eq__") is int
+        assert m._defining_class((int, object), "not_a_real_name") is None
+
+    def test_a_non_magic_base_owns_the_hash(self) -> None:
+        # The base's `__hash__` is not one of ours, so there is no
+        # generated hash to replace and nothing for us to decide.
+        class Base:
+            def __hash__(self) -> int:
+                return 5
+
+        class C(Base, Magic, eq=False):
+            x: int
+
+            def __eq__(self, other: tx.Any) -> bool:
+                return NotImplemented
+
+        # Writing `__eq__` in a class body without a `__hash__` makes
+        # that class unhashable -- Python's own rule, which applies here
+        # exactly as it would to a class Magic had never touched.
+        assert C.__dict__.get("__hash__", "unset") is None
+        with pytest.raises(TypeError, match="unhashable"):
+            hash(C(1))
+
+        # Say `__hash__` too, and the base's is what answers.
+        class D(Base, Magic, eq=False):
+            x: int
+
+            def __eq__(self, other: tx.Any) -> bool:
+                return NotImplemented
+
+            __hash__ = Base.__hash__
+
+        assert hash(D(1)) == 5
