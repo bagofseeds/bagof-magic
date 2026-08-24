@@ -3066,14 +3066,31 @@ class TestInitHooks:
             def __post_init__(self, arguments: Arguments) -> None:
                 seen.append("base")
 
-        class Child(Base):
+        class Inherits(Base):
+            x: int
+
+        class Overrides(Base):
             x: int
 
             def __post_init__(self) -> None:
                 seen.append("child")
 
-        Child(5)
-        assert seen == ["child"]
+        Inherits(5)
+        Overrides(5)
+        assert seen == ["base", "child"]
+
+    def test_an_unreadable_hook_does_not_stop_the_class_being_built(
+        self,
+    ) -> None:
+        class C(Magic):
+            x: int
+            # Nothing you would write on purpose, but it is the shortest
+            # thing whose signature cannot be read. The class is still
+            # built; the hook only fails when it is actually called.
+            __post_init__ = "not a function"
+
+        with pytest.raises(TypeError, match="not callable"):
+            C(1)
 
     def test_more_than_one_parameter_is_rejected(self) -> None:
         with pytest.raises(TypeError, match="takes several arguments"):
