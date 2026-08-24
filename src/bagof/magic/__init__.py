@@ -583,16 +583,18 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     # into a factory, in which case the class attribute holding the
     # original must go, exactly as it would for a hand-written factory.
     #
-    # A field left out of `__init__` (a `ClassVar`, or `NoInit[...]`)
-    # keeps its default as a class attribute and is never assigned per
-    # instance, so there is nothing to promote and nothing to warn
-    # about: that value is meant to be shared.
+    # A `ClassVar` keeps its default as a class attribute and is never
+    # assigned per instance, so there is nothing to promote and nothing
+    # to warn about: that value is meant to be shared. Every other
+    # field's default reaches an instance -- as a parameter's default,
+    # or assigned by the generated `__init__` to a field that has no
+    # parameter of its own.
     default = field.default
     if (
         action == "allow" or
         default is MISSING or
         field.factory or
-        not field.init or
+        (field.var and not field.init) or
         not _is_mutable(default)
     ):
         return False
@@ -767,6 +769,17 @@ def __pre_new__(
         # A mutable default is promoted to a factory (or rejected),
         # so that instances do not end up sharing one object.
         if _handle_mutable_default(field, options.mutable_default):
+            namespace.pop(field.name, None)
+
+        # Python refuses to create a class where the same name is both
+        # a slot and a class attribute, so a default that is going to be
+        # stored in a slot cannot stay in the namespace. Every field
+        # that is stored on the instance -- that is, every field but a
+        # pseudo-field -- gets a slot, and the generated `__init__`
+        # assigns it its default, so the class attribute is dropped
+        # here. On a class that generates no `__init__` of its own the
+        # default is then only reachable through `__magic_init__`.
+        if options.slots and not field.var:
             namespace.pop(field.name, None)
 
         # Use Key/Repr wrappers
@@ -1223,6 +1236,12 @@ def _make_init(
 
     SELF = "self"
     seen_params = {}
+    # Fields that are stored on the instance without being a parameter:
+    # they are assigned their own default. A pseudo-field (`ClassVar`,
+    # `InitVar`) is not stored on the instance, and a field with neither
+    # a default nor a factory has nothing to assign -- `__post_init__`
+    # is where such a field gets its value.
+    own_defaults = {}
     for name, field in fields.items():
         if field.init and field.positional and not field.kw:
             positional_onlys[name] = field
@@ -1231,6 +1250,10 @@ def _make_init(
         elif field.init and not field.positional and field.kw:
             kw_onlys[name] = field
         else:
+            if not field.var and (
+                field.default is not MISSING or field.factory
+            ):
+                own_defaults[name] = field
             continue
         # The parameter is named after the field's *public* name, which
         # differs from the field name for an aliased or underscored
@@ -1339,6 +1362,25 @@ def _make_init(
             """)
         return body
 
+    def _make_own_default_elem(field: Field) -> str:
+        # The value comes from the field itself rather than from a
+        # parameter, and goes through the same converter and validator a
+        # parameter would. The locals are keyed by the field name, which
+        # no parameter uses: a parameter is named after the field's
+        # public name.
+        default = _DEFAULT(field.name)
+        locals[default] = field.factory if field.factory else field.default
+        value = f"{default}()" if field.factory else default
+        if field.converter:
+            locals[_CONVERTER(field.name)] = field.converter
+            value = f"{_CONVERTER(field.name)}({value})"
+        if field.validator:
+            locals[_VALIDATOR(field.name)] = field.validator
+            value = f"{_VALIDATOR(field.name)}({value})"
+        return dedent(f"""
+        object.__setattr__({SELF}, {field.name!r}, {value})
+        """)
+
     body = []
     if "pre" in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
@@ -1348,6 +1390,8 @@ def _make_init(
         body.append(_make_body_elem(field))
     for field in kw_onlys.values():
         body.append(_make_body_elem(field))
+    for field in own_defaults.values():
+        body.append(_make_own_default_elem(field))
     if "post" in prepost:
         body.append(_make_prepost_call(_POST_INIT_NAME))
 

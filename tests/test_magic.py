@@ -638,6 +638,13 @@ class TestHash:
 # ======================================================================
 
 
+class _SlotsPoint(Magic, frozen=True, slots=True):
+    """A frozen, slotted class with a defaulted field of each kind."""
+
+    x: int = 3
+    origin: NoInit[int] = 0
+
+
 class TestSlots:
 
     def test_slots(self) -> None:
@@ -680,6 +687,131 @@ class TestSlots:
             class Bad(Magic, slots=True):
                 __slots__ = ('x',)
                 x: int
+
+    def test_slots_with_default(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            y: int = 4
+
+        assert Point.__slots__ == ("x", "y")
+        assert (Point().x, Point().y) == (3, 4)
+        assert (Point(1).x, Point(1, 2).y) == (1, 2)
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_with_factory_default(self) -> None:
+        class Bag(Magic, slots=True):
+            items: Factory[list]
+
+        first, second = Bag(), Bag()
+        first.items.append(1)
+        assert (first.items, second.items) == ([1], [])
+        assert Bag([2]).items == [2]
+
+    def test_slots_with_field_default(self) -> None:
+        class Point(Magic, slots=True):
+            x: Annotated[int, Field(default=3)]
+
+        assert Point.__slots__ == ("x",)
+        assert Point().x == 3
+        assert Point(1).x == 1
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_with_class_var(self) -> None:
+        class Point(Magic, slots=True):
+            kind: ClassVar[str] = "point"
+            x: int = 3
+
+        assert Point.__slots__ == ("x",)
+        assert Point.kind == "point"
+        assert Point().kind == "point"
+        # A class variable is shared: every instance sees a new value.
+        Point.kind = "dot"
+        assert Point().kind == "dot"
+
+    def test_slots_with_init_var(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            scale: InitVar[int] = 10
+
+            def __post_init__(self, scale: int) -> None:
+                self.x = self.x * scale
+
+        assert Point.__slots__ == ("x",)
+        assert Point().x == 30
+        assert Point(2, 3).x == 6
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_no_init_field_is_a_slot(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            doubled: NoInit[int] = 0
+
+            def __post_init__(self) -> None:
+                self.doubled = self.x * 2
+
+        assert Point.__slots__ == ("x", "doubled")
+        assert Point(4).doubled == 8
+        assert Point().doubled == 6
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_frozen_default_survives_pickle_and_copy(self) -> None:
+        import copy
+        import pickle
+
+        point = _SlotsPoint(1)
+        assert point.__getstate__() == (1, 0)
+        assert pickle.loads(pickle.dumps(point)) == point
+        assert copy.copy(point) == point
+        assert copy.deepcopy(point) == point
+
+    def test_slots_without_init_reaches_the_default_by_hand(self) -> None:
+        # Without an `__init__` of its own, nothing assigns the default,
+        # and under `slots` it is no longer a class attribute either.
+        class Point(Magic, slots=True, init=False):
+            x: int = 3
+
+        point = Point()
+        assert not hasattr(point, "x")
+        point.__magic_init__()
+        assert point.x == 3
+
+    def test_slots_subclass_with_defaults(self) -> None:
+        class Base(Magic, slots=True):
+            x: int = 1
+
+        class Derived(Base, slots=True):
+            x: int = 2
+            y: int = 3
+
+        assert Base.__slots__ == ("x",)
+        assert Derived.__slots__ == ("y",)
+        derived = Derived()
+        assert (derived.x, derived.y) == (2, 3)
+        assert not hasattr(derived, "__dict__")
+        derived.x = 5
+        assert derived.x == 5
+
+    def test_slots_frozen_with_default(self) -> None:
+        class Point(Magic, frozen=True, slots=True):
+            x: int = 3
+
+        point = Point()
+        assert point.x == 3
+        assert point == Point(3)
+        assert not hasattr(point, "__dict__")
+        with pytest.raises(AttributeError):
+            point.x = 4
+
+    def test_slots_weakref_with_default(self) -> None:
+        import weakref
+
+        class Point(Magic, slots=True, weakref_slot=True):
+            x: int = 3
+
+        assert Point.__slots__ == ("x", "__weakref__")
+        point = Point()
+        assert point.x == 3
+        assert weakref.ref(point)() is point
 
 
 # ======================================================================
@@ -823,6 +955,33 @@ class TestVarFields:
         w = WithInitVar(5, 10)
         assert w.x == 50
         assert not hasattr(w, "scale") or getattr(w, "scale", None) is None
+
+    def test_no_init_field_gets_its_default(self) -> None:
+        class Point(Magic):
+            x: int = 3
+            origin: NoInit[int] = 0
+
+        point = Point()
+        assert point.origin == 0
+        # The default is stored on the instance, so it can be replaced
+        # on one instance without touching the others.
+        point.origin = 5
+        assert (point.origin, Point().origin) == (5, 0)
+
+    def test_no_init_factory_is_called_per_instance(self) -> None:
+        class Bag(Magic):
+            items: NoInit[Factory[list]]
+
+        first, second = Bag(), Bag()
+        first.items.append(1)
+        assert (first.items, second.items) == ([1], [])
+
+    def test_no_init_field_is_converted_and_validated(self) -> None:
+        class Point(Magic, convert=True, validate=True):
+            x: int = 1
+            origin: NoInit[int] = "0"
+
+        assert Point().origin == 0
 
 
 # ======================================================================
@@ -3003,6 +3162,16 @@ class TestMutableDefaults:
 
             class C(Magic, mutable_default="copy"):
                 x: list = []
+
+    def test_no_init_list_default_is_per_instance(self) -> None:
+        # A field left out of `__init__` is still stored per instance,
+        # so its default is copied like any other.
+        class C(Magic):
+            x: NoInit[list] = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert (a.x, b.x) == ([1], [])
 
     def test_class_variable_is_still_shared(self) -> None:
         # A `ClassVar` is a class attribute by definition: it is never
