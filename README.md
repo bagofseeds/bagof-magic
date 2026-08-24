@@ -289,6 +289,9 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 
 Most of them also take a string instead of `True`, which writes the method
 under that name — handy when you want to call the generated one from your own.
+`order` gives the name to its `<` comparison; the class is then left with no
+comparison operators at all, so the method is there for you to call rather
+than to answer `<`.
 
 ---
 
