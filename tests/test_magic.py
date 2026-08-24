@@ -1,4 +1,5 @@
 """Unit tests for the bagof.magic module."""
+import operator
 from typing import ClassVar as TypingClassVar
 from typing import Optional, Union
 
@@ -457,6 +458,29 @@ class TestEqOrder:
         assert Point(1, 2) < Point(1, 3)
         assert not Point(1, 3) < Point(1, 2)
 
+    def test_order_gives_all_four_comparisons(self) -> None:
+        class Point(Magic, order=True):
+            x: int
+            y: int
+
+        assert Point(1, 2) < Point(1, 3)
+        assert Point(1, 2) <= Point(1, 3)
+        assert Point(1, 2) <= Point(1, 2)
+        assert Point(1, 3) > Point(1, 2)
+        assert Point(1, 3) >= Point(1, 2)
+        assert Point(1, 3) >= Point(1, 3)
+        assert not Point(1, 2) >= Point(1, 3)
+        assert not Point(1, 3) <= Point(1, 2)
+
+    def test_order_sorts(self) -> None:
+        class Point(Magic, order=True):
+            x: int
+            y: int
+
+        points = [Point(2, 0), Point(1, 5), Point(1, 2)]
+        assert sorted(points) == [Point(1, 2), Point(1, 5), Point(2, 0)]
+        assert max(points) == Point(2, 0)
+
     def test_order_different_class(self) -> None:
         class A(Magic, order=True):
             x: int
@@ -465,6 +489,14 @@ class TestEqOrder:
             x: int
 
         assert A(1).__lt__(B(2)) is NotImplemented
+        assert A(1).__le__(B(2)) is NotImplemented
+        assert A(1).__gt__(B(2)) is NotImplemented
+        assert A(1).__ge__(B(2)) is NotImplemented
+        # With both sides answering `NotImplemented`, Python falls back
+        # to identity for `==` and refuses the ordering operators.
+        assert A(1) != B(1)
+        with pytest.raises(TypeError, match="not supported between"):
+            operator.le(A(1), B(1))
 
     def test_no_order_field(self) -> None:
         class Point(Magic, order=True):
@@ -474,6 +506,28 @@ class TestEqOrder:
         # y excluded from ordering
         assert not Point(1, 2) < Point(1, 1)
         assert not Point(1, 1) < Point(1, 2)
+        assert Point(1, 2) <= Point(1, 1)
+        assert Point(1, 2) >= Point(1, 1)
+        assert not Point(1, 2) > Point(1, 1)
+
+    def test_a_renamed_order_binds_no_operator(self) -> None:
+        class R(Magic, order="__before__"):
+            x: int
+
+        assert R(1).__before__(R(2)) is True
+        assert R(2).__before__(R(1)) is False
+        assert R.__before__ is R.__magic_lt__
+        for compare in (operator.lt, operator.le, operator.gt, operator.ge):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(R(1), R(2))
+
+    def test_a_renamed_order_still_writes_the_private_methods(self) -> None:
+        class R(Magic, order="__before__"):
+            x: int
+
+        assert R(1).__magic_le__(R(1)) is True
+        assert R(1).__magic_gt__(R(2)) is False
+        assert R(2).__magic_ge__(R(1)) is True
 
     def test_order_requires_eq(self) -> None:
         with pytest.raises(ValueError, match="eq must be true"):
@@ -2128,7 +2182,9 @@ class TestAlwaysGenerated:
     @pytest.mark.parametrize(
         "option,private",
         [("repr", "__magic_repr__"), ("eq", "__magic_eq__"),
-         ("order", "__magic_lt__"), ("hash", "__magic_hash__")],
+         ("order", "__magic_lt__"), ("order", "__magic_le__"),
+         ("order", "__magic_gt__"), ("order", "__magic_ge__"),
+         ("hash", "__magic_hash__")],
     )
     def test_the_private_name_exists_even_when_turned_off(
         self, option: str, private: str
@@ -2188,8 +2244,12 @@ class TestDisabledOptionsDoNotFallThrough:
             y: int
 
         assert Ordered(1) < Ordered(2)
-        with pytest.raises(TypeError, match="not supported between"):
-            assert Unordered(1, 2) < Unordered(3, 4)
+        assert Ordered(1) <= Ordered(2)
+        assert Ordered(2) > Ordered(1)
+        assert Ordered(2) >= Ordered(1)
+        for compare in (operator.lt, operator.le, operator.gt, operator.ge):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(Unordered(1, 2), Unordered(3, 4))
 
     def test_hash_false_on_a_frozen_base(self) -> None:
         class F(Magic, frozen=True):

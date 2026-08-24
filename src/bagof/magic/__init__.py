@@ -39,7 +39,7 @@ repr : bool | str, default=True
 eq : bool | str, default=True
     Generate `__eq__` method
 order : bool | str, default=False
-    Generate `__lt__` method
+    Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods
 unsafe_hash : bool, default=False
     Always generate `__hash__` method
 frozen : bool, default=False
@@ -121,6 +121,7 @@ from __future__ import annotations
 __all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 # stdlib
 import copy
+import operator
 import sys
 from abc import ABCMeta
 from collections import abc as _abc
@@ -341,6 +342,17 @@ def _no_order(self: Magic, other: tx.Any) -> tx.Any:
     return NotImplemented
 
 
+#: The four comparison methods the `order` option generates: the name
+#: each is normally bound under, and the operator it applies to the
+#: tuple of values of the fields that take part in the ordering.
+_ORDER_METHODS = {
+    "lt": ("__lt__", operator.lt),
+    "le": ("__le__", operator.le),
+    "gt": ("__gt__", operator.gt),
+    "ge": ("__ge__", operator.ge),
+}
+
+
 #: What is put in place of a generated method when an option is turned
 #: off. These are the behaviours a plain Python class has: comparison by
 #: identity, the `<Thing object at 0x...>` repr, and no ordering.
@@ -348,6 +360,9 @@ _NEUTRAL = {
     "repr": object.__repr__,
     "eq": object.__eq__,
     "lt": _no_order,
+    "le": _no_order,
+    "gt": _no_order,
+    "ge": _no_order,
     "hash": None,
 }
 
@@ -900,11 +915,21 @@ def __pre_new__(
         _make_eq(qualname, real_fields), bool(options.eq),
     )
 
-    _install(
-        namespace, generated, base_mro, "lt",
-        options.order if isinstance(options.order, str) else "__lt__",
-        _make_lt(qualname, real_fields), bool(options.order),
-    )
+    # `order=True` binds all four comparisons to their operators.
+    # `order="<name>"` binds the `<` comparison under that name and
+    # binds nothing to any of the four operators: a comparison asked for
+    # under a name of your own is one you mean to call yourself, and
+    # `<=` answering while `<` deliberately does not would make no
+    # sense. The other three are still written under their private
+    # names, and any inherited generated one is replaced.
+    named_order = isinstance(options.order, str)
+    for slot, (dunder, _) in _ORDER_METHODS.items():
+        _install(
+            namespace, generated, base_mro, slot,
+            options.order if named_order and slot == "lt" else dunder,
+            _make_order(qualname, real_fields, slot),
+            bool(options.order) and (slot == "lt" or not named_order),
+        )
 
     # Whether this class compares by identity is read back out of the
     # namespace: what matters is where `__eq__` ended up, not how it got
@@ -1362,25 +1387,32 @@ def _make_eq(qualname: str, fields: dict[str, Field]) -> tx.Callable:
     return __eq__
 
 
-def _make_lt(qualname: str, fields: dict[str, Field]) -> tx.Callable:
+def _make_order(
+    qualname: str, fields: dict[str, Field], slot: str
+) -> tx.Callable:
+    # Build one of the four comparisons -- `slot` is "lt", "le", "gt" or
+    # "ge". All four compare the same thing: the values of the fields
+    # that take part in the ordering, as a tuple.
+    name, compare = _ORDER_METHODS[slot]
 
-    def __lt__(self: Magic, other: tx.Any) -> bool:
-        if other.__class__ is self.__class__:
-            this_value = tuple(
-                getattr(self, field.name)
-                for field in fields.values()
-                if field.order
-            )
-            other_value = tuple(
-                getattr(other, field.name)
-                for field in fields.values()
-                if field.order
-            )
-            return this_value < other_value
-        return NotImplemented
+    def method(self: Magic, other: tx.Any) -> tx.Any:
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        this_value = tuple(
+            getattr(self, field.name)
+            for field in fields.values()
+            if field.order
+        )
+        other_value = tuple(
+            getattr(other, field.name)
+            for field in fields.values()
+            if field.order
+        )
+        return compare(this_value, other_value)
 
-    __lt__.__qualname__ = f"{qualname}.__lt__"
-    return __lt__
+    method.__name__ = name
+    method.__qualname__ = f"{qualname}.{name}"
+    return method
 
 
 def _make_assign(cls: type) -> type:
@@ -1590,7 +1622,9 @@ class MetaMagic(ABCMeta):
     eq : bool | str, default=True
         Generate `__eq__` method.
     order : bool | str, default=False
-        Generate `__lt__` method.
+        Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
+        Given a name, generate the `<` comparison under that name and
+        leave all four operators alone.
     hash : bool | str, default=None
         Generate `__hash__` method.
         If `None`, decide automatically.
@@ -1669,7 +1703,9 @@ class Magic(metaclass=MetaMagic):
     eq : bool | str, default=True
         Generate `__eq__` method.
     order : bool | str, default=False
-        Generate `__lt__` method.
+        Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
+        Given a name, generate the `<` comparison under that name and
+        leave all four operators alone.
     hash : bool | str, default=None
         Generate `__hash__` method.
         If `None`, decide automatically.
