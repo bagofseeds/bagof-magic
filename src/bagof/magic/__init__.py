@@ -754,6 +754,14 @@ def __pre_new__(
         if _handle_mutable_default(field, options.mutable_default):
             namespace.pop(field.name, None)
 
+        # Python refuses to create a class where the same name is both a
+        # slot and a class attribute, so a default that is going to be
+        # stored in a slot cannot stay in the namespace. It is carried on
+        # the field and written into the generated `__init__` signature,
+        # so nothing is lost by dropping it here.
+        if options.slots and _has_slot(field):
+            namespace.pop(field.name, None)
+
         # Use Key/Repr wrappers
         # (This is hacky and ugly -- should be reworked)
         if field.key is HIDE_IF_NONE:
@@ -923,7 +931,7 @@ def __pre_new__(
         if '__slots__' in namespace:
             raise TypeError(f'{clsname} already specifies __slots__')
         weakref_slot = options.weakref_slot
-        namespace["__slots__"] = _make_slots(bases, real_fields, weakref_slot)
+        namespace["__slots__"] = _make_slots(bases, fields, weakref_slot)
 
     fnbuilder.insert_fns(clsname, namespace)
 
@@ -1464,6 +1472,17 @@ def _get_slots(cls: type) -> tx.Iterator[str]:
         raise TypeError(f"Slots of '{cls.__name__}' cannot be determined")
 
 
+def _has_slot(field: Field) -> bool:
+    # Whether this field is stored on the instance, and so needs a slot
+    # of its own. A pseudo-field (`ClassVar`, `InitVar`) is never stored
+    # on an instance. Neither is a field the generated `__init__` does
+    # not take: nothing assigns it, so its default stays on the class
+    # and every instance reads that one value.
+    if field.var:
+        return False
+    return bool(field.init) or field.default is MISSING
+
+
 def _make_slots(
     bases: tuple[type, ...],
     fields: dict[str, Field],
@@ -1478,6 +1497,8 @@ def _make_slots(
 
     slots, has_doc = {}, False
     for field in fields.values():
+        if not _has_slot(field):
+            continue
         if field.name in inherited_slots:
             continue
         slots[field.name] = field.doc

@@ -572,6 +572,106 @@ class TestSlots:
                 __slots__ = ('x',)
                 x: int
 
+    def test_slots_with_default(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            y: int = 4
+
+        assert Point.__slots__ == ("x", "y")
+        assert (Point().x, Point().y) == (3, 4)
+        assert (Point(1).x, Point(1, 2).y) == (1, 2)
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_with_factory_default(self) -> None:
+        class Bag(Magic, slots=True):
+            items: Factory[list]
+
+        first, second = Bag(), Bag()
+        first.items.append(1)
+        assert (first.items, second.items) == ([1], [])
+        assert Bag([2]).items == [2]
+
+    def test_slots_with_field_default(self) -> None:
+        class Point(Magic, slots=True):
+            x: Annotated[int, Field(default=3)]
+
+        assert Point.__slots__ == ("x",)
+        assert Point().x == 3
+        assert Point(1).x == 1
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_with_class_var(self) -> None:
+        class Point(Magic, slots=True):
+            kind: ClassVar[str] = "point"
+            x: int = 3
+
+        assert Point.__slots__ == ("x",)
+        assert Point.kind == "point"
+        assert Point().kind == "point"
+        # A class variable is shared: every instance sees a new value.
+        Point.kind = "dot"
+        assert Point().kind == "dot"
+
+    def test_slots_with_init_var(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            scale: InitVar[int] = 10
+
+            def __post_init__(self, scale: int) -> None:
+                self.x = self.x * scale
+
+        assert Point.__slots__ == ("x",)
+        assert Point().x == 30
+        assert Point(2, 3).x == 6
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_no_init_field_keeps_its_default(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            origin: NoInit[int] = 0
+
+        assert Point.__slots__ == ("x",)
+        assert Point().origin == 0
+        assert Point.origin == 0
+
+    def test_slots_subclass_with_defaults(self) -> None:
+        class Base(Magic, slots=True):
+            x: int = 1
+
+        class Derived(Base, slots=True):
+            x: int = 2
+            y: int = 3
+
+        assert Base.__slots__ == ("x",)
+        assert Derived.__slots__ == ("y",)
+        derived = Derived()
+        assert (derived.x, derived.y) == (2, 3)
+        assert not hasattr(derived, "__dict__")
+        derived.x = 5
+        assert derived.x == 5
+
+    def test_slots_frozen_with_default(self) -> None:
+        class Point(Magic, frozen=True, slots=True):
+            x: int = 3
+
+        point = Point()
+        assert point.x == 3
+        assert point == Point(3)
+        assert not hasattr(point, "__dict__")
+        with pytest.raises(AttributeError):
+            point.x = 4
+
+    def test_slots_weakref_with_default(self) -> None:
+        import weakref
+
+        class Point(Magic, slots=True, weakref_slot=True):
+            x: int = 3
+
+        assert Point.__slots__ == ("x", "__weakref__")
+        point = Point()
+        assert point.x == 3
+        assert weakref.ref(point)() is point
+
 
 # ======================================================================
 # Inheritance
