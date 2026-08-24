@@ -218,6 +218,31 @@ class Circle(Magic):
 Circle(radius=6.0)
 ```
 
+**Generic classes.** A `Magic` class can take a type parameter like any
+other:
+
+```python
+from typing import Generic, TypeVar
+from bagof.magic import Magic
+
+T = TypeVar("T")
+
+class Box(Magic, Generic[T]):
+    item: T
+```
+
+```pycon
+>>> Box(1)
+Box(item=1)
+>>> Box[str]("hello")
+Box(item='hello')
+```
+
+The parameter is not filled in on the fields, though: a subclass written as
+`class IntBox(Box[int])` still sees `item` as `T`, so conversion and
+validation have nothing to go on there. Annotate the field with a real type
+in the subclass if you need those.
+
 **Documentation that writes itself.** Describe a field and it shows up in the
 class docstring and in the generated `__init__`:
 
