@@ -34,6 +34,7 @@ followed is noted.
 | `_hash_set_none`, `_hash_exception`, `_hash_add`, `_hash_action` | the same names |
 | `_get_slots` | `_get_slots` |
 | `_make_slots` | the slot-computing half of `_add_slots` |
+| the `slots` handling in `__pre_new__` | the field defaults `_add_slots` drops from the class dict |
 
 ### `src/bagof/magic/utils.py`
 
@@ -87,3 +88,6 @@ followed is noted.
   read through `annotationlib` on 3.14+ and from the class namespace below it.
 - **Per-field, rather than per-class, control** of `repr`, `eq`, `order`,
   `hash`, `frozen`, `kw_only` and `positional_only`.
+- **Slots are worked out before the class exists**, so the defaults that
+  cannot share a name with a slot are dropped from the namespace as the
+  fields are read, rather than from the dict of a class being rebuilt.

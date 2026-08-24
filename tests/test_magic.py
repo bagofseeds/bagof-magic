@@ -1,5 +1,6 @@
 """Unit tests for the bagof.magic module."""
 import copy
+import operator
 import pickle
 from typing import ClassVar as TypingClassVar
 from typing import Optional, Union
@@ -460,6 +461,29 @@ class TestEqOrder:
         assert Point(1, 2) < Point(1, 3)
         assert not Point(1, 3) < Point(1, 2)
 
+    def test_order_gives_all_four_comparisons(self) -> None:
+        class Point(Magic, order=True):
+            x: int
+            y: int
+
+        assert Point(1, 2) < Point(1, 3)
+        assert Point(1, 2) <= Point(1, 3)
+        assert Point(1, 2) <= Point(1, 2)
+        assert Point(1, 3) > Point(1, 2)
+        assert Point(1, 3) >= Point(1, 2)
+        assert Point(1, 3) >= Point(1, 3)
+        assert not Point(1, 2) >= Point(1, 3)
+        assert not Point(1, 3) <= Point(1, 2)
+
+    def test_order_sorts(self) -> None:
+        class Point(Magic, order=True):
+            x: int
+            y: int
+
+        points = [Point(2, 0), Point(1, 5), Point(1, 2)]
+        assert sorted(points) == [Point(1, 2), Point(1, 5), Point(2, 0)]
+        assert max(points) == Point(2, 0)
+
     def test_order_different_class(self) -> None:
         class A(Magic, order=True):
             x: int
@@ -468,6 +492,14 @@ class TestEqOrder:
             x: int
 
         assert A(1).__lt__(B(2)) is NotImplemented
+        assert A(1).__le__(B(2)) is NotImplemented
+        assert A(1).__gt__(B(2)) is NotImplemented
+        assert A(1).__ge__(B(2)) is NotImplemented
+        # With both sides answering `NotImplemented`, Python falls back
+        # to identity for `==` and refuses the ordering operators.
+        assert A(1) != B(1)
+        with pytest.raises(TypeError, match="not supported between"):
+            operator.le(A(1), B(1))
 
     def test_no_order_field(self) -> None:
         class Point(Magic, order=True):
@@ -477,6 +509,83 @@ class TestEqOrder:
         # y excluded from ordering
         assert not Point(1, 2) < Point(1, 1)
         assert not Point(1, 1) < Point(1, 2)
+        assert Point(1, 2) <= Point(1, 1)
+        assert Point(1, 2) >= Point(1, 1)
+        assert not Point(1, 2) > Point(1, 1)
+
+    def test_a_renamed_order_binds_no_operator(self) -> None:
+        class R(Magic, order="__before__"):
+            x: int
+
+        assert R(1).__before__(R(2)) is True
+        assert R(2).__before__(R(1)) is False
+        assert R.__before__ is R.__magic_lt__
+        for compare in (operator.lt, operator.le, operator.gt, operator.ge):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(R(1), R(2))
+
+    def test_a_renamed_order_still_writes_the_private_methods(self) -> None:
+        class R(Magic, order="__before__"):
+            x: int
+
+        assert R(1).__magic_le__(R(1)) is True
+        assert R(1).__magic_gt__(R(2)) is False
+        assert R(2).__magic_ge__(R(1)) is True
+
+    def test_a_hand_written_lt_stands_alone(self) -> None:
+        # A comparison in the class body wins, so the other three are
+        # not generated around it: they would compare the fields and
+        # disagree with it.
+        class P(Magic, order=True):
+            x: int
+
+            def __lt__(self, other: tx.Any) -> bool:
+                return self.x > other.x
+
+        assert (P(1) < P(2)) is False
+        assert (P(2) < P(1)) is True
+        for compare in (operator.le, operator.ge):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(P(1), P(2))
+        assert [name for name in ("__le__", "__gt__", "__ge__")
+                if name in P.__dict__] == []
+        # `>` is answered by Python itself, by turning it round and
+        # asking the hand-written `<`.
+        assert (P(1) > P(2)) is True
+        # All four are still there to call.
+        assert P(1).__magic_lt__(P(2)) is True
+        assert P(1).__magic_le__(P(2)) is True
+        assert P(1).__magic_gt__(P(2)) is False
+        assert P(1).__magic_ge__(P(2)) is False
+
+    def test_a_hand_written_ge_stands_alone(self) -> None:
+        class P(Magic, order=True):
+            x: int
+
+            def __ge__(self, other: tx.Any) -> bool:
+                return "mine"
+
+        assert (P(1) >= P(2)) == "mine"
+        for compare in (operator.lt, operator.gt):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(P(1), P(2))
+        assert [name for name in ("__lt__", "__le__", "__gt__")
+                if name in P.__dict__] == []
+
+    def test_a_hand_written_lt_silences_an_ordered_base(self) -> None:
+        class Base(Magic, order=True):
+            x: int
+
+        class Child(Base):
+            y: int
+
+            def __lt__(self, other: tx.Any) -> bool:
+                return self.x > other.x
+
+        assert (Child(1, 0) < Child(2, 0)) is False
+        for compare in (operator.le, operator.ge):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(Child(1, 0), Child(2, 0))
 
     def test_order_requires_eq(self) -> None:
         with pytest.raises(ValueError, match="eq must be true"):
@@ -532,6 +641,13 @@ class TestHash:
 # ======================================================================
 
 
+class _SlotsPoint(Magic, frozen=True, slots=True):
+    """A frozen, slotted class with a defaulted field of each kind."""
+
+    x: int = 3
+    origin: NoInit[int] = 0
+
+
 class TestSlots:
 
     def test_slots(self) -> None:
@@ -574,6 +690,131 @@ class TestSlots:
             class Bad(Magic, slots=True):
                 __slots__ = ('x',)
                 x: int
+
+    def test_slots_with_default(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            y: int = 4
+
+        assert Point.__slots__ == ("x", "y")
+        assert (Point().x, Point().y) == (3, 4)
+        assert (Point(1).x, Point(1, 2).y) == (1, 2)
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_with_factory_default(self) -> None:
+        class Bag(Magic, slots=True):
+            items: Factory[list]
+
+        first, second = Bag(), Bag()
+        first.items.append(1)
+        assert (first.items, second.items) == ([1], [])
+        assert Bag([2]).items == [2]
+
+    def test_slots_with_field_default(self) -> None:
+        class Point(Magic, slots=True):
+            x: Annotated[int, Field(default=3)]
+
+        assert Point.__slots__ == ("x",)
+        assert Point().x == 3
+        assert Point(1).x == 1
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_with_class_var(self) -> None:
+        class Point(Magic, slots=True):
+            kind: ClassVar[str] = "point"
+            x: int = 3
+
+        assert Point.__slots__ == ("x",)
+        assert Point.kind == "point"
+        assert Point().kind == "point"
+        # A class variable is shared: every instance sees a new value.
+        Point.kind = "dot"
+        assert Point().kind == "dot"
+
+    def test_slots_with_init_var(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            scale: InitVar[int] = 10
+
+            def __post_init__(self, scale: int) -> None:
+                self.x = self.x * scale
+
+        assert Point.__slots__ == ("x",)
+        assert Point().x == 30
+        assert Point(2, 3).x == 6
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_no_init_field_is_a_slot(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            doubled: NoInit[int] = 0
+
+            def __post_init__(self) -> None:
+                self.doubled = self.x * 2
+
+        assert Point.__slots__ == ("x", "doubled")
+        assert Point(4).doubled == 8
+        assert Point().doubled == 6
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_frozen_default_survives_pickle_and_copy(self) -> None:
+        import copy
+        import pickle
+
+        point = _SlotsPoint(1)
+        assert point.__getstate__() == (1, 0)
+        assert pickle.loads(pickle.dumps(point)) == point
+        assert copy.copy(point) == point
+        assert copy.deepcopy(point) == point
+
+    def test_slots_without_init_reaches_the_default_by_hand(self) -> None:
+        # Without an `__init__` of its own, nothing assigns the default,
+        # and under `slots` it is no longer a class attribute either.
+        class Point(Magic, slots=True, init=False):
+            x: int = 3
+
+        point = Point()
+        assert not hasattr(point, "x")
+        point.__magic_init__()
+        assert point.x == 3
+
+    def test_slots_subclass_with_defaults(self) -> None:
+        class Base(Magic, slots=True):
+            x: int = 1
+
+        class Derived(Base, slots=True):
+            x: int = 2
+            y: int = 3
+
+        assert Base.__slots__ == ("x",)
+        assert Derived.__slots__ == ("y",)
+        derived = Derived()
+        assert (derived.x, derived.y) == (2, 3)
+        assert not hasattr(derived, "__dict__")
+        derived.x = 5
+        assert derived.x == 5
+
+    def test_slots_frozen_with_default(self) -> None:
+        class Point(Magic, frozen=True, slots=True):
+            x: int = 3
+
+        point = Point()
+        assert point.x == 3
+        assert point == Point(3)
+        assert not hasattr(point, "__dict__")
+        with pytest.raises(AttributeError):
+            point.x = 4
+
+    def test_slots_weakref_with_default(self) -> None:
+        import weakref
+
+        class Point(Magic, slots=True, weakref_slot=True):
+            x: int = 3
+
+        assert Point.__slots__ == ("x", "__weakref__")
+        point = Point()
+        assert point.x == 3
+        assert weakref.ref(point)() is point
 
 
 # ======================================================================
@@ -717,6 +958,33 @@ class TestVarFields:
         w = WithInitVar(5, 10)
         assert w.x == 50
         assert not hasattr(w, "scale") or getattr(w, "scale", None) is None
+
+    def test_no_init_field_gets_its_default(self) -> None:
+        class Point(Magic):
+            x: int = 3
+            origin: NoInit[int] = 0
+
+        point = Point()
+        assert point.origin == 0
+        # The default is stored on the instance, so it can be replaced
+        # on one instance without touching the others.
+        point.origin = 5
+        assert (point.origin, Point().origin) == (5, 0)
+
+    def test_no_init_factory_is_called_per_instance(self) -> None:
+        class Bag(Magic):
+            items: NoInit[Factory[list]]
+
+        first, second = Bag(), Bag()
+        first.items.append(1)
+        assert (first.items, second.items) == ([1], [])
+
+    def test_no_init_field_is_converted_and_validated(self) -> None:
+        class Point(Magic, convert=True, validate=True):
+            x: int = 1
+            origin: NoInit[int] = "0"
+
+        assert Point().origin == 0
 
 
 # ======================================================================
@@ -2290,7 +2558,9 @@ class TestAlwaysGenerated:
     @pytest.mark.parametrize(
         "option,private",
         [("repr", "__magic_repr__"), ("eq", "__magic_eq__"),
-         ("order", "__magic_lt__"), ("hash", "__magic_hash__")],
+         ("order", "__magic_lt__"), ("order", "__magic_le__"),
+         ("order", "__magic_gt__"), ("order", "__magic_ge__"),
+         ("hash", "__magic_hash__")],
     )
     def test_the_private_name_exists_even_when_turned_off(
         self, option: str, private: str
@@ -2350,8 +2620,12 @@ class TestDisabledOptionsDoNotFallThrough:
             y: int
 
         assert Ordered(1) < Ordered(2)
-        with pytest.raises(TypeError, match="not supported between"):
-            assert Unordered(1, 2) < Unordered(3, 4)
+        assert Ordered(1) <= Ordered(2)
+        assert Ordered(2) > Ordered(1)
+        assert Ordered(2) >= Ordered(1)
+        for compare in (operator.lt, operator.le, operator.gt, operator.ge):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(Unordered(1, 2), Unordered(3, 4))
 
     def test_hash_false_on_a_frozen_base(self) -> None:
         class F(Magic, frozen=True):
@@ -3050,6 +3324,16 @@ class TestMutableDefaults:
 
             class C(Magic, mutable_default="copy"):
                 x: list = []
+
+    def test_no_init_list_default_is_per_instance(self) -> None:
+        # A field left out of `__init__` is still stored per instance,
+        # so its default is copied like any other.
+        class C(Magic):
+            x: NoInit[list] = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert (a.x, b.x) == ([1], [])
 
     def test_class_variable_is_still_shared(self) -> None:
         # A `ClassVar` is a class attribute by definition: it is never
