@@ -10,4 +10,9 @@ icon: fontawesome/brands/python
         - magic
         - Arguments
         - fields
+        - fields_dict
+        - asdict
+        - astuple
+        - replace
+        - is_magic
         - HIDE_IF_NONE
