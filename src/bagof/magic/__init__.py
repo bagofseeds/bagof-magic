@@ -808,9 +808,18 @@ def __pre_new__(
         # the one method compiled from source instead of being a closure.
         generated[_MAGIC("init")] = "init"
     if magic_init is not None and init_kwargs is not None:
-        magic_init.__name__ = init_name or "__init__"
+        # When the class asked for no `__init__`, the only name this is
+        # reachable by is the private one, so that is what it is called.
+        magic_init.__name__ = init_name or _MAGIC("init")
         magic_init.__qualname__ = (
             f"{qualname or clsname}.{magic_init.__name__}"
+        )
+        # Before Python 3.10 the interpreter words "missing a required
+        # argument" from the compiled code object rather than from the
+        # function, so that has to be renamed too -- otherwise the error
+        # names the private method on the older versions.
+        magic_init.__code__ = magic_init.__code__.replace(
+            co_name=magic_init.__name__
         )
         if init_name and init_name not in namespace:
             namespace[init_name] = magic_init
