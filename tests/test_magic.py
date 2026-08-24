@@ -2091,3 +2091,39 @@ class TestAnnotationPolarity:
     def test_subscript_keeps_extra_metadata(self) -> None:
         hint = NoRepr[int, "some note"]
         assert tx.get_args(hint)[2] == "some note"
+
+
+class TestInheritableUnsetValues:
+    """What counts as "this field did not say" is decided per attribute."""
+
+    def test_doc_treats_none_as_unset(self) -> None:
+        # A resolved field has `doc = None` when none was given, so an
+        # inherited doc fills it in.
+        class Base(Magic):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Child(Base):
+            x: int = 2
+
+        assert {f.name: f.doc for f in m.fields(Child)}["x"] == "base doc"
+
+    def test_every_inheritable_attribute_declares_its_unset_values(
+        self,
+    ) -> None:
+        # `_inherit_attrs` looks the values up rather than assuming, so
+        # an attribute added to the list without a decision fails here
+        # rather than silently treating None as "did not say". That
+        # matters because None is a real answer for some of them --
+        # `hash = None` means "follow eq".
+        default = m._add_fields.__defaults__[-1]
+        assert set(default) <= set(m._INHERITABLE)
+        for attr, unset in m._INHERITABLE.items():
+            assert MISSING in unset, attr
+
+    def test_a_meaningful_none_would_not_be_treated_as_unset(self) -> None:
+        # `hash` is not inheritable today; if it ever is, None must keep
+        # meaning "follow eq" rather than "unset".
+        field = Field(name="x", hash=None)
+        other = Field(name="x", hash=True)
+        m._inherit_attrs(field, other, ())
+        assert field.hash is None

@@ -182,20 +182,32 @@ def __post_new__(cls: type) -> type:
     return cls
 
 
+#: The attributes a field can take from the field it replaces, and the
+#: values that mean "this field did not say".
+#:
+#: What counts as "did not say" is per attribute, and has to be, because
+#: None is a real answer for some of them. A resolved field has
+#: `doc = None` when no documentation was given, so for `doc` both None
+#: and MISSING mean unset -- but `hash = None` means "follow whatever
+#: `eq` says", which is an answer, and would be wrong to overwrite.
+#: Anything added here needs its own decision.
+_INHERITABLE = {
+    "doc": (MISSING, None),
+}
+
+
 def _inherit_attrs(
     field: Field,
     other: Field,
     attrs: tx.Sequence[str],
 ) -> None:
-    # Copy into `field`, from `other`, the attributes that `field` leaves
-    # unset.
-    #
-    # By the time fields of a class and of its bases are merged, an
-    # attribute that was never given a value has already been filled in
-    # with None, so both MISSING and None count as unset here.
+    # Copy into `field`, from `other`, the attributes `field` leaves
+    # unset -- see `_INHERITABLE` for what unset means for each.
     for attr in attrs:
         value = getattr(field, attr, MISSING)
-        if value is not MISSING and value is not None:
+        # Compared by identity: `==` on an arbitrary field value can do
+        # anything, including returning something that is not a bool.
+        if not any(value is unset for unset in _INHERITABLE[attr]):
             continue
         inherited = getattr(other, attr, MISSING)
         if inherited is not MISSING:
@@ -207,7 +219,7 @@ def _add_fields(
     new_fields: tx.Iterable[Field],
     replace: bool = False,
     reverse: bool = False,
-    inherit: tx.Sequence[str] = ("doc",),
+    inherit: tx.Sequence[str] = tuple(_INHERITABLE),
 ) -> None:
     # Add fields to an existing dict of fields.
     #
