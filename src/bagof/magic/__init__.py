@@ -915,20 +915,25 @@ def __pre_new__(
         _make_eq(qualname, real_fields), bool(options.eq),
     )
 
-    # `order=True` binds all four comparisons to their operators.
+    # The four comparisons are generated as a set, so that they always
+    # agree with each other. `order=True` binds each to its operator;
     # `order="<name>"` binds the `<` comparison under that name and
-    # binds nothing to any of the four operators: a comparison asked for
-    # under a name of your own is one you mean to call yourself, and
-    # `<=` answering while `<` deliberately does not would make no
-    # sense. The other three are still written under their private
-    # names, and any inherited generated one is replaced.
+    # binds none of the operators. A comparison written in the class
+    # body wins, and then none of the other three is bound either --
+    # they would answer beside it with a different answer. All four are
+    # written under their private names whatever happens.
     named_order = isinstance(options.order, str)
+    order_names = [dunder for dunder, _ in _ORDER_METHODS.values()]
+    if named_order:
+        order_names.append(options.order)
+    hand_written_order = any(name in namespace for name in order_names)
     for slot, (dunder, _) in _ORDER_METHODS.items():
         _install(
             namespace, generated, base_mro, slot,
             options.order if named_order and slot == "lt" else dunder,
             _make_order(qualname, real_fields, slot),
-            bool(options.order) and (slot == "lt" or not named_order),
+            bool(options.order) and not hand_written_order
+            and (slot == "lt" or not named_order),
         )
 
     # Whether this class compares by identity is read back out of the
@@ -1623,8 +1628,9 @@ class MetaMagic(ABCMeta):
         Generate `__eq__` method.
     order : bool | str, default=False
         Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
-        Given a name, generate the `<` comparison under that name and
-        leave all four operators alone.
+        Given a name, generate the `<` comparison under that name; the
+        class is then left with none of the four comparison operators,
+        including any it would otherwise inherit.
     hash : bool | str, default=None
         Generate `__hash__` method.
         If `None`, decide automatically.
@@ -1704,8 +1710,9 @@ class Magic(metaclass=MetaMagic):
         Generate `__eq__` method.
     order : bool | str, default=False
         Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
-        Given a name, generate the `<` comparison under that name and
-        leave all four operators alone.
+        Given a name, generate the `<` comparison under that name; the
+        class is then left with none of the four comparison operators,
+        including any it would otherwise inherit.
     hash : bool | str, default=None
         Generate `__hash__` method.
         If `None`, decide automatically.

@@ -529,6 +529,61 @@ class TestEqOrder:
         assert R(1).__magic_gt__(R(2)) is False
         assert R(2).__magic_ge__(R(1)) is True
 
+    def test_a_hand_written_lt_stands_alone(self) -> None:
+        # A comparison in the class body wins, so the other three are
+        # not generated around it: they would compare the fields and
+        # disagree with it.
+        class P(Magic, order=True):
+            x: int
+
+            def __lt__(self, other: tx.Any) -> bool:
+                return self.x > other.x
+
+        assert (P(1) < P(2)) is False
+        assert (P(2) < P(1)) is True
+        for compare in (operator.le, operator.ge):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(P(1), P(2))
+        assert [name for name in ("__le__", "__gt__", "__ge__")
+                if name in P.__dict__] == []
+        # `>` is answered by Python itself, by turning it round and
+        # asking the hand-written `<`.
+        assert (P(1) > P(2)) is True
+        # All four are still there to call.
+        assert P(1).__magic_lt__(P(2)) is True
+        assert P(1).__magic_le__(P(2)) is True
+        assert P(1).__magic_gt__(P(2)) is False
+        assert P(1).__magic_ge__(P(2)) is False
+
+    def test_a_hand_written_ge_stands_alone(self) -> None:
+        class P(Magic, order=True):
+            x: int
+
+            def __ge__(self, other: tx.Any) -> bool:
+                return "mine"
+
+        assert (P(1) >= P(2)) == "mine"
+        for compare in (operator.lt, operator.gt):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(P(1), P(2))
+        assert [name for name in ("__lt__", "__le__", "__gt__")
+                if name in P.__dict__] == []
+
+    def test_a_hand_written_lt_silences_an_ordered_base(self) -> None:
+        class Base(Magic, order=True):
+            x: int
+
+        class Child(Base):
+            y: int
+
+            def __lt__(self, other: tx.Any) -> bool:
+                return self.x > other.x
+
+        assert (Child(1, 0) < Child(2, 0)) is False
+        for compare in (operator.le, operator.ge):
+            with pytest.raises(TypeError, match="not supported between"):
+                compare(Child(1, 0), Child(2, 0))
+
     def test_order_requires_eq(self) -> None:
         with pytest.raises(ValueError, match="eq must be true"):
             class Bad(Magic):
