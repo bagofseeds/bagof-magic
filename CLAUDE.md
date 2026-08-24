@@ -216,8 +216,7 @@ codespell src tests
 
 - **Correctness**: unresolved string/forward annotations breaking
   `convert`/`validate`/`factory` (#13); fields shared and mutated across
-  classes (#14); `slots=True` with defaults (#15); `order` missing three
-  dunders (#17); generic classes (#18); a disabled option falling through to
+  classes (#14); generic classes (#18); a disabled option falling through to
   `Magic`'s own generated method (#23).
 - **Model**: naming the field kind instead of inferring it from `init` (#16),
   which also carries the declared/resolved split that makes option inheritance

@@ -10,7 +10,7 @@ from .utils import SlotsBase, slots
     'init',             # Generate __init__ method (or its name)
     'repr',             # Generate __repr__ method (or its name)
     'eq',               # Generate __eq__ method (or its name)
-    'order',            # Generate __lt__ method (or its name)
+    'order',            # Generate comparison methods (or the name of __lt__)
     'hash',             # Generate __hash__ method (or its name)
     'unsafe_hash',      # Always generate __hash__ method
     'frozen',           # Disable __setattr__ and __delattr__
