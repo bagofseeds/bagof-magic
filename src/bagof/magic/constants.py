@@ -61,6 +61,10 @@ def _CONVERTER(x: str) -> str: return f"__magic_{x}_converter__"
 # Name given to the local validator variable when generating __init__
 def _VALIDATOR(x: str) -> str: return f"__magic_{x}_validator__"
 
+# Name given to the local holding the Arguments class when generating
+# __init__, for the object handed to the init hooks
+_ARGUMENTS = "__magic_arguments__"
+
 # Name given to a method's return type variable when generating it
 def _RETURN_TYPE(x: str) -> str: return f"__magic_{x}_return_type__"
 

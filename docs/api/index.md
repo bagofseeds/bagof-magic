@@ -8,5 +8,6 @@ icon: fontawesome/brands/python
         - Magic
         - MetaMagic
         - magic
+        - Arguments
         - fields
         - HIDE_IF_NONE

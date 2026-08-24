@@ -662,7 +662,8 @@ class Var(BoolAnnotatedField):
     """
     Declare something that is not stored on each instance.
 
-    `InitVar` is passed to `__init__` and handed on to `__post_init__`;
+    `InitVar` is passed to `__init__`, used, and not kept -- it reaches
+    `__pre_init__` and `__post_init__` like any other argument;
     `ClassVar` is a plain class attribute, shared by every instance and
     absent from `__init__`.
 
