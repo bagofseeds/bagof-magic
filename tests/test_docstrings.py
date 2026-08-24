@@ -1,6 +1,6 @@
 """Every ``pycon`` block in a docstring must be true.
 
-The examples in `bagof.magic.fields` show what each annotation lowers to,
+The examples in `bagof.magic._fields` show what each annotation lowers to,
 so they are only useful if they match what the interpreter actually
 prints. This runs them.
 """
@@ -19,7 +19,7 @@ import typing_extensions as tx
 # locals
 import bagof.magic as magic
 
-SOURCES = ["fields.py", "constants.py", "options.py", "__init__.py"]
+SOURCES = ["_fields.py", "constants.py", "options.py", "__init__.py"]
 
 #: Hand-written pages, relative to the repository root.
 PAGES = ["README.md", "docs/comparison.md"]

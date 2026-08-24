@@ -90,6 +90,7 @@ class TestOptions:
         assert opts.slots is False
         assert opts.weakref_slot is False
         assert opts.factory is False
+        assert opts.mutable_default == "factory"
         assert opts.convert is False
         assert opts.validate is False
 
@@ -1132,7 +1133,7 @@ class TestUtils:
 
 
 # ======================================================================
-# fields.py: Field internals
+# _fields.py: Field internals
 # ======================================================================
 
 
@@ -1238,24 +1239,34 @@ class TestAddFields:
 
     def test_replace_no_reverse_inherit_missing(self) -> None:
         fields = {"a": Field(name="a", doc="olddoc")}
-        # new field has doc MISSING -> the inherit loop hits `continue`.
-        new = Field(name="a")
+        new = Field(name="a")  # overrides 'a', doc MISSING
         assert new.doc is MISSING
         m._add_fields(fields, [new], replace=True, reverse=False)
-        assert fields["a"] is new
+        # the new field wins, but takes the doc it does not set itself
+        assert fields["a"].doc == "olddoc"
+        # ... on a copy: `new` still belongs to whoever passed it in
+        assert fields["a"] is not new
+        assert new.doc is MISSING
 
-    def test_replace_no_reverse_inherit_copy(self) -> None:
+    def test_replace_no_reverse_inherit_none(self) -> None:
+        # a doc that was never given a value has already been filled in
+        # with None by the time fields are merged: still unset.
+        fields = {"a": Field(name="a", doc="olddoc")}
+        new = Field(name="a", doc=None)
+        m._add_fields(fields, [new], replace=True, reverse=False)
+        assert fields["a"].doc == "olddoc"
+
+    def test_replace_no_reverse_keeps_own_doc(self) -> None:
         fields = {"a": Field(name="a", doc="olddoc")}
         new = Field(name="a", doc="newdoc")
         m._add_fields(fields, [new], replace=True, reverse=False)
-        # inherit copies the *old* doc onto the new field.
-        assert fields["a"].doc == "olddoc"
+        assert fields["a"].doc == "newdoc"
 
     def test_replace_no_inherit(self) -> None:
         fields = {"a": Field(name="a", doc="olddoc")}
         new = Field(name="a", doc="newdoc")
         m._add_fields(fields, [new], replace=True, inherit=())
-        assert fields["a"] is new
+        assert fields["a"] is not new
         assert fields["a"].doc == "newdoc"
 
     def test_replace_reverse(self) -> None:
@@ -1266,19 +1277,32 @@ class TestAddFields:
         new = Field(name="a")  # overrides 'a', doc MISSING
         assert new.doc is MISSING
         m._add_fields(fields, [new], replace=True, reverse=True)
-        # new fields go first; the overriding 'a' inherits the old doc.
+        # new fields go first; the overriding 'a' inherits the old doc
         assert list(fields) == ["a", "b"]
-        assert fields["a"] is new
+        assert fields["a"] is not new
         assert fields["a"].doc == "da"
+
+    def test_replace_reverse_keeps_own_doc(self) -> None:
+        fields = {"a": Field(name="a", doc="da")}
+        new = Field(name="a", doc="newdoc")
+        m._add_fields(fields, [new], replace=True, reverse=True)
+        assert fields["a"].doc == "newdoc"
 
     def test_not_replace_no_reverse(self) -> None:
         fields = {"a": Field(name="a")}  # doc MISSING
         new_a = Field(name="a", doc="fromnew")
         new_b = Field(name="b", doc="db")
         m._add_fields(fields, [new_a, new_b], replace=False, reverse=False)
-        # existing 'a' preserved, 'b' appended; 'a' inherits new doc.
+        # existing 'a' preserved, 'b' appended; 'a' inherits new doc
         assert list(fields) == ["a", "b"]
         assert fields["a"].doc == "fromnew"
+        assert fields["b"] is not new_b
+
+    def test_not_replace_no_reverse_keeps_own_doc(self) -> None:
+        fields = {"a": Field(name="a", doc="olddoc")}
+        new_a = Field(name="a", doc="fromnew")
+        m._add_fields(fields, [new_a], replace=False, reverse=False)
+        assert fields["a"].doc == "olddoc"
 
     def test_not_replace_reverse(self) -> None:
         fields = {"a": Field(name="a")}  # doc MISSING
@@ -1287,6 +1311,16 @@ class TestAddFields:
         m._add_fields(fields, [new_a, new_b], replace=False, reverse=True)
         assert list(fields) == ["a", "b"]
         assert fields["a"].doc == "fromnew"
+        assert fields["b"] is not new_b
+
+    def test_not_replace_reverse_keeps_own_doc(self) -> None:
+        fields = {"a": Field(name="a", doc="olddoc")}
+        new_a = Field(name="a", doc="fromnew")
+        new_b = Field(name="b", doc="db")
+        m._add_fields(fields, [new_a, new_b], replace=False, reverse=True)
+        # new names go first, but a name already there keeps its field
+        assert list(fields) == ["a", "b"]
+        assert fields["a"].doc == "olddoc"
 
     def test_reverse_option_inheritance(self) -> None:
         class Base(Magic, reverse=True):
@@ -1297,6 +1331,100 @@ class TestAddFields:
 
         # reverse=True places derived fields before base fields.
         assert list(getattr(Derived, _FIELDS)) == ["y", "x"]
+
+
+# ======================================================================
+# Fields across a hierarchy
+# ======================================================================
+
+
+class TestFieldInheritance:
+
+    def test_subclass_does_not_share_fields_with_base(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Derived(Base):
+            y: int = 2
+
+        assert m.fields(Base)[0] is not m.fields(Derived)[0]
+
+    def test_diamond_leaves_bases_alone(self) -> None:
+        class A(Magic):
+            x: Annotated[int, Doc("A doc")] = 1
+
+        class B(Magic):
+            x: Annotated[int, Doc("B doc")] = 2
+
+        class C(A, B):
+            pass
+
+        # Defining C must not rewrite A or B.
+        assert m.fields(A)[0].doc == "A doc"
+        assert m.fields(B)[0].doc == "B doc"
+        # C follows its MRO: A comes first, so A's doc wins.
+        assert m.fields(C)[0].doc == "A doc"
+
+    def test_child_keeps_its_own_doc(self) -> None:
+        class Base(Magic):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Derived(Base):
+            x: Annotated[int, Doc("child doc")] = 2
+
+        assert m.fields(Derived)[0].doc == "child doc"
+        assert m.fields(Base)[0].doc == "base doc"
+
+    def test_child_inherits_the_base_doc(self) -> None:
+        class Base(Magic):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Derived(Base):
+            x: int = 2
+
+        assert m.fields(Derived)[0].doc == "base doc"
+
+    def test_subclass_does_not_share_fields_with_base_reverse(self) -> None:
+        class Base(Magic, reverse=True):
+            x: int = 1
+
+        class Derived(Base):
+            y: int = 2
+
+        assert m.fields(Base)[0] is not m.fields(Derived)[-1]
+
+    def test_diamond_leaves_bases_alone_reverse(self) -> None:
+        class A(Magic, reverse=True):
+            x: Annotated[int, Doc("A doc")] = 1
+
+        class B(Magic, reverse=True):
+            x: Annotated[int, Doc("B doc")] = 2
+
+        class C(A, B):
+            pass
+
+        assert m.fields(A)[0].doc == "A doc"
+        assert m.fields(B)[0].doc == "B doc"
+        assert m.fields(C)[0].doc == "A doc"
+
+    def test_child_keeps_its_own_doc_reverse(self) -> None:
+        class Base(Magic, reverse=True):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Derived(Base):
+            x: Annotated[int, Doc("child doc")] = 2
+
+        assert m.fields(Derived)[0].doc == "child doc"
+        assert m.fields(Base)[0].doc == "base doc"
+
+    def test_child_inherits_the_base_doc_reverse(self) -> None:
+        class Base(Magic, reverse=True):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Derived(Base):
+            x: int = 2
+
+        assert m.fields(Derived)[0].doc == "base doc"
 
 
 # ======================================================================
@@ -2549,3 +2677,293 @@ class TestInstallInternals:
 
         assert hash(D(1)) == 5
         assert D(1) != D(1)
+
+
+# ===============================================================
+
+# Mutable defaults
+# ======================================================================
+
+
+class _Unhashable:
+    """A user class that says its values compare by content."""
+
+    def __init__(self) -> None:
+        self.items = []
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Unhashable) and self.items == other.items
+
+    __hash__ = None
+
+
+class _Uncopyable(_Unhashable):
+    """Unhashable, and it refuses to be copied."""
+
+    def __copy__(self) -> None:
+        raise TypeError("no copies of me")
+
+
+class _Hashable:
+    """A user class that compares by identity, so it never changes."""
+
+
+class TestMutableDefaults:
+
+    def test_list_default_is_per_instance(self) -> None:
+        class C(Magic):
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert a.x == [1]
+        assert b.x == []
+
+    def test_dict_default_is_per_instance(self) -> None:
+        class C(Magic):
+            x: dict = {}
+
+        a, b = C(), C()
+        a.x["k"] = 1
+        assert b.x == {}
+
+    def test_set_default_is_per_instance(self) -> None:
+        class C(Magic):
+            x: set = set()
+
+        a, b = C(), C()
+        a.x.add(1)
+        assert b.x == set()
+
+    def test_bytearray_default_is_per_instance(self) -> None:
+        class C(Magic):
+            x: bytearray = bytearray(b"ab")
+
+        a, b = C(), C()
+        a.x.append(ord("c"))
+        assert b.x == bytearray(b"ab")
+
+    def test_promoted_default_equals_the_written_one(self) -> None:
+        class C(Magic):
+            x: list = [1, 2]
+            y: dict = {"k": "v"}
+
+        assert C().x == [1, 2]
+        assert C().y == {"k": "v"}
+
+    def test_promoted_default_leaves_no_class_attribute(self) -> None:
+        # The copied-from original must not stay reachable (and mutable)
+        # on the class, just as it would not for a hand-written factory.
+        class C(Magic):
+            x: list = []
+
+        assert not hasattr(C, "x")
+
+    def test_explicit_value_still_wins(self) -> None:
+        class C(Magic):
+            x: list = []
+
+        assert C([1]).x == [1]
+
+    def test_field_default_behaves_the_same(self) -> None:
+        class C(Magic):
+            x: list = Field(default=[])
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_annotated_field_default_behaves_the_same(self) -> None:
+        class C(Magic):
+            x: Annotated[list, Field(default=[])]
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_default_annotation_behaves_the_same(self) -> None:
+        class C(Magic):
+            x: Default[list, []]
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_explicit_factory_is_left_alone(self) -> None:
+        class C(Magic):
+            x: Factory[list, lambda: [1, 2]]
+
+        assert C().x == [1, 2]
+
+    def test_immutable_default_is_left_alone(self) -> None:
+        class C(Magic):
+            x: int = 0
+            y: str = "hi"
+            z: tuple = ()
+
+        assert C().x == 0
+        assert C().z is C().z
+
+    def test_unhashable_user_class_is_copied(self) -> None:
+        written = _Unhashable()
+
+        class C(Magic):
+            x: _Unhashable = written
+
+        a, b = C(), C()
+        assert a.x is not b.x
+        # A copy, not a different object: it still equals what was
+        # written, and equals the other instance's until one is changed.
+        assert a.x == written
+        assert a.x == b.x
+        a.x.items = [1]
+        assert b.x.items == []
+        assert a.x != b.x
+
+    def test_the_copy_is_shallow(self) -> None:
+        # Each instance gets its own list; what that list holds is the
+        # same object, exactly as a factory built from the default would
+        # give.
+        class C(Magic):
+            x: list = [[]]
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == [[]]
+        a.x[0].append(2)
+        assert b.x[0] == [2]
+
+    def test_hashable_user_class_is_shared(self) -> None:
+        # Nothing to copy: a class that keeps the default `__hash__`
+        # compares by identity, so its values do not change.
+        class C(Magic):
+            x: _Hashable = _Hashable()
+
+        assert C().x is C().x
+
+    def test_uncopyable_default_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="cannot be copied"):
+
+            class C(Magic):
+                x: _Uncopyable = _Uncopyable()
+
+    def test_raise_action(self) -> None:
+        with pytest.raises(ValueError, match="shared by every instance"):
+
+            class C(Magic, mutable_default="raise"):
+                x: list = []
+
+    def test_raise_action_names_the_field(self) -> None:
+        with pytest.raises(ValueError, match="'tags'"):
+
+            class C(Magic, mutable_default="raise"):
+                tags: list = []
+
+    def test_raise_action_allows_a_factory(self) -> None:
+        class C(Magic, mutable_default="raise"):
+            x: Factory[list]
+
+        assert C().x == []
+
+    def test_allow_action(self) -> None:
+        class C(Magic, mutable_default="allow"):
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == [1]
+        assert C.x == [1]
+
+    def test_action_is_inherited(self) -> None:
+        class Base(Magic, mutable_default="raise"):
+            pass
+
+        with pytest.raises(ValueError, match="shared by every instance"):
+
+            class Sub(Base):
+                x: list = []
+
+    def test_unknown_action_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="mutable_default must be"):
+
+            class C(Magic, mutable_default="copy"):
+                x: list = []
+
+    def test_class_variable_is_still_shared(self) -> None:
+        # A `ClassVar` is a class attribute by definition: it is never
+        # assigned per instance, so its value is meant to be shared.
+        class C(Magic):
+            x: ClassVar[list] = []
+
+        C().x.append(1)
+        assert C.x == [1]
+
+    def test_frozen_class(self) -> None:
+        class C(Magic, frozen=True):
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_slots_class(self) -> None:
+        class C(Magic, slots=True):
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_decorator_form(self) -> None:
+        @magic
+        class C:
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_decorator_form_takes_the_option(self) -> None:
+        @magic(mutable_default="allow")
+        class C:
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == [1]
+
+
+class TestInheritableUnsetValues:
+    """What counts as "this field did not say" is decided per attribute."""
+
+    def test_doc_treats_none_as_unset(self) -> None:
+        # A resolved field has `doc = None` when none was given, so an
+        # inherited doc fills it in.
+        class Base(Magic):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Child(Base):
+            x: int = 2
+
+        assert {f.name: f.doc for f in m.fields(Child)}["x"] == "base doc"
+
+    def test_every_inheritable_attribute_declares_its_unset_values(
+        self,
+    ) -> None:
+        # `_inherit_attrs` looks the values up rather than assuming, so
+        # an attribute added to the list without a decision fails here
+        # rather than silently treating None as "did not say". That
+        # matters because None is a real answer for some of them --
+        # `hash = None` means "follow eq".
+        default = m._add_fields.__defaults__[-1]
+        assert set(default) <= set(m._INHERITABLE)
+        for attr, unset in m._INHERITABLE.items():
+            assert MISSING in unset, attr
+
+    def test_a_meaningful_none_would_not_be_treated_as_unset(self) -> None:
+        # `hash` is not inheritable today; if it ever is, None must keep
+        # meaning "follow eq" rather than "unset".
+        field = Field(name="x", hash=None)
+        other = Field(name="x", hash=True)
+        m._inherit_attrs(field, other, ())
+        assert field.hash is None

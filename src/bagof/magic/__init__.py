@@ -54,6 +54,8 @@ weakref_slot : bool, default=False
     Generate a weakref slot in `__slots__`
 factory : bool, default=False
     Use field type as factory if none is provided
+mutable_default : str, default="factory"
+    What to do with a mutable default such as `x: list = []`
 convert : bool, default=False
     Use field type as converter if none is provided
 validate : bool, default=False
@@ -118,6 +120,7 @@ from __future__ import annotations
 
 __all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 # stdlib
+import copy
 import sys
 from abc import ABCMeta
 from collections import abc as _abc
@@ -129,6 +132,9 @@ import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
 # internals
+from ._fields import *  # noqa: F401, F403
+from ._fields import Field
+from ._fields import __all__ as __all_fields__
 from .constants import (
     _CONVERTER,
     _DEFAULT,
@@ -148,9 +154,6 @@ from .constants import (
     SHOW_ATTR,
     _HasFactory,
 )
-from .fields import *  # noqa: F401, F403
-from .fields import Field
-from .fields import __all__ as __all_fields__
 from .options import *  # noqa: F401, F403
 from .options import Options
 from .options import __all__ as __all_options__
@@ -184,12 +187,44 @@ def __post_new__(cls: type) -> type:
     return cls
 
 
+#: The attributes a field can take from the field it replaces, and the
+#: values that mean "this field did not say".
+#:
+#: What counts as "did not say" is per attribute, and has to be, because
+#: None is a real answer for some of them. A resolved field has
+#: `doc = None` when no documentation was given, so for `doc` both None
+#: and MISSING mean unset -- but `hash = None` means "follow whatever
+#: `eq` says", which is an answer, and would be wrong to overwrite.
+#: Anything added here needs its own decision.
+_INHERITABLE = {
+    "doc": (MISSING, None),
+}
+
+
+def _inherit_attrs(
+    field: Field,
+    other: Field,
+    attrs: tx.Sequence[str],
+) -> None:
+    # Copy into `field`, from `other`, the attributes `field` leaves
+    # unset -- see `_INHERITABLE` for what unset means for each.
+    for attr in attrs:
+        value = getattr(field, attr, MISSING)
+        # Compared by identity: `==` on an arbitrary field value can do
+        # anything, including returning something that is not a bool.
+        if not any(value is unset for unset in _INHERITABLE[attr]):
+            continue
+        inherited = getattr(other, attr, MISSING)
+        if inherited is not MISSING:
+            setattr(field, attr, inherited)
+
+
 def _add_fields(
     fields: dict[str, Field],
     new_fields: tx.Iterable[Field],
     replace: bool = False,
     reverse: bool = False,
-    inherit: tx.List[str] = ("doc",),
+    inherit: tx.Sequence[str] = tuple(_INHERITABLE),
 ) -> None:
     # Add fields to an existing dict of fields.
     #
@@ -201,45 +236,54 @@ def _add_fields(
     #   If True, then new fields will be added before existing fields.
     #   If False, then new fields will be added after existing fields.
     #   In both case, the order of `new_fields` is preserved.
+    # * inherit :
+    #   Names of the attributes that the field being dropped passes on to
+    #   the field being kept, when both declare a field of the same name
+    #   and the kept one leaves them unset.
+    #
+    # New fields are copied on the way in: a field is mutated in place
+    # while its class is built, so a class must never hold a field that
+    # another class holds too.
     if replace and not reverse:
-        if inherit:
-            for new_field in new_fields:
-                if new_field.name in fields:
-                    old_field = fields[new_field.name]
-                    for attr in inherit:
-                        if getattr(new_field, attr, MISSING) is MISSING:
-                            continue
-                        setattr(new_field, attr, getattr(old_field, attr))
-                fields[new_field.name] = new_field
-        else:
-            fields.update({f.name: f for f in new_fields})
+        for new_field in new_fields:
+            field = new_field.copy()
+            old_field = fields.get(field.name, None)
+            if old_field is not None:
+                _inherit_attrs(field, old_field, inherit)
+            fields[field.name] = field
 
     elif replace and reverse:
-        prev_fields = fields.copy()
+        old_fields = dict(fields)
         fields.clear()
-        fields.update({f.name: f for f in new_fields})
-        for name, field in prev_fields.items():
-            fields.setdefault(name, field)
-            for attr in inherit:
-                if getattr(fields[name], attr, MISSING) is MISSING:
-                    setattr(fields[name], attr, getattr(field, attr))
+        for new_field in new_fields:
+            field = new_field.copy()
+            old_field = old_fields.get(field.name, None)
+            if old_field is not None:
+                _inherit_attrs(field, old_field, inherit)
+            fields[field.name] = field
+        for name, old_field in old_fields.items():
+            fields.setdefault(name, old_field)
 
     elif not replace and not reverse:
-        for f in new_fields:
-            fields.setdefault(f.name, f)
-            for attr in inherit:
-                if getattr(fields[f.name], attr, MISSING) is MISSING:
-                    setattr(fields[f.name], attr, getattr(f, attr))
+        for new_field in new_fields:
+            old_field = fields.get(new_field.name, None)
+            if old_field is None:
+                fields[new_field.name] = new_field.copy()
+            else:
+                _inherit_attrs(old_field, new_field, inherit)
 
-    elif not replace and reverse:
-        prev_fields = fields.copy()
+    else:  # not replace and reverse
+        old_fields = dict(fields)
         fields.clear()
-        fields.update(prev_fields)
-        for f in new_fields:
-            fields.setdefault(f.name, f)
-            for attr in inherit:
-                if getattr(fields[f.name], attr, MISSING) is MISSING:
-                    setattr(fields[f.name], attr, getattr(f, attr))
+        for new_field in new_fields:
+            old_field = old_fields.get(new_field.name, None)
+            if old_field is None:
+                fields[new_field.name] = new_field.copy()
+            else:
+                _inherit_attrs(old_field, new_field, inherit)
+                fields[new_field.name] = old_field
+        for name, old_field in old_fields.items():
+            fields.setdefault(name, old_field)
 
 
 def _namespace_annotations(namespace: dict) -> dict:
@@ -498,6 +542,78 @@ def _install_hash(
             generated[name] = "hash"
 
 
+# Types whose values can always be changed in place. A default of one
+# of these would be handed out, as the very same object, to every
+# instance -- so appending to `a.x` would also change `b.x`.
+_MUTABLE_TYPES = (list, dict, set, bytearray)
+
+# The accepted values of the `mutable_default` class option.
+_MUTABLE_DEFAULT_ACTIONS = ("factory", "raise", "allow")
+
+
+def _is_mutable(value: tx.Any) -> bool:
+    # Besides the obvious builtins, anything unhashable counts: a class
+    # that defines `__eq__` without `__hash__` is saying its values
+    # compare by content and can change, which is exactly the case we
+    # must not share.
+    return (
+        isinstance(value, _MUTABLE_TYPES) or
+        value.__class__.__hash__ is None
+    )
+
+
+def _handle_mutable_default(field: Field, action: str) -> bool:
+    # Deal with a default that every instance would otherwise share,
+    # such as `x: list = []`. Returns True if the default was turned
+    # into a factory, in which case the class attribute holding the
+    # original must go, exactly as it would for a hand-written factory.
+    #
+    # A field left out of `__init__` (a `ClassVar`, or `NoInit[...]`)
+    # keeps its default as a class attribute and is never assigned per
+    # instance, so there is nothing to promote and nothing to warn
+    # about: that value is meant to be shared.
+    default = field.default
+    if (
+        action == "allow" or
+        default is MISSING or
+        field.factory or
+        not field.init or
+        not _is_mutable(default)
+    ):
+        return False
+
+    typename = type(default).__name__
+    hint = (
+        f"give the field a factory instead -- "
+        f"`{field.name}: Factory[{typename}]` builds a new {typename} "
+        f"per instance -- or pass mutable_default='allow' to share one "
+        f"on purpose"
+    )
+
+    if action == "raise":
+        raise ValueError(
+            f"the default {default!r} of field {field.name!r} would be "
+            f"shared by every instance, and any one of them could "
+            f"change it; {hint}"
+        )
+
+    try:
+        copy.copy(default)
+    except Exception as exc:
+        raise ValueError(
+            f"the default {default!r} of field {field.name!r} would be "
+            f"shared by every instance, and it cannot be copied to give "
+            f"each one its own; {hint}"
+        ) from exc
+
+    # A shallow copy, so each instance gets its own container while
+    # what the container holds stays shared -- the same thing a factory
+    # written as `lambda: copy(default)` would give.
+    field.factory = partial(copy.copy, default)
+    field.default = MISSING
+    return True
+
+
 def __pre_new__(
 
     metacls: MetaMagic,
@@ -576,6 +692,12 @@ def __pre_new__(
     options.update(Options(**kwargs))
     namespace[_OPTIONS] = options
 
+    if options.mutable_default not in _MUTABLE_DEFAULT_ACTIONS:
+        raise ValueError(
+            f"mutable_default must be 'factory', 'raise' or 'allow', "
+            f"not {options.mutable_default!r}"
+        )
+
     # Annotations that are defined in this class (not in base
     # classes).  If __annotations__ isn't present, then this class
     # adds no new   We use this to compute fields that are
@@ -626,6 +748,11 @@ def __pre_new__(
 
         # Set unset field options from class options
         field.setdefault(options)
+
+        # A mutable default is promoted to a factory (or rejected),
+        # so that instances do not end up sharing one object.
+        if _handle_mutable_default(field, options.mutable_default):
+            namespace.pop(field.name, None)
 
         # Use Key/Repr wrappers
         # (This is hacky and ugly -- should be reworked)
@@ -1427,49 +1554,6 @@ def _make_mapping(
 # derive from ABCs (e.g. Mapping).
 
 
-_DOC_OPTIONS = """
-init : bool | str, default=True
-    Generate `__init__` method.
-repr : bool | str, default=True
-    Generate `__repr__` method.
-eq : bool | str, default=True
-    Generate `__eq__` method.
-order : bool | str, default=False
-    Generate `__lt__` method.
-hash : bool | str, default=None
-    Generate `__hash__` method.
-    If `None`, decide automatically.
-unsafe_hash : bool, default=False
-    Always generate `__hash__` method.
-frozen : bool, default=False
-    Disable `__setattr__` and `__delattr__`.
-match_args : bool | str, default=False
-    Generate `__match_args__` for pattern matching.
-kw_only : bool, default=False
-    Make all fields keyword-only by default.
-positional_only : bool, default=False
-    Make all fields positional-only by default.
-slots : bool, default=False
-    Generate `__slots__` and remove `__dict__`.
-weakref_slot : bool, default=False
-    Generate a weakref slot in `__slots__`.
-factory : bool, default=False
-    Use field type as factory if none is provided.
-convert : bool, default=False
-    Use field type as converter if none is provided.
-validate : bool, default=False
-    Use field type as validator if none is provided.
-mapping : bool, default=False
-    Implement the `Mapping` protocol.
-reverse : bool, default=False
-    Use the reverse MRO order to determine field order.
-    This only affects the relative order of the fields of one class
-    with respect to the fields of its base classes.
-doc : bool | str, default=True
-    Add field documentation to class docstring.
-""".strip()
-
-
 class MetaMagic(ABCMeta):
     """
     Examples
@@ -1526,6 +1610,10 @@ class MetaMagic(ABCMeta):
         Generate a weakref slot in `__slots__`.
     factory : bool, default=False
         Use field type as factory if none is provided.
+    mutable_default : {"factory", "raise", "allow"}, default="factory"
+        What to do with a mutable default such as `x: list = []`.
+        "factory" gives each instance its own copy, "raise" refuses the
+        class, and "allow" shares one object between instances.
     convert : bool, default=False
         Use field type as converter if none is provided.
     validate : bool, default=False
@@ -1601,6 +1689,10 @@ class Magic(metaclass=MetaMagic):
         Generate a weakref slot in `__slots__`.
     factory : bool, default=False
         Use field type as factory if none is provided.
+    mutable_default : {"factory", "raise", "allow"}, default="factory"
+        What to do with a mutable default such as `x: list = []`.
+        "factory" gives each instance its own copy, "raise" refuses the
+        class, and "allow" shares one object between instances.
     convert : bool, default=False
         Use field type as converter if none is provided.
     validate : bool, default=False
@@ -1617,13 +1709,6 @@ class Magic(metaclass=MetaMagic):
 
     # Set __slots__ so that inheriting classes can have slot=True
     __slots__ = ()
-
-
-# `python -OO` strips docstrings, so there may be nothing to format.
-if MetaMagic.__doc__:
-    MetaMagic.__doc__ = MetaMagic.__doc__.format(DOC_OPTIONS=_DOC_OPTIONS)
-if Magic.__doc__:
-    Magic.__doc__ = Magic.__doc__.format(DOC_OPTIONS=_DOC_OPTIONS)
 
 
 # ----------------------------------------------------------------------
