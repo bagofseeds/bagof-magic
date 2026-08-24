@@ -182,12 +182,32 @@ def __post_new__(cls: type) -> type:
     return cls
 
 
+def _inherit_attrs(
+    field: Field,
+    other: Field,
+    attrs: tx.Sequence[str],
+) -> None:
+    # Copy into `field`, from `other`, the attributes that `field` leaves
+    # unset.
+    #
+    # By the time fields of a class and of its bases are merged, an
+    # attribute that was never given a value has already been filled in
+    # with None, so both MISSING and None count as unset here.
+    for attr in attrs:
+        value = getattr(field, attr, MISSING)
+        if value is not MISSING and value is not None:
+            continue
+        inherited = getattr(other, attr, MISSING)
+        if inherited is not MISSING:
+            setattr(field, attr, inherited)
+
+
 def _add_fields(
     fields: dict[str, Field],
     new_fields: tx.Iterable[Field],
     replace: bool = False,
     reverse: bool = False,
-    inherit: tx.List[str] = ("doc",),
+    inherit: tx.Sequence[str] = ("doc",),
 ) -> None:
     # Add fields to an existing dict of fields.
     #
@@ -199,45 +219,54 @@ def _add_fields(
     #   If True, then new fields will be added before existing fields.
     #   If False, then new fields will be added after existing fields.
     #   In both case, the order of `new_fields` is preserved.
+    # * inherit :
+    #   Names of the attributes that the field being dropped passes on to
+    #   the field being kept, when both declare a field of the same name
+    #   and the kept one leaves them unset.
+    #
+    # New fields are copied on the way in: a field is mutated in place
+    # while its class is built, so a class must never hold a field that
+    # another class holds too.
     if replace and not reverse:
-        if inherit:
-            for new_field in new_fields:
-                if new_field.name in fields:
-                    old_field = fields[new_field.name]
-                    for attr in inherit:
-                        if getattr(new_field, attr, MISSING) is MISSING:
-                            continue
-                        setattr(new_field, attr, getattr(old_field, attr))
-                fields[new_field.name] = new_field
-        else:
-            fields.update({f.name: f for f in new_fields})
+        for new_field in new_fields:
+            field = new_field.copy()
+            old_field = fields.get(field.name, None)
+            if old_field is not None:
+                _inherit_attrs(field, old_field, inherit)
+            fields[field.name] = field
 
     elif replace and reverse:
-        prev_fields = fields.copy()
+        old_fields = dict(fields)
         fields.clear()
-        fields.update({f.name: f for f in new_fields})
-        for name, field in prev_fields.items():
-            fields.setdefault(name, field)
-            for attr in inherit:
-                if getattr(fields[name], attr, MISSING) is MISSING:
-                    setattr(fields[name], attr, getattr(field, attr))
+        for new_field in new_fields:
+            field = new_field.copy()
+            old_field = old_fields.get(field.name, None)
+            if old_field is not None:
+                _inherit_attrs(field, old_field, inherit)
+            fields[field.name] = field
+        for name, old_field in old_fields.items():
+            fields.setdefault(name, old_field)
 
     elif not replace and not reverse:
-        for f in new_fields:
-            fields.setdefault(f.name, f)
-            for attr in inherit:
-                if getattr(fields[f.name], attr, MISSING) is MISSING:
-                    setattr(fields[f.name], attr, getattr(f, attr))
+        for new_field in new_fields:
+            old_field = fields.get(new_field.name, None)
+            if old_field is None:
+                fields[new_field.name] = new_field.copy()
+            else:
+                _inherit_attrs(old_field, new_field, inherit)
 
-    elif not replace and reverse:
-        prev_fields = fields.copy()
+    else:  # not replace and reverse
+        old_fields = dict(fields)
         fields.clear()
-        fields.update(prev_fields)
-        for f in new_fields:
-            fields.setdefault(f.name, f)
-            for attr in inherit:
-                if getattr(fields[f.name], attr, MISSING) is MISSING:
-                    setattr(fields[f.name], attr, getattr(f, attr))
+        for new_field in new_fields:
+            old_field = old_fields.get(new_field.name, None)
+            if old_field is None:
+                fields[new_field.name] = new_field.copy()
+            else:
+                _inherit_attrs(old_field, new_field, inherit)
+                fields[new_field.name] = old_field
+        for name, old_field in old_fields.items():
+            fields.setdefault(name, old_field)
 
 
 def _namespace_annotations(namespace: dict) -> dict:
