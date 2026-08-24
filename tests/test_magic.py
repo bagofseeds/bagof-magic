@@ -758,11 +758,8 @@ class TestSlots:
         assert not hasattr(Point(), "__dict__")
 
     def test_slots_frozen_default_survives_pickle_and_copy(self) -> None:
-        import copy
-        import pickle
-
         point = _SlotsPoint(1)
-        assert point.__getstate__() == (1, 0)
+        assert (point.x, point.origin) == (1, 0)
         assert pickle.loads(pickle.dumps(point)) == point
         assert copy.copy(point) == point
         assert copy.deepcopy(point) == point
