@@ -122,6 +122,25 @@ The annotation form composes better — several of them stack on one field
 without nesting — and the `Field(...)` form takes anything the annotations
 cannot say.
 
+### A mutable default is not shared
+
+`x: list = []` is the one that catches everybody: written plainly, it hands
+the *same* list to every instance. `magic` reads it as what you meant and
+gives each instance its own copy.
+
+```pycon
+>>> class Basket(Magic):
+...     items: list = []
+>>> first, second = Basket(), Basket()
+>>> first.items.append("apple")
+>>> second.items
+[]
+```
+
+Pass `mutable_default="raise"` if you would rather be stopped at the class,
+the way `dataclasses` and `attrs` do, or `"allow"` for the rare field where
+one shared object is the point.
+
 ### Conversion and validation come from the type
 
 Turn them on and the type hint does the work — parsing a config file, checking
@@ -266,6 +285,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `convert` | `False` | convert every field from its type |
 | `validate` | `False` | check every field against its type |
 | `factory` | `False` | build every missing default from its type |
+| `mutable_default` | `"factory"` | what to do with `x: list = []`: `"factory"` copies it per instance, `"raise"` refuses it, `"allow"` shares it |
 | `mapping` | `False` | behave like a dictionary |
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
 | `doc` | `True` | add the field table to the class docstring |

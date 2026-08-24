@@ -91,6 +91,15 @@ will look "dead" on the other — that is expected, not a gap.
 5. **Never leak an internal name into a user-facing error.** The generated
    source uses `__magic_<field>_type__` and friends; an error message must
    name the *field*, not the local.
+6. **A new class option has to be registered in six places.** The `@slots`
+   list and `_DEFAULTS` in `options.py`, and then the option list written out
+   three times in `__init__.py` — the module docstring, `_DOC_OPTIONS`, and
+   the `MetaMagic` and `Magic` docstrings — plus the settings table in
+   `README.md` and the comparison table in `docs/comparison.md`. Grep for an
+   existing option name to find them all. `MetaMagic.__doc__` and
+   `Magic.__doc__` are passed through `str.format`, so a `{` in one of them
+   is read as a placeholder: spell an option's accepted values in prose, not
+   in numpydoc's `{"a", "b"}` notation.
 
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 
@@ -171,8 +180,8 @@ codespell src tests
 - **Correctness**: unresolved string/forward annotations breaking
   `convert`/`validate`/`factory` (#13); fields shared and mutated across
   classes (#14); `slots=True` with defaults (#15); `order` missing three
-  dunders (#17); generic classes (#18); mutable defaults (#19); a disabled
-  option falling through to `Magic`'s own generated method (#23).
+  dunders (#17); generic classes (#18); a disabled option falling through to
+  `Magic`'s own generated method (#23).
 - **Model**: naming the field kind instead of inferring it from `init` (#16),
   which also carries the declared/resolved split that makes option inheritance
   work (#20).
