@@ -1,4 +1,6 @@
 """Unit tests for the bagof.magic module."""
+import copy
+import pickle
 from typing import ClassVar as TypingClassVar
 from typing import Optional, Union
 
@@ -36,6 +38,7 @@ from bagof.magic import (
 )
 from bagof.magic.constants import (
     _FIELDS,
+    _GENERATED,
     _OPTIONS,
     MISSING,
     REQUIRED,
@@ -1007,20 +1010,79 @@ class PickleFrozen(Magic, frozen=True):
     a: int
 
 
+class PickleThawed(PickleFrozen, frozen=False):
+    b: int
+
+
+class PickleFrozenChild(PickleFrozen, frozen=True):
+    b: int
+
+
+class PicklePlainChild(PicklePoint):
+    z: int
+
+
+class PickleGrandchild(PickleThawed):
+    c: int
+
+
+class PickleOwnState(PickleFrozen, frozen=False):
+    b: int
+
+    def __getstate__(self) -> dict:
+        return {"a": self.a, "b": self.b, "by_hand": True}
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+
+
 class TestPickle:
 
     def test_pickle_round_trip(self) -> None:
-        import pickle
-
         restored = pickle.loads(pickle.dumps(PicklePoint(1, 2)))
         assert restored == PicklePoint(1, 2)
         assert restored.x == 1 and restored.y == 2
 
     def test_pickle_frozen(self) -> None:
-        import pickle
-
         restored = pickle.loads(pickle.dumps(PickleFrozen(5)))
         assert restored == PickleFrozen(5)
+
+    def test_pickle_unfrozen_subclass(self) -> None:
+        restored = pickle.loads(pickle.dumps(PickleThawed(1, 2)))
+        assert (restored.a, restored.b) == (1, 2)
+
+    def test_copy_unfrozen_subclass(self) -> None:
+        copied = copy.copy(PickleThawed(1, 2))
+        assert (copied.a, copied.b) == (1, 2)
+
+    def test_deepcopy_unfrozen_subclass(self) -> None:
+        original = PickleThawed(1, [2])
+        copied = copy.deepcopy(original)
+        assert (copied.a, copied.b) == (1, [2])
+        assert copied.b is not original.b
+
+    def test_pickle_frozen_subclass(self) -> None:
+        restored = pickle.loads(pickle.dumps(PickleFrozenChild(1, 2)))
+        assert (restored.a, restored.b) == (1, 2)
+
+    def test_pickle_grandchild(self) -> None:
+        # Two steps below the frozen class the pair started with.
+        restored = pickle.loads(pickle.dumps(PickleGrandchild(1, 2, 3)))
+        assert (restored.a, restored.b, restored.c) == (1, 2, 3)
+
+    def test_plain_subclass_keeps_default_pickling(self) -> None:
+        # Nothing frozen anywhere, so there is nothing to write.
+        assert "__getstate__" not in PicklePlainChild.__dict__
+        assert "__setstate__" not in PicklePlainChild.__dict__
+        restored = pickle.loads(pickle.dumps(PicklePlainChild(1, 2, 3)))
+        assert restored == PicklePlainChild(1, 2, 3)
+
+    def test_own_state_methods_are_kept(self) -> None:
+        restored = pickle.loads(pickle.dumps(PickleOwnState(1, 2)))
+        assert (restored.a, restored.b) == (1, 2)
+        assert restored.by_hand is True
+        assert "__getstate__" not in PickleOwnState.__dict__[_GENERATED]
+        assert "__setstate__" not in PickleOwnState.__dict__[_GENERATED]
 
 
 # ======================================================================

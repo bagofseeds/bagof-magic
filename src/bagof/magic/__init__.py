@@ -467,6 +467,40 @@ def _install(
     return False
 
 
+def _install_state(
+    namespace: dict,
+    generated: dict,
+    mro: tx.Tuple[type, ...],
+    qualname: str,
+    real_fields: dict,
+    frozen: bool,
+) -> None:
+    """
+    Bind the two methods `pickle` and `copy` use to save and restore an
+    object, if this class needs them.
+
+    A frozen class needs them: restoring an object means putting the
+    saved values back on it, which a frozen class refuses through the
+    usual attribute assignment.
+
+    Every class below one of those needs a pair of its own as well. The
+    pair carries the list of fields to save, so a base's pair leaves out
+    each field the class has added, and a copy comes back without them.
+
+    There is no option to turn these off, and no plain-Python method to
+    put in their place, so the only question is whether to write them.
+    Methods you wrote yourself are left alone.
+    """
+    if not frozen and not _inherited_generated(mro, "state"):
+        return
+    for name, fn in zip(
+        ("__getstate__", "__setstate__"), _make_state(qualname, real_fields)
+    ):
+        if name not in namespace:
+            namespace[name] = fn
+            generated[name] = "state"
+
+
 def _install_hash(
     namespace: dict,
     generated: dict,
@@ -869,11 +903,6 @@ def __pre_new__(
             f.public_name for f in fields.values() if f.init and f.positional
         ))
 
-    if options.frozen:
-        getstate, setstate = _make_state(qualname, real_fields)
-        namespace.setdefault("__getstate__", getstate)
-        namespace.setdefault("__setstate__", setstate)
-
     if options.mapping:
         dict_fields = {f.public_key: f for f in fields.values() if f.key}
         for name, func in _make_mapping(qualname, dict_fields).items():
@@ -886,6 +915,11 @@ def __pre_new__(
     # the `mapping` option can add one, and working out what a class
     # would otherwise inherit means looking at the bases it really has.
     base_mro = type(_DISCARD, bases, {}).__mro__[1:]
+
+    _install_state(
+        namespace, generated, base_mro, qualname, real_fields,
+        bool(options.frozen),
+    )
 
     repr_fields = {name: f for name, f in fields.items() if f.repr}
     _install(
