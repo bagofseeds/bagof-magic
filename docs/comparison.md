@@ -32,7 +32,7 @@ question of what you want the type hints to *do*.
 | Validation from the type hint | no | no | yes | **yes** |
 | Validation from your own callable | no | yes | yes | **yes** |
 | Defaults built by a factory | yes | yes | yes | **yes** |
-| Mutable defaults caught | raises | raises | copies | *[not yet][mutable]* |
+| Mutable defaults caught | raises | raises | copies | **copies, or raises** |
 | | | | | |
 | **Generated methods** | | | | |
 | `__init__` / `__repr__` / `__eq__` | yes | yes | yes | **yes** |
@@ -234,8 +234,6 @@ Being honest about the gaps, with links to where they are being worked on:
   — [tracked here][generics].
 - **The full set of ordering methods.** `order=True` gives you `<` and `>`
   today, not `<=` and `>=` — [tracked here][order].
-- **Mutable defaults.** `x: list = []` is shared between instances rather than
-  caught — [tracked here][mutable].
 - **Editor and type-checker support.** The others are understood by mypy and
   pyright today, so your editor completes the constructor and catches a wrong
   argument type. `magic` is not, yet — [tracked here][typing]. The route is
@@ -249,5 +247,4 @@ Being honest about the gaps, with links to where they are being worked on:
 [parity]: https://github.com/bagofseeds/bagof-magic/issues/22
 [generics]: https://github.com/bagofseeds/bagof-magic/issues/18
 [order]: https://github.com/bagofseeds/bagof-magic/issues/17
-[mutable]: https://github.com/bagofseeds/bagof-magic/issues/19
 [typing]: https://github.com/bagofseeds/bagof-magic/issues/30

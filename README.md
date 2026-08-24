@@ -181,6 +181,22 @@ class Row(Magic, mapping=True):
 {'name': 'ada', 'age': 36}
 ```
 
+**Mutable defaults that are not shared.** In a plain class, `x: list = []`
+hands every instance the *same* list. Here each one gets its own:
+
+```pycon
+>>> class Basket(Magic):
+...     items: list = []
+>>> first, second = Basket(), Basket()
+>>> first.items.append("apple")
+>>> second.items
+[]
+```
+
+Set `mutable_default="raise"` to be stopped at the class definition instead,
+as `dataclasses` and `attrs` do — or `"allow"` when one shared object really
+is what you want.
+
 **Documentation that writes itself.** Describe a field and it shows up in the
 class docstring and in the generated `__init__`:
 
@@ -266,6 +282,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `convert` | `False` | convert every field from its type |
 | `validate` | `False` | check every field against its type |
 | `factory` | `False` | build every missing default from its type |
+| `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
 | `mapping` | `False` | behave like a dictionary |
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
 | `doc` | `True` | add the field table to the class docstring |

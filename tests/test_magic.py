@@ -90,6 +90,7 @@ class TestOptions:
         assert opts.slots is False
         assert opts.weakref_slot is False
         assert opts.factory is False
+        assert opts.mutable_default == "factory"
         assert opts.convert is False
         assert opts.validate is False
 
@@ -2091,6 +2092,260 @@ class TestAnnotationPolarity:
     def test_subscript_keeps_extra_metadata(self) -> None:
         hint = NoRepr[int, "some note"]
         assert tx.get_args(hint)[2] == "some note"
+
+
+# ===============================================================
+
+# Mutable defaults
+# ======================================================================
+
+
+class _Unhashable:
+    """A user class that says its values compare by content."""
+
+    def __init__(self) -> None:
+        self.items = []
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _Unhashable) and self.items == other.items
+
+    __hash__ = None
+
+
+class _Uncopyable(_Unhashable):
+    """Unhashable, and it refuses to be copied."""
+
+    def __copy__(self) -> None:
+        raise TypeError("no copies of me")
+
+
+class _Hashable:
+    """A user class that compares by identity, so it never changes."""
+
+
+class TestMutableDefaults:
+
+    def test_list_default_is_per_instance(self) -> None:
+        class C(Magic):
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert a.x == [1]
+        assert b.x == []
+
+    def test_dict_default_is_per_instance(self) -> None:
+        class C(Magic):
+            x: dict = {}
+
+        a, b = C(), C()
+        a.x["k"] = 1
+        assert b.x == {}
+
+    def test_set_default_is_per_instance(self) -> None:
+        class C(Magic):
+            x: set = set()
+
+        a, b = C(), C()
+        a.x.add(1)
+        assert b.x == set()
+
+    def test_bytearray_default_is_per_instance(self) -> None:
+        class C(Magic):
+            x: bytearray = bytearray(b"ab")
+
+        a, b = C(), C()
+        a.x.append(ord("c"))
+        assert b.x == bytearray(b"ab")
+
+    def test_promoted_default_equals_the_written_one(self) -> None:
+        class C(Magic):
+            x: list = [1, 2]
+            y: dict = {"k": "v"}
+
+        assert C().x == [1, 2]
+        assert C().y == {"k": "v"}
+
+    def test_promoted_default_leaves_no_class_attribute(self) -> None:
+        # The copied-from original must not stay reachable (and mutable)
+        # on the class, just as it would not for a hand-written factory.
+        class C(Magic):
+            x: list = []
+
+        assert not hasattr(C, "x")
+
+    def test_explicit_value_still_wins(self) -> None:
+        class C(Magic):
+            x: list = []
+
+        assert C([1]).x == [1]
+
+    def test_field_default_behaves_the_same(self) -> None:
+        class C(Magic):
+            x: list = Field(default=[])
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_annotated_field_default_behaves_the_same(self) -> None:
+        class C(Magic):
+            x: Annotated[list, Field(default=[])]
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_default_annotation_behaves_the_same(self) -> None:
+        class C(Magic):
+            x: Default[list, []]
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_explicit_factory_is_left_alone(self) -> None:
+        class C(Magic):
+            x: Factory[list, lambda: [1, 2]]
+
+        assert C().x == [1, 2]
+
+    def test_immutable_default_is_left_alone(self) -> None:
+        class C(Magic):
+            x: int = 0
+            y: str = "hi"
+            z: tuple = ()
+
+        assert C().x == 0
+        assert C().z is C().z
+
+    def test_unhashable_user_class_is_copied(self) -> None:
+        written = _Unhashable()
+
+        class C(Magic):
+            x: _Unhashable = written
+
+        a, b = C(), C()
+        assert a.x is not b.x
+        # A copy, not a different object: it still equals what was
+        # written, and equals the other instance's until one is changed.
+        assert a.x == written
+        assert a.x == b.x
+        a.x.items = [1]
+        assert b.x.items == []
+        assert a.x != b.x
+
+    def test_the_copy_is_shallow(self) -> None:
+        # Each instance gets its own list; what that list holds is the
+        # same object, exactly as a factory built from the default would
+        # give.
+        class C(Magic):
+            x: list = [[]]
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == [[]]
+        a.x[0].append(2)
+        assert b.x[0] == [2]
+
+    def test_hashable_user_class_is_shared(self) -> None:
+        # Nothing to copy: a class that keeps the default `__hash__`
+        # compares by identity, so its values do not change.
+        class C(Magic):
+            x: _Hashable = _Hashable()
+
+        assert C().x is C().x
+
+    def test_uncopyable_default_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="cannot be copied"):
+
+            class C(Magic):
+                x: _Uncopyable = _Uncopyable()
+
+    def test_raise_action(self) -> None:
+        with pytest.raises(ValueError, match="shared by every instance"):
+
+            class C(Magic, mutable_default="raise"):
+                x: list = []
+
+    def test_raise_action_names_the_field(self) -> None:
+        with pytest.raises(ValueError, match="'tags'"):
+
+            class C(Magic, mutable_default="raise"):
+                tags: list = []
+
+    def test_raise_action_allows_a_factory(self) -> None:
+        class C(Magic, mutable_default="raise"):
+            x: Factory[list]
+
+        assert C().x == []
+
+    def test_allow_action(self) -> None:
+        class C(Magic, mutable_default="allow"):
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == [1]
+        assert C.x == [1]
+
+    def test_action_is_inherited(self) -> None:
+        class Base(Magic, mutable_default="raise"):
+            pass
+
+        with pytest.raises(ValueError, match="shared by every instance"):
+
+            class Sub(Base):
+                x: list = []
+
+    def test_unknown_action_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="mutable_default must be"):
+
+            class C(Magic, mutable_default="copy"):
+                x: list = []
+
+    def test_class_variable_is_still_shared(self) -> None:
+        # A `ClassVar` is a class attribute by definition: it is never
+        # assigned per instance, so its value is meant to be shared.
+        class C(Magic):
+            x: ClassVar[list] = []
+
+        C().x.append(1)
+        assert C.x == [1]
+
+    def test_frozen_class(self) -> None:
+        class C(Magic, frozen=True):
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_slots_class(self) -> None:
+        class C(Magic, slots=True):
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_decorator_form(self) -> None:
+        @magic
+        class C:
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == []
+
+    def test_decorator_form_takes_the_option(self) -> None:
+        @magic(mutable_default="allow")
+        class C:
+            x: list = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert b.x == [1]
 
 
 class TestInheritableUnsetValues:
