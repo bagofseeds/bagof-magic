@@ -19,7 +19,13 @@ import typing_extensions as tx
 # locals
 import bagof.magic as magic
 
-SOURCES = ["_fields.py", "constants.py", "options.py", "__init__.py"]
+SOURCES = [
+    "_arguments.py",
+    "_fields.py",
+    "constants.py",
+    "options.py",
+    "__init__.py",
+]
 
 #: Hand-written pages, relative to the repository root.
 PAGES = ["README.md", "docs/comparison.md"]

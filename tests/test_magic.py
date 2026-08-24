@@ -13,6 +13,7 @@ from typing_extensions import Annotated
 import bagof.magic as m
 from bagof.magic import (
     HIDE_IF_NONE,
+    Arguments,
     ClassVar,
     ConvertTo,
     Default,
@@ -736,8 +737,8 @@ class TestSlots:
             x: int = 3
             scale: InitVar[int] = 10
 
-            def __post_init__(self, scale: int) -> None:
-                self.x = self.x * scale
+            def __post_init__(self, arguments: Arguments) -> None:
+                self.x = self.x * arguments.scale
 
         assert Point.__slots__ == ("x",)
         assert Point().x == 30
@@ -949,8 +950,8 @@ class TestVarFields:
             x: int
             scale: InitVar[int]
 
-            def __post_init__(self, scale: int) -> None:
-                self.x = self.x * scale
+            def __post_init__(self, arguments: Arguments) -> None:
+                self.x = self.x * arguments.scale
 
         w = WithInitVar(5, 10)
         assert w.x == 50
@@ -1331,8 +1332,8 @@ class PicklePseudoField(Magic, frozen=True):
     a: int
     b: InitVar[int]
 
-    def __post_init__(self, b: int) -> None:
-        object.__setattr__(self, "b", b * 2)
+    def __post_init__(self, arguments: Arguments) -> None:
+        object.__setattr__(self, "b", arguments.b * 2)
 
 
 def _round_trips(obj: tx.Any) -> tx.List[tx.Any]:
@@ -1980,11 +1981,11 @@ class TestMetaclassFeatures:
             x: int
             s: InitVar[int]
 
-            def __pre_init__(self, s: int) -> None:
-                seen.append(s)
+            def __pre_init__(self, arguments: Arguments) -> None:
+                seen.append(arguments.s)
 
-            def __post_init__(self, s: int) -> None:
-                self.x += s
+            def __post_init__(self, arguments: Arguments) -> None:
+                self.x += arguments.s
 
         c = C(1, 3)
         assert c.x == 4
@@ -2078,8 +2079,8 @@ class TestMetaclassFeatures:
                 int, Field(var=True, init=True, positional=True, kw=False)
             ]
 
-            def __post_init__(self, s: int) -> None:
-                object.__setattr__(self, "doubled", s * 2)
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "doubled", arguments.s * 2)
 
         assert C(4).doubled == 8
 
@@ -2090,8 +2091,8 @@ class TestMetaclassFeatures:
                 int, Field(var=True, init=True, positional=False, kw=True)
             ]
 
-            def __post_init__(self, s: int) -> None:
-                self.x += s
+            def __post_init__(self, arguments: Arguments) -> None:
+                self.x += arguments.s
 
         assert C(1, s=5).x == 6
 
@@ -2445,8 +2446,8 @@ class TestPublicName:
             x: int
             _seed: Annotated[int, Field(var=True, init=True)] = 0
 
-            def __post_init__(self, seed: int) -> None:
-                object.__setattr__(self, "x", self.x + seed)
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "x", self.x + arguments.seed)
 
         assert C(1, seed=7).x == 8
 
@@ -3425,3 +3426,351 @@ class TestInheritableUnsetValues:
         other = Field(name="x", hash=True)
         m._inherit_attrs(field, other, ())
         assert field.hash is None
+
+
+class TestInitHooks:
+
+    def test_hook_without_a_parameter_is_called_with_nothing(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            def __post_init__(self, ) -> None:
+                seen.append(self.x)
+
+        C(3)
+        assert seen == [3]
+
+    def test_hook_with_a_parameter_gets_every_value(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+            y: int = 2
+            s: InitVar[int] = 7
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append(dict(**arguments))
+
+        C(1)
+        assert seen == [{"x": 1, "y": 2, "s": 7}]
+
+    def test_values_are_read_by_name_not_by_position(self) -> None:
+        class C(Magic):
+            first: int
+            second: int
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "first", arguments.second)
+                object.__setattr__(self, "second", arguments.first)
+
+        c = C(1, 2)
+        assert (c.first, c.second) == (2, 1)
+
+    def test_pre_sees_the_values_as_passed(self) -> None:
+        seen = []
+
+        class C(Magic, convert=True):
+            port: int
+
+            def __pre_init__(self, arguments: Arguments) -> None:
+                seen.append(arguments.port)
+
+        C("9000")
+        assert seen == ["9000"]
+
+    def test_post_sees_the_values_as_stored(self) -> None:
+        seen = []
+
+        class C(Magic, convert=True):
+            port: int
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append(arguments.port)
+
+        C("9000")
+        assert seen == [9000]
+
+    def test_a_factory_default_is_built_before_pre_runs(self) -> None:
+        seen = []
+
+        class C(Magic):
+            tags: Factory[list]
+
+            def __pre_init__(self, arguments: Arguments) -> None:
+                seen.append(arguments.tags)
+
+        C()
+        assert seen == [[]]
+
+    def test_an_inherited_hook_still_runs(self) -> None:
+        seen = []
+
+        class Base(Magic):
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append(dict(**arguments))
+
+        class Child(Base):
+            x: int
+
+        Child(5)
+        assert seen == [{"x": 5}]
+
+    def test_a_hook_in_the_class_body_wins_over_an_inherited_one(self) -> None:
+        seen = []
+
+        class Base(Magic):
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append("base")
+
+        class Inherits(Base):
+            x: int
+
+        class Overrides(Base):
+            x: int
+
+            def __post_init__(self) -> None:
+                seen.append("child")
+
+        Inherits(5)
+        Overrides(5)
+        assert seen == ["base", "child"]
+
+    def test_an_unreadable_hook_does_not_stop_the_class_being_built(
+        self,
+    ) -> None:
+        class C(Magic):
+            x: int
+            # Nothing you would write on purpose, but it is the shortest
+            # thing whose signature cannot be read. The class is still
+            # built; the hook only fails when it is actually called.
+            __post_init__ = "not a function"
+
+        with pytest.raises(TypeError, match="not callable"):
+            C(1)
+
+    def test_more_than_one_parameter_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="takes several arguments"):
+            class Bad(Magic):
+                x: int
+                y: int
+
+                def __post_init__(self, x: int, y: int) -> None:
+                    """Two parameters, and only one object to pass."""
+
+    def test_a_parameter_with_a_default_is_still_one_parameter(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            def __post_init__(self, arguments: Arguments = None) -> None:
+                seen.append(arguments.x)
+
+        C(4)
+        assert seen == [4]
+
+    def test_star_args_counts_as_wanting_the_values(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            def __post_init__(self, *arguments: Arguments) -> None:
+                seen.append(arguments[0].x)
+
+        C(6)
+        assert seen == [6]
+
+    def test_a_keyword_only_parameter_does_not_count(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            def __post_init__(self, *, tag: str = "none") -> None:
+                seen.append(tag)
+
+        C(6)
+        assert seen == ["none"]
+
+
+class TestArguments:
+
+    def test_reads_by_attribute_and_by_key(self) -> None:
+        arguments = Arguments(x=1, y=2)
+        assert arguments.x == 1
+        assert arguments["y"] == 2
+
+    def test_built_from_a_mapping(self) -> None:
+        assert Arguments({"x": 1}) == Arguments(x=1)
+
+    def test_behaves_like_a_read_only_mapping(self) -> None:
+        arguments = Arguments(x=1, y=2)
+        assert list(arguments) == ["x", "y"]
+        assert list(arguments.keys()) == ["x", "y"]
+        assert len(arguments) == 2
+        assert "x" in arguments and "z" not in arguments
+        assert arguments.get("z", 3) == 3
+        assert dict(**arguments) == {"x": 1, "y": 2}
+
+    def test_repr_lists_the_values(self) -> None:
+        assert repr(Arguments(x=1)) == "Arguments(x=1)"
+
+    def test_compares_by_value(self) -> None:
+        assert Arguments(x=1) == Arguments(x=1)
+        assert Arguments(x=1) != Arguments(x=2)
+        assert Arguments(x=1).__eq__(1) is NotImplemented
+
+    def test_an_unknown_name_says_what_was_passed(self) -> None:
+        arguments = Arguments(x=1)
+        with pytest.raises(AttributeError, match="'x'"):
+            assert arguments.nope
+        with pytest.raises(KeyError, match="'x'"):
+            arguments["nope"]
+
+    def test_an_empty_set_says_so(self) -> None:
+        with pytest.raises(AttributeError, match="no arguments"):
+            assert Arguments().nope
+
+    def test_the_values_cannot_be_changed(self) -> None:
+        arguments = Arguments(x=1)
+        with pytest.raises(AttributeError, match="Cannot set"):
+            arguments.x = 2
+        with pytest.raises(AttributeError, match="Cannot delete"):
+            del arguments.x
+
+    def test_a_value_named_after_a_method_is_read_by_key(self) -> None:
+        arguments = Arguments(keys=1, get=2)
+        assert arguments["keys"] == 1
+        assert arguments["get"] == 2
+
+
+class TestInitHookForms:
+    """The shapes a hook can take, and where one is looked for."""
+
+    def test_a_static_method_hook_gets_the_values(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            @staticmethod
+            def __post_init__(arguments: Arguments) -> None:
+                seen.append(arguments.x)
+
+        C(1)
+        assert seen == [1]
+
+    def test_a_static_method_hook_can_take_nothing(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            @staticmethod
+            def __post_init__() -> None:
+                seen.append("ran")
+
+        C(1)
+        assert seen == ["ran"]
+
+    def test_a_class_method_hook_gets_the_values(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            @classmethod
+            def __post_init__(cls, arguments: Arguments) -> None:
+                seen.append((cls.__name__, arguments.x))
+
+        C(1)
+        assert seen == [("C", 1)]
+
+    def test_a_callable_object_hook_gets_the_values(self) -> None:
+        seen = []
+
+        class Recorder:
+            def __call__(self, arguments: Arguments) -> None:
+                seen.append(arguments.x)
+
+        class C(Magic):
+            x: int
+            __post_init__ = Recorder()
+
+        C(1)
+        assert seen == [1]
+
+    def test_a_hook_on_somebody_elses_base_is_left_alone(self) -> None:
+        seen = []
+
+        class Legacy:
+            """Not a Magic class: its hook was written for someone else."""
+
+            def __post_init__(self, tag: tx.Any) -> None:
+                seen.append(tag)
+
+        class C(Magic, Legacy):
+            x: int
+
+        instance = C(1)
+        assert seen == []
+
+        # Left alone, not taken away: it is still there for whoever
+        # wrote it to call.
+        instance.__post_init__("theirs")
+        assert seen == ["theirs"]
+
+    def test_the_hook_is_read_in_inheritance_order(self) -> None:
+        seen = []
+
+        class Base(Magic):
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append(("base", dict(**arguments)))
+
+        class Left(Base):
+            pass
+
+        class Right(Base):
+            def __post_init__(self) -> None:
+                seen.append(("right", None))
+
+        class Both(Left, Right):
+            x: int
+
+        # `Right` comes before `Base` in the inheritance order, so its
+        # hook is the one called -- and it takes no argument.
+        Both(1)
+        assert seen == [("right", None)]
+
+        # `Left` does not override it, so there the base's hook runs.
+        Left()
+        assert seen[-1] == ("base", {})
+
+    def test_the_error_names_the_class(self) -> None:
+        with pytest.raises(TypeError, match=r"Bad\.__post_init__"):
+            class Bad(Magic):
+                x: int
+                y: int
+
+                def __post_init__(self, x: int, y: int) -> None:
+                    """Two parameters, and only one object to pass."""
+
+    def test_a_value_named_like_the_slot_is_still_reachable(self) -> None:
+        seen = []
+
+        class C(Magic):
+            v: Annotated[int, Field(alias="_values")]
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append(arguments._values)
+
+        C(3)
+        assert seen == [3]
+
+    def test_a_mapping_is_passed_positionally(self) -> None:
+        # So that a value of any name can be given as a keyword.
+        arguments = Arguments(values=1, named=2)
+        assert (arguments.values, arguments.named) == (1, 2)
