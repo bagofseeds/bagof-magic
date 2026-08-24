@@ -1042,6 +1042,18 @@ class TestMatchArgs:
 
         assert Child.__match_args__ == ("b",)
 
+    def test_writing_the_private_name_is_refused(self) -> None:
+        with pytest.raises(TypeError) as caught:
+            class Point(Magic, match_args=True):
+                x: int
+                __magic_match_args__ = ("x",)
+
+        message = str(caught.value)
+        assert "__magic_match_args__" in message
+        assert "__match_args__" in message
+        # A tuple is not something the reader can call.
+        assert "call" not in message
+
 
 # ======================================================================
 # Field (direct)
@@ -1193,16 +1205,34 @@ class TestMapping:
             class Child(Base, mapping=False):
                 b: int
 
-    def test_the_ban_reaches_a_distant_base(self) -> None:
+    def test_the_ban_names_the_class_that_asked_for_it(self) -> None:
         class Base(Magic, mapping=True):
             a: int
 
         class Middle(Base):
             b: int
 
-        with pytest.raises(TypeError, match="Middle"):
+        with pytest.raises(TypeError) as caught:
             class Child(Middle, mapping=False):
                 c: int
+
+        # `Middle` is dict-like only because it inherited the option,
+        # so pointing at it would send the reader somewhere that raises
+        # this same error again.
+        assert "Base" in str(caught.value)
+        assert "Middle" not in str(caught.value)
+
+    def test_the_ban_does_not_quote_a_value_back(self) -> None:
+        class Base(Magic, mapping=True):
+            a: int
+
+        with pytest.raises(TypeError) as caught:
+            class Child(Base, mapping=None):
+                b: int
+
+        # Any falsy value turns the option off, so the message must not
+        # name one the reader did not write.
+        assert "mapping=False" not in str(caught.value)
 
     def test_a_subclass_that_keeps_it_reports_its_own_fields(self) -> None:
         class Base(Magic, mapping=True):
