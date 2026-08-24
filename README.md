@@ -304,7 +304,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `validate` | `False` | check every field against its type |
 | `factory` | `False` | build every missing default from its type |
 | `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
-| `mapping` | `False` | behave like a dictionary |
+| `mapping` | `False` | behave like a dictionary; a subclass cannot turn it off again |
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
 | `doc` | `True` | add the field table to the class docstring |
 

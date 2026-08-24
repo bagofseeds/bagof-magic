@@ -65,7 +65,7 @@ convert : bool, default=False
 validate : bool, default=False
     Use field type as validator if none is provided
 mapping : bool, default=False
-    Implement the `Mapping` protocol
+    Implement the `Mapping` protocol; a subclass cannot turn it off
 reverse : bool, default=False
     Use the reverse MRO order to determine field order
 doc : bool | str, default=True
@@ -369,9 +369,11 @@ _ORDER_METHODS = {
 }
 
 
-#: What is put in place of a generated method when an option is turned
-#: off. These are the behaviours a plain Python class has: comparison by
-#: identity, the `<Thing object at 0x...>` repr, and no ordering.
+#: What is put in place of a generated method or value when an option
+#: is turned off. These are the answers a plain Python class gives:
+#: the `<Thing object at 0x...>` repr, comparison by identity, no
+#: ordering, no hash once `__eq__` is written, and nothing for a `case`
+#: pattern to bind.
 _NEUTRAL = {
     "repr": object.__repr__,
     "eq": object.__eq__,
@@ -380,15 +382,19 @@ _NEUTRAL = {
     "gt": _no_order,
     "ge": _no_order,
     "hash": None,
+    # An empty tuple is what a class with no pattern-matching support
+    # has: `case C(x)` refuses to bind anything positionally.
+    "match_args": (),
 }
 
 
 def _generated_methods(cls: type) -> dict:
-    """Which methods on this class were written by Magic, and for what.
+    """Which of this class's attributes Magic wrote, and for what.
 
-    Maps the name a method was bound under to the option that produced
-    it -- `{"__eq__": "eq"}` normally, `{"__same__": "eq"}` if the class
-    asked for `eq="__same__"`.
+    Covers the generated methods and the `__match_args__` tuple. Maps
+    the name each was bound under to the option that produced it --
+    `{"__eq__": "eq"}` normally, `{"__same__": "eq"}` if the class asked
+    for `eq="__same__"`.
 
     Only the names a subclass might have to replace are listed, so the
     private `__magic_*__` names are left out: every class writes its own,
@@ -400,10 +406,11 @@ def _generated_methods(cls: type) -> dict:
     this record can tell the two apart, and telling them apart is what
     decides whether a subclass may replace the method.
 
-    It is a record on the class rather than a mark on the method itself
-    because some of what gets bound cannot carry a mark: a generated
-    `__hash__` is sometimes `None`, and a turned-off option leaves
-    behind `object.__eq__`, which is a built-in.
+    It is a record on the class rather than a mark on what was bound,
+    because most of what gets bound cannot carry a mark: a generated
+    `__hash__` is sometimes `None`, a turned-off option leaves behind
+    `object.__eq__`, which is a built-in, and `__match_args__` is a
+    tuple.
     """
     return cls.__dict__.get(_GENERATED) or {}
 
@@ -451,28 +458,30 @@ def _install(
     enabled: bool,
 ) -> bool:
     """
-    Put one generated method on the class being built.
+    Put one generated method or value on the class being built.
+
+    Everything here is a method apart from `__match_args__`, which is a
+    tuple of field names.
 
     It is always bound under its private name (`__magic_eq__` and
-    friends), so that a hand-written method can call the generated one.
-    It is bound under its public name (`__eq__`) only if the class asked
-    for that method.
+    friends), so that a hand-written method can reach the generated
+    one. It is bound under its public name (`__eq__`) only if the class
+    asked for it.
 
-    If the class did *not* ask for it, any generated method it would
-    otherwise inherit is replaced by the plain-Python behaviour. A
-    generated method belongs to the class it was made for: it only
-    knows that class's fields, so letting it answer for a different
-    class gives wrong answers. Methods you wrote yourself are never
-    replaced.
+    If the class did *not* ask for it, anything generated it would
+    otherwise inherit is replaced by the plain-Python behaviour. What
+    is generated belongs to the class it was made for: it only knows
+    that class's fields, so letting it answer for a different class
+    gives wrong answers. Whatever you wrote yourself is never replaced.
 
-    Returns whether the public name ended up holding our method.
+    Returns whether the public name ended up holding ours.
     """
     private = _MAGIC(slot)
     if private in namespace:
         raise TypeError(
             f"{private} is written by Magic, so a class cannot define its "
-            f"own. Write {public} instead, and call {private} from it if "
-            f"you want the generated one."
+            f"own. Write {public} instead, and use {private} from there if "
+            f"you want what Magic generated."
         )
     namespace[private] = fn
 
@@ -895,6 +904,30 @@ def __pre_new__(
     options.update(Options(**kwargs))
     namespace[_OPTIONS] = options
 
+    # Once a class is dict-like, none of its subclasses can stop being
+    # one, so a subclass that turns `mapping` off is asking for
+    # something that cannot be delivered. The class to name is the
+    # furthest one along the chain that is dict-like: `mapping` is
+    # inherited, so every class below the one that asked for it has the
+    # option set too, and turning it off on any of those would only
+    # raise this again. `mro[0]` is the throwaway class built above to
+    # work out the inheritance order; it is not a base of anything.
+    mapping_base = None
+    for b in mro[1:]:
+        if getattr(getattr(b, _OPTIONS, None), "mapping", False):
+            mapping_base = b
+    if mapping_base is not None and not options.mapping:
+        raise TypeError(
+            f"{clsname} gets its dict-like behaviour from "
+            f"{mapping_base.__name__}, and a subclass cannot take it "
+            f"away: {clsname} would still answer yes to an isinstance "
+            f"check against Mapping, while the dict-like methods it "
+            f"inherited would report {mapping_base.__name__}'s fields "
+            f"instead of its own. Either leave mapping alone here, or "
+            f"turn it off on {mapping_base.__name__} and ask for it only "
+            f"on the subclasses that want it."
+        )
+
     if options.mutable_default not in _MUTABLE_DEFAULT_ACTIONS:
         raise ValueError(
             f"mutable_default must be 'factory', 'raise' or 'allow', "
@@ -1067,16 +1100,6 @@ def __pre_new__(
     # Include only real fields.  This is used in all of the following methods.
     real_fields = {name: f for name, f in fields.items() if not f.var}
 
-    if options.match_args:
-        fnname = (
-            options.match_args
-            if isinstance(options.match_args, str)
-            else "__match_args__"
-        )
-        namespace.setdefault(fnname, tuple(
-            f.public_name for f in fields.values() if f.init and f.positional
-        ))
-
     if options.mapping:
         dict_fields = {f.public_key: f for f in fields.values() if f.key}
         for name, func in _make_mapping(qualname, dict_fields).items():
@@ -1089,6 +1112,19 @@ def __pre_new__(
     # the `mapping` option can add one, and working out what a class
     # would otherwise inherit means looking at the bases it really has.
     base_mro = type(_DISCARD, bases, {}).__mro__[1:]
+
+    _install(
+        namespace, generated, base_mro, "match_args",
+        (
+            options.match_args
+            if isinstance(options.match_args, str)
+            else "__match_args__"
+        ),
+        tuple(
+            f.public_name for f in fields.values() if f.init and f.positional
+        ),
+        bool(options.match_args),
+    )
 
     repr_fields = {name: f for name, f in fields.items() if f.repr}
     _install(
@@ -1916,7 +1952,8 @@ class MetaMagic(ABCMeta):
     validate : bool, default=False
         Use field type as validator if none is provided.
     mapping : bool, default=False
-        Implement the `Mapping` protocol.
+        Implement the `Mapping` protocol. A subclass cannot turn it off
+        again.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
         This only affects the relative order of the fields of one class
@@ -1998,7 +2035,8 @@ class Magic(metaclass=MetaMagic):
     validate : bool, default=False
         Use field type as validator if none is provided.
     mapping : bool, default=False
-        Implement the `Mapping` protocol.
+        Implement the `Mapping` protocol. A subclass cannot turn it off
+        again.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
         This only affects the relative order of the fields of one class
