@@ -76,6 +76,12 @@ followed is noted.
   class as a `Mapping` or `MutableMapping`. There is no upstream equivalent.
 - **Generated documentation.** The `doc` option appends an attribute table to
   the class docstring, built from each field's own documentation.
+- **Saving and restoring an object.** `_make_state` saves an object's
+  attribute dictionary together with whichever of its slots hold a value --
+  the two-part value `object.__getstate__` produces from Python 3.11 on --
+  rather than upstream's tuple of field values. Anything kept on an object
+  that was never declared as a field survives a copy, and the slot names are
+  read from the whole inheritance chain.
 - **Version reach.** The code runs on Python 3.8 and later, so `match`
   statements were rewritten as `if`/`elif` (`_get_slots`), and annotations are
   read through `annotationlib` on 3.14+ and from the class namespace below it.

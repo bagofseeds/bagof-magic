@@ -1036,6 +1036,49 @@ class PickleOwnState(PickleFrozen, frozen=False):
         self.__dict__.update(state)
 
 
+class PickleOnlyGet(PickleFrozen, frozen=False):
+    b: int
+
+    def __getstate__(self) -> dict:
+        return {"a": self.a, "b": self.b}
+
+
+class PickleOnlySet(PickleFrozen, frozen=False):
+    b: int
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+
+
+class PickleSlots(Magic, frozen=True, slots=True):
+    a: int
+
+
+class PickleSlotsChild(PickleSlots, frozen=False, slots=True):
+    b: int
+
+
+class PickleDictAndSlots(PickleFrozen, frozen=False, slots=True):
+    b: int
+
+
+class PicklePseudoField(Magic, frozen=True):
+    a: int
+    b: InitVar[int]
+
+    def __post_init__(self, b: int) -> None:
+        object.__setattr__(self, "b", b * 2)
+
+
+def _round_trips(obj: tx.Any) -> tx.List[tx.Any]:
+    """The object back from each of the three ways of copying it."""
+    return [
+        pickle.loads(pickle.dumps(obj)),
+        copy.copy(obj),
+        copy.deepcopy(obj),
+    ]
+
+
 class TestPickle:
 
     def test_pickle_round_trip(self) -> None:
@@ -1083,6 +1126,63 @@ class TestPickle:
         assert restored.by_hand is True
         assert "__getstate__" not in PickleOwnState.__dict__[_GENERATED]
         assert "__setstate__" not in PickleOwnState.__dict__[_GENERATED]
+
+    def test_only_getstate_written_leaves_both_alone(self) -> None:
+        # The two have to agree, so half a pair of your own means the
+        # whole pair is yours.
+        assert PickleOnlyGet(1, 2).__getstate__() == {"a": 1, "b": 2}
+        assert "__setstate__" not in PickleOnlyGet.__dict__
+        assert "__getstate__" not in PickleOnlyGet.__dict__[_GENERATED]
+        assert "__setstate__" not in PickleOnlyGet.__dict__[_GENERATED]
+
+    def test_only_setstate_written_leaves_both_alone(self) -> None:
+        obj = PickleOnlySet(1, 2)
+        obj.__setstate__({"a": 3, "b": 4})
+        assert (obj.a, obj.b) == (3, 4)
+        assert "__getstate__" not in PickleOnlySet.__dict__
+        assert "__getstate__" not in PickleOnlySet.__dict__[_GENERATED]
+        assert "__setstate__" not in PickleOnlySet.__dict__[_GENERATED]
+
+    def test_extra_attribute_survives_plain(self) -> None:
+        obj = PicklePoint(1, 2)
+        obj.extra = 99
+        for restored in _round_trips(obj):
+            assert restored.extra == 99
+
+    def test_extra_attribute_survives_frozen(self) -> None:
+        obj = PickleFrozen(1)
+        object.__setattr__(obj, "extra", 99)
+        for restored in _round_trips(obj):
+            assert (restored.a, restored.extra) == (1, 99)
+
+    def test_extra_attribute_survives_unfrozen_subclass(self) -> None:
+        obj = PickleThawed(1, 2)
+        obj.extra = 99
+        for restored in _round_trips(obj):
+            assert (restored.a, restored.b, restored.extra) == (1, 2, 99)
+
+    def test_slots_survive(self) -> None:
+        # A slotted class has no attribute dictionary, so everything it
+        # holds is in its slots.
+        for restored in _round_trips(PickleSlots(1)):
+            assert restored.a == 1
+
+    def test_slots_survive_subclass(self) -> None:
+        for restored in _round_trips(PickleSlotsChild(1, 2)):
+            assert (restored.a, restored.b) == (1, 2)
+
+    def test_dict_and_slots_both_survive(self) -> None:
+        # This one has both: `a` comes from a base with an attribute
+        # dictionary, `b` is a slot.
+        obj = PickleDictAndSlots(1, 2)
+        obj.extra = 99
+        for restored in _round_trips(obj):
+            assert (restored.a, restored.b, restored.extra) == (1, 2, 99)
+
+    def test_stored_pseudo_field_survives(self) -> None:
+        # `b` is not a field of its own, but it is on the object.
+        for restored in _round_trips(PicklePseudoField(1, 2)):
+            assert (restored.a, restored.b) == (1, 4)
 
 
 # ======================================================================

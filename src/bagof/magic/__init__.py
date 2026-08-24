@@ -467,12 +467,29 @@ def _install(
     return False
 
 
+def _slot_names(
+    mro: tx.Tuple[type, ...], namespace: dict
+) -> tx.Tuple[str, ...]:
+    """Every slot an instance of the class being built can hold.
+
+    Slots are inherited, so this is the whole chain of bases and not
+    just what the class itself declares. `__dict__` and `__weakref__`
+    are left out: they are places to keep attributes, not attributes.
+    """
+    names = set()
+    for base in mro:
+        names.update(_get_slots(base))
+    own = namespace.get("__slots__")
+    names.update((own,) if isinstance(own, str) else (own or ()))
+    names -= {"__dict__", "__weakref__"}
+    return tuple(sorted(names))
+
+
 def _install_state(
     namespace: dict,
     generated: dict,
     mro: tx.Tuple[type, ...],
     qualname: str,
-    real_fields: dict,
     frozen: bool,
 ) -> None:
     """
@@ -484,21 +501,24 @@ def _install_state(
     usual attribute assignment.
 
     Every class below one of those needs a pair of its own as well. The
-    pair carries the list of fields to save, so a base's pair leaves out
-    each field the class has added, and a copy comes back without them.
+    pair carries the names of the slots to save, so a base's pair leaves
+    out each slot the class has added, and a copy comes back missing
+    them.
 
     There is no option to turn these off, and no plain-Python method to
     put in their place, so the only question is whether to write them.
-    Methods you wrote yourself are left alone.
+    Methods you wrote yourself are left alone: the two have to agree
+    with each other, so writing one of them means both are yours.
     """
     if not frozen and not _inherited_generated(mro, "state"):
         return
-    for name, fn in zip(
-        ("__getstate__", "__setstate__"), _make_state(qualname, real_fields)
-    ):
-        if name not in namespace:
-            namespace[name] = fn
-            generated[name] = "state"
+    names = ("__getstate__", "__setstate__")
+    if any(name in namespace for name in names):
+        return
+    pair = _make_state(qualname, _slot_names(mro, namespace))
+    for name, fn in zip(names, pair):
+        namespace[name] = fn
+        generated[name] = "state"
 
 
 def _install_hash(
@@ -916,11 +936,6 @@ def __pre_new__(
     # would otherwise inherit means looking at the bases it really has.
     base_mro = type(_DISCARD, bases, {}).__mro__[1:]
 
-    _install_state(
-        namespace, generated, base_mro, qualname, real_fields,
-        bool(options.frozen),
-    )
-
     repr_fields = {name: f for name, f in fields.items() if f.repr}
     _install(
         namespace, generated, base_mro, "repr",
@@ -958,6 +973,12 @@ def __pre_new__(
             raise TypeError(f'{clsname} already specifies __slots__')
         weakref_slot = options.weakref_slot
         namespace["__slots__"] = _make_slots(bases, real_fields, weakref_slot)
+
+    # Saving an object means saving its slots, so this waits until
+    # `__slots__` is settled as well as `bases`.
+    _install_state(
+        namespace, generated, base_mro, qualname, bool(options.frozen),
+    )
 
     fnbuilder.insert_fns(clsname, namespace)
 
@@ -1460,17 +1481,46 @@ def _make_assign(cls: type) -> type:
     return __delattr__, __setattr__
 
 
-def _make_state(qualname: str, fields: dict[str, Field]) -> tx.Callable:
+def _make_state(
+    qualname: str, slot_names: tx.Tuple[str, ...]
+) -> tx.Tuple[tx.Callable, tx.Callable]:
+    """
+    Build the pair `pickle` and `copy` use to save and restore an
+    object.
+
+    What is saved is everything an object is really carrying: its
+    attribute dictionary, and whichever of its slots have been given a
+    value. Fields are not singled out, so an attribute that was set on
+    the object without ever being declared survives a copy like any
+    other.
+
+    The saved value is a pair, `(attributes, slots)`, either half of
+    which is `None` when there is nothing of that kind to save. This is
+    the shape Python itself uses from 3.11 on for a class that does not
+    say otherwise -- written out here because the versions before that
+    have no method to borrow it from.
+    """
 
     def __getstate__(self: Magic) -> tx.Tuple:
-        kept = [f for f in fields.values() if not f.var]
-        return tuple(getattr(self, f.name) for f in kept)
+        attributes = getattr(self, "__dict__", None)
+        slots = {}
+        for name in slot_names:
+            try:
+                slots[name] = getattr(self, name)
+            except AttributeError:
+                # A slot that was never given a value stays empty on
+                # the copy too.
+                pass
+        return (dict(attributes) if attributes else None, slots or None)
 
     def __setstate__(self: Magic, state: tx.Tuple) -> None:
-        kept = [f for f in fields.values() if not f.var]
-        for field, value in zip(kept, state):
-            # use setattr because dataclass may be frozen
-            object.__setattr__(self, field.name, value)
+        attributes, slots = state
+        if attributes:
+            self.__dict__.update(attributes)
+        for name, value in (slots or {}).items():
+            # Straight through to the object, since assigning the usual
+            # way is what a frozen class refuses.
+            object.__setattr__(self, name, value)
 
     __getstate__.__qualname__ = f"{qualname}.__getstate__"
     __setstate__.__qualname__ = f"{qualname}.__setstate__"
