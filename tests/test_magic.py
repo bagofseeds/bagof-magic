@@ -1238,24 +1238,34 @@ class TestAddFields:
 
     def test_replace_no_reverse_inherit_missing(self) -> None:
         fields = {"a": Field(name="a", doc="olddoc")}
-        # new field has doc MISSING -> the inherit loop hits `continue`.
-        new = Field(name="a")
+        new = Field(name="a")  # overrides 'a', doc MISSING
         assert new.doc is MISSING
         m._add_fields(fields, [new], replace=True, reverse=False)
-        assert fields["a"] is new
+        # the new field wins, but takes the doc it does not set itself
+        assert fields["a"].doc == "olddoc"
+        # ... on a copy: `new` still belongs to whoever passed it in
+        assert fields["a"] is not new
+        assert new.doc is MISSING
 
-    def test_replace_no_reverse_inherit_copy(self) -> None:
+    def test_replace_no_reverse_inherit_none(self) -> None:
+        # a doc that was never given a value has already been filled in
+        # with None by the time fields are merged: still unset.
+        fields = {"a": Field(name="a", doc="olddoc")}
+        new = Field(name="a", doc=None)
+        m._add_fields(fields, [new], replace=True, reverse=False)
+        assert fields["a"].doc == "olddoc"
+
+    def test_replace_no_reverse_keeps_own_doc(self) -> None:
         fields = {"a": Field(name="a", doc="olddoc")}
         new = Field(name="a", doc="newdoc")
         m._add_fields(fields, [new], replace=True, reverse=False)
-        # inherit copies the *old* doc onto the new field.
-        assert fields["a"].doc == "olddoc"
+        assert fields["a"].doc == "newdoc"
 
     def test_replace_no_inherit(self) -> None:
         fields = {"a": Field(name="a", doc="olddoc")}
         new = Field(name="a", doc="newdoc")
         m._add_fields(fields, [new], replace=True, inherit=())
-        assert fields["a"] is new
+        assert fields["a"] is not new
         assert fields["a"].doc == "newdoc"
 
     def test_replace_reverse(self) -> None:
@@ -1266,19 +1276,32 @@ class TestAddFields:
         new = Field(name="a")  # overrides 'a', doc MISSING
         assert new.doc is MISSING
         m._add_fields(fields, [new], replace=True, reverse=True)
-        # new fields go first; the overriding 'a' inherits the old doc.
+        # new fields go first; the overriding 'a' inherits the old doc
         assert list(fields) == ["a", "b"]
-        assert fields["a"] is new
+        assert fields["a"] is not new
         assert fields["a"].doc == "da"
+
+    def test_replace_reverse_keeps_own_doc(self) -> None:
+        fields = {"a": Field(name="a", doc="da")}
+        new = Field(name="a", doc="newdoc")
+        m._add_fields(fields, [new], replace=True, reverse=True)
+        assert fields["a"].doc == "newdoc"
 
     def test_not_replace_no_reverse(self) -> None:
         fields = {"a": Field(name="a")}  # doc MISSING
         new_a = Field(name="a", doc="fromnew")
         new_b = Field(name="b", doc="db")
         m._add_fields(fields, [new_a, new_b], replace=False, reverse=False)
-        # existing 'a' preserved, 'b' appended; 'a' inherits new doc.
+        # existing 'a' preserved, 'b' appended; 'a' inherits new doc
         assert list(fields) == ["a", "b"]
         assert fields["a"].doc == "fromnew"
+        assert fields["b"] is not new_b
+
+    def test_not_replace_no_reverse_keeps_own_doc(self) -> None:
+        fields = {"a": Field(name="a", doc="olddoc")}
+        new_a = Field(name="a", doc="fromnew")
+        m._add_fields(fields, [new_a], replace=False, reverse=False)
+        assert fields["a"].doc == "olddoc"
 
     def test_not_replace_reverse(self) -> None:
         fields = {"a": Field(name="a")}  # doc MISSING
@@ -1287,6 +1310,16 @@ class TestAddFields:
         m._add_fields(fields, [new_a, new_b], replace=False, reverse=True)
         assert list(fields) == ["a", "b"]
         assert fields["a"].doc == "fromnew"
+        assert fields["b"] is not new_b
+
+    def test_not_replace_reverse_keeps_own_doc(self) -> None:
+        fields = {"a": Field(name="a", doc="olddoc")}
+        new_a = Field(name="a", doc="fromnew")
+        new_b = Field(name="b", doc="db")
+        m._add_fields(fields, [new_a, new_b], replace=False, reverse=True)
+        # new names go first, but a name already there keeps its field
+        assert list(fields) == ["a", "b"]
+        assert fields["a"].doc == "olddoc"
 
     def test_reverse_option_inheritance(self) -> None:
         class Base(Magic, reverse=True):
@@ -1297,6 +1330,100 @@ class TestAddFields:
 
         # reverse=True places derived fields before base fields.
         assert list(getattr(Derived, _FIELDS)) == ["y", "x"]
+
+
+# ======================================================================
+# Fields across a hierarchy
+# ======================================================================
+
+
+class TestFieldInheritance:
+
+    def test_subclass_does_not_share_fields_with_base(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Derived(Base):
+            y: int = 2
+
+        assert m.fields(Base)[0] is not m.fields(Derived)[0]
+
+    def test_diamond_leaves_bases_alone(self) -> None:
+        class A(Magic):
+            x: Annotated[int, Doc("A doc")] = 1
+
+        class B(Magic):
+            x: Annotated[int, Doc("B doc")] = 2
+
+        class C(A, B):
+            pass
+
+        # Defining C must not rewrite A or B.
+        assert m.fields(A)[0].doc == "A doc"
+        assert m.fields(B)[0].doc == "B doc"
+        # C follows its MRO: A comes first, so A's doc wins.
+        assert m.fields(C)[0].doc == "A doc"
+
+    def test_child_keeps_its_own_doc(self) -> None:
+        class Base(Magic):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Derived(Base):
+            x: Annotated[int, Doc("child doc")] = 2
+
+        assert m.fields(Derived)[0].doc == "child doc"
+        assert m.fields(Base)[0].doc == "base doc"
+
+    def test_child_inherits_the_base_doc(self) -> None:
+        class Base(Magic):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Derived(Base):
+            x: int = 2
+
+        assert m.fields(Derived)[0].doc == "base doc"
+
+    def test_subclass_does_not_share_fields_with_base_reverse(self) -> None:
+        class Base(Magic, reverse=True):
+            x: int = 1
+
+        class Derived(Base):
+            y: int = 2
+
+        assert m.fields(Base)[0] is not m.fields(Derived)[-1]
+
+    def test_diamond_leaves_bases_alone_reverse(self) -> None:
+        class A(Magic, reverse=True):
+            x: Annotated[int, Doc("A doc")] = 1
+
+        class B(Magic, reverse=True):
+            x: Annotated[int, Doc("B doc")] = 2
+
+        class C(A, B):
+            pass
+
+        assert m.fields(A)[0].doc == "A doc"
+        assert m.fields(B)[0].doc == "B doc"
+        assert m.fields(C)[0].doc == "A doc"
+
+    def test_child_keeps_its_own_doc_reverse(self) -> None:
+        class Base(Magic, reverse=True):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Derived(Base):
+            x: Annotated[int, Doc("child doc")] = 2
+
+        assert m.fields(Derived)[0].doc == "child doc"
+        assert m.fields(Base)[0].doc == "base doc"
+
+    def test_child_inherits_the_base_doc_reverse(self) -> None:
+        class Base(Magic, reverse=True):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Derived(Base):
+            x: int = 2
+
+        assert m.fields(Derived)[0].doc == "base doc"
 
 
 # ======================================================================
@@ -1964,3 +2091,39 @@ class TestAnnotationPolarity:
     def test_subscript_keeps_extra_metadata(self) -> None:
         hint = NoRepr[int, "some note"]
         assert tx.get_args(hint)[2] == "some note"
+
+
+class TestInheritableUnsetValues:
+    """What counts as "this field did not say" is decided per attribute."""
+
+    def test_doc_treats_none_as_unset(self) -> None:
+        # A resolved field has `doc = None` when none was given, so an
+        # inherited doc fills it in.
+        class Base(Magic):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Child(Base):
+            x: int = 2
+
+        assert {f.name: f.doc for f in m.fields(Child)}["x"] == "base doc"
+
+    def test_every_inheritable_attribute_declares_its_unset_values(
+        self,
+    ) -> None:
+        # `_inherit_attrs` looks the values up rather than assuming, so
+        # an attribute added to the list without a decision fails here
+        # rather than silently treating None as "did not say". That
+        # matters because None is a real answer for some of them --
+        # `hash = None` means "follow eq".
+        default = m._add_fields.__defaults__[-1]
+        assert set(default) <= set(m._INHERITABLE)
+        for attr, unset in m._INHERITABLE.items():
+            assert MISSING in unset, attr
+
+    def test_a_meaningful_none_would_not_be_treated_as_unset(self) -> None:
+        # `hash` is not inheritable today; if it ever is, None must keep
+        # meaning "follow eq" rather than "unset".
+        field = Field(name="x", hash=None)
+        other = Field(name="x", hash=True)
+        m._inherit_attrs(field, other, ())
+        assert field.hash is None
