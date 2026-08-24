@@ -39,7 +39,7 @@ repr : bool | str, default=True
 eq : bool | str, default=True
     Generate `__eq__` method
 order : bool | str, default=False
-    Generate `__lt__` method
+    Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods
 unsafe_hash : bool, default=False
     Always generate `__hash__` method
 frozen : bool, default=False
@@ -121,6 +121,7 @@ from __future__ import annotations
 __all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 # stdlib
 import copy
+import operator
 import sys
 from abc import ABCMeta
 from collections import abc as _abc
@@ -341,6 +342,17 @@ def _no_order(self: Magic, other: tx.Any) -> tx.Any:
     return NotImplemented
 
 
+#: The four comparison methods the `order` option generates: the name
+#: each is normally bound under, and the operator it applies to the
+#: tuple of values of the fields that take part in the ordering.
+_ORDER_METHODS = {
+    "lt": ("__lt__", operator.lt),
+    "le": ("__le__", operator.le),
+    "gt": ("__gt__", operator.gt),
+    "ge": ("__ge__", operator.ge),
+}
+
+
 #: What is put in place of a generated method when an option is turned
 #: off. These are the behaviours a plain Python class has: comparison by
 #: identity, the `<Thing object at 0x...>` repr, and no ordering.
@@ -348,6 +360,9 @@ _NEUTRAL = {
     "repr": object.__repr__,
     "eq": object.__eq__,
     "lt": _no_order,
+    "le": _no_order,
+    "gt": _no_order,
+    "ge": _no_order,
     "hash": None,
     # An empty tuple is what a class with no pattern-matching support
     # has: `case C(x)` refuses to bind anything positionally.
@@ -605,16 +620,18 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     # into a factory, in which case the class attribute holding the
     # original must go, exactly as it would for a hand-written factory.
     #
-    # A field left out of `__init__` (a `ClassVar`, or `NoInit[...]`)
-    # keeps its default as a class attribute and is never assigned per
-    # instance, so there is nothing to promote and nothing to warn
-    # about: that value is meant to be shared.
+    # A `ClassVar` keeps its default as a class attribute and is never
+    # assigned per instance, so there is nothing to promote and nothing
+    # to warn about: that value is meant to be shared. Every other
+    # field's default reaches an instance -- as a parameter's default,
+    # or assigned by the generated `__init__` to a field that has no
+    # parameter of its own.
     default = field.default
     if (
         action == "allow" or
         default is MISSING or
         field.factory or
-        not field.init or
+        (field.var and not field.init) or
         not _is_mutable(default)
     ):
         return False
@@ -815,6 +832,17 @@ def __pre_new__(
         if _handle_mutable_default(field, options.mutable_default):
             namespace.pop(field.name, None)
 
+        # Python refuses to create a class where the same name is both
+        # a slot and a class attribute, so a default that is going to be
+        # stored in a slot cannot stay in the namespace. Every field
+        # that is stored on the instance -- that is, every field but a
+        # pseudo-field -- gets a slot, and the generated `__init__`
+        # assigns it its default, so the class attribute is dropped
+        # here. On a class that generates no `__init__` of its own the
+        # default is then only reachable through `__magic_init__`.
+        if options.slots and not field.var:
+            namespace.pop(field.name, None)
+
         # Use Key/Repr wrappers
         # (This is hacky and ugly -- should be reworked)
         if field.key is HIDE_IF_NONE:
@@ -964,11 +992,26 @@ def __pre_new__(
         _make_eq(qualname, real_fields), bool(options.eq),
     )
 
-    _install(
-        namespace, generated, base_mro, "lt",
-        options.order if isinstance(options.order, str) else "__lt__",
-        _make_lt(qualname, real_fields), bool(options.order),
-    )
+    # The four comparisons are generated as a set, so that they always
+    # agree with each other. `order=True` binds each to its operator;
+    # `order="<name>"` binds the `<` comparison under that name and
+    # binds none of the operators. A comparison written in the class
+    # body wins, and then none of the other three is bound either --
+    # they would answer beside it with a different answer. All four are
+    # written under their private names whatever happens.
+    named_order = isinstance(options.order, str)
+    order_names = [dunder for dunder, _ in _ORDER_METHODS.values()]
+    if named_order:
+        order_names.append(options.order)
+    hand_written_order = any(name in namespace for name in order_names)
+    for slot, (dunder, _) in _ORDER_METHODS.items():
+        _install(
+            namespace, generated, base_mro, slot,
+            options.order if named_order and slot == "lt" else dunder,
+            _make_order(qualname, real_fields, slot),
+            bool(options.order) and not hand_written_order
+            and (slot == "lt" or not named_order),
+        )
 
     # Whether this class compares by identity is read back out of the
     # namespace: what matters is where `__eq__` ended up, not how it got
@@ -1257,6 +1300,12 @@ def _make_init(
 
     SELF = "self"
     seen_params = {}
+    # Fields that are stored on the instance without being a parameter:
+    # they are assigned their own default. A pseudo-field (`ClassVar`,
+    # `InitVar`) is not stored on the instance, and a field with neither
+    # a default nor a factory has nothing to assign -- `__post_init__`
+    # is where such a field gets its value.
+    own_defaults = {}
     for name, field in fields.items():
         if field.init and field.positional and not field.kw:
             positional_onlys[name] = field
@@ -1265,6 +1314,10 @@ def _make_init(
         elif field.init and not field.positional and field.kw:
             kw_onlys[name] = field
         else:
+            if not field.var and (
+                field.default is not MISSING or field.factory
+            ):
+                own_defaults[name] = field
             continue
         # The parameter is named after the field's *public* name, which
         # differs from the field name for an aliased or underscored
@@ -1373,6 +1426,25 @@ def _make_init(
             """)
         return body
 
+    def _make_own_default_elem(field: Field) -> str:
+        # The value comes from the field itself rather than from a
+        # parameter, and goes through the same converter and validator a
+        # parameter would. The locals are keyed by the field name, which
+        # no parameter uses: a parameter is named after the field's
+        # public name.
+        default = _DEFAULT(field.name)
+        locals[default] = field.factory if field.factory else field.default
+        value = f"{default}()" if field.factory else default
+        if field.converter:
+            locals[_CONVERTER(field.name)] = field.converter
+            value = f"{_CONVERTER(field.name)}({value})"
+        if field.validator:
+            locals[_VALIDATOR(field.name)] = field.validator
+            value = f"{_VALIDATOR(field.name)}({value})"
+        return dedent(f"""
+        object.__setattr__({SELF}, {field.name!r}, {value})
+        """)
+
     body = []
     if "pre" in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
@@ -1382,6 +1454,8 @@ def _make_init(
         body.append(_make_body_elem(field))
     for field in kw_onlys.values():
         body.append(_make_body_elem(field))
+    for field in own_defaults.values():
+        body.append(_make_own_default_elem(field))
     if "post" in prepost:
         body.append(_make_prepost_call(_POST_INIT_NAME))
 
@@ -1426,25 +1500,32 @@ def _make_eq(qualname: str, fields: dict[str, Field]) -> tx.Callable:
     return __eq__
 
 
-def _make_lt(qualname: str, fields: dict[str, Field]) -> tx.Callable:
+def _make_order(
+    qualname: str, fields: dict[str, Field], slot: str
+) -> tx.Callable:
+    # Build one of the four comparisons -- `slot` is "lt", "le", "gt" or
+    # "ge". All four compare the same thing: the values of the fields
+    # that take part in the ordering, as a tuple.
+    name, compare = _ORDER_METHODS[slot]
 
-    def __lt__(self: Magic, other: tx.Any) -> bool:
-        if other.__class__ is self.__class__:
-            this_value = tuple(
-                getattr(self, field.name)
-                for field in fields.values()
-                if field.order
-            )
-            other_value = tuple(
-                getattr(other, field.name)
-                for field in fields.values()
-                if field.order
-            )
-            return this_value < other_value
-        return NotImplemented
+    def method(self: Magic, other: tx.Any) -> tx.Any:
+        if other.__class__ is not self.__class__:
+            return NotImplemented
+        this_value = tuple(
+            getattr(self, field.name)
+            for field in fields.values()
+            if field.order
+        )
+        other_value = tuple(
+            getattr(other, field.name)
+            for field in fields.values()
+            if field.order
+        )
+        return compare(this_value, other_value)
 
-    __lt__.__qualname__ = f"{qualname}.__lt__"
-    return __lt__
+    method.__name__ = name
+    method.__qualname__ = f"{qualname}.{name}"
+    return method
 
 
 def _make_assign(cls: type) -> type:
@@ -1654,7 +1735,10 @@ class MetaMagic(ABCMeta):
     eq : bool | str, default=True
         Generate `__eq__` method.
     order : bool | str, default=False
-        Generate `__lt__` method.
+        Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
+        Given a name, generate the `<` comparison under that name; the
+        class is then left with none of the four comparison operators,
+        including any it would otherwise inherit.
     hash : bool | str, default=None
         Generate `__hash__` method.
         If `None`, decide automatically.
@@ -1733,7 +1817,10 @@ class Magic(metaclass=MetaMagic):
     eq : bool | str, default=True
         Generate `__eq__` method.
     order : bool | str, default=False
-        Generate `__lt__` method.
+        Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
+        Given a name, generate the `<` comparison under that name; the
+        class is then left with none of the four comparison operators,
+        including any it would otherwise inherit.
     hash : bool | str, default=None
         Generate `__hash__` method.
         If `None`, decide automatically.
