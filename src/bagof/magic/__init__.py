@@ -349,6 +349,9 @@ _NEUTRAL = {
     "eq": object.__eq__,
     "lt": _no_order,
     "hash": None,
+    # An empty tuple is what a class with no pattern-matching support
+    # has: `case C(x)` refuses to bind anything positionally.
+    "match_args": (),
 }
 
 
@@ -726,6 +729,30 @@ def __pre_new__(
     options.update(Options(**kwargs))
     namespace[_OPTIONS] = options
 
+    # Once a class is dict-like, none of its subclasses can stop being
+    # one, so a subclass that says `mapping=False` is asking for
+    # something that cannot be delivered. `mro[0]` is the throwaway
+    # class built above to work out the inheritance order; it is not a
+    # base of anything.
+    mapping_base = next(
+        (
+            b for b in mro[1:]
+            if getattr(getattr(b, _OPTIONS, None), "mapping", False)
+        ),
+        None,
+    )
+    if mapping_base is not None and not options.mapping:
+        raise TypeError(
+            f"{clsname} gets its dict-like behaviour from "
+            f"{mapping_base.__name__}, and mapping=False cannot take it "
+            f"away: {clsname} would still answer yes to an isinstance "
+            f"check against Mapping, while the dict-like methods it "
+            f"inherited would report {mapping_base.__name__}'s fields "
+            f"instead of its own. Either leave mapping alone here, or "
+            f"turn it off on {mapping_base.__name__} and ask for it only "
+            f"on the subclasses that want it."
+        )
+
     if options.mutable_default not in _MUTABLE_DEFAULT_ACTIONS:
         raise ValueError(
             f"mutable_default must be 'factory', 'raise' or 'allow', "
@@ -893,16 +920,6 @@ def __pre_new__(
     # Include only real fields.  This is used in all of the following methods.
     real_fields = {name: f for name, f in fields.items() if not f.var}
 
-    if options.match_args:
-        fnname = (
-            options.match_args
-            if isinstance(options.match_args, str)
-            else "__match_args__"
-        )
-        namespace.setdefault(fnname, tuple(
-            f.public_name for f in fields.values() if f.init and f.positional
-        ))
-
     if options.mapping:
         dict_fields = {f.public_key: f for f in fields.values() if f.key}
         for name, func in _make_mapping(qualname, dict_fields).items():
@@ -919,6 +936,19 @@ def __pre_new__(
     _install_state(
         namespace, generated, base_mro, qualname, real_fields,
         bool(options.frozen),
+    )
+
+    _install(
+        namespace, generated, base_mro, "match_args",
+        (
+            options.match_args
+            if isinstance(options.match_args, str)
+            else "__match_args__"
+        ),
+        tuple(
+            f.public_name for f in fields.values() if f.init and f.positional
+        ),
+        bool(options.match_args),
     )
 
     repr_fields = {name: f for name, f in fields.items() if f.repr}

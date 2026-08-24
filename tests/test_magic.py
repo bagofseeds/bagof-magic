@@ -740,6 +740,43 @@ class TestMatchArgs:
 
         assert Point.__match_args__ == ("x",)
 
+    def test_turning_it_off_does_not_leave_the_base_tuple(self) -> None:
+        class Base(Magic, match_args=True):
+            a: int
+
+        class Child(Base, match_args=False):
+            b: int
+
+        # Without this, `case Child(x)` would bind `x` to `a` -- the
+        # base's field list, answering for a class that asked for no
+        # pattern matching at all.
+        assert Child.__match_args__ == ()
+
+    def test_a_subclass_that_keeps_it_lists_its_own_fields(self) -> None:
+        class Base(Magic, match_args=True):
+            a: int
+
+        class Child(Base):
+            b: int
+
+        assert Child.__match_args__ == ("a", "b")
+
+    def test_the_tuple_is_always_available_privately(self) -> None:
+        class Child(Magic, match_args=False):
+            a: int
+
+        assert Child.__magic_match_args__ == ("a",)
+
+    def test_a_hand_written_tuple_is_left_alone(self) -> None:
+        class Base(Magic, match_args=True):
+            a: int
+
+        class Child(Base, match_args=False):
+            b: int
+            __match_args__ = ("b",)
+
+        assert Child.__match_args__ == ("b",)
+
 
 # ======================================================================
 # Field (direct)
@@ -882,6 +919,45 @@ class TestMapping:
 
         p = Point(1, 2)
         assert dict(p) == {"x": 1, "y": 2}
+
+    def test_a_subclass_cannot_stop_being_dict_like(self) -> None:
+        class Base(Magic, mapping=True):
+            a: int
+
+        with pytest.raises(TypeError, match="cannot take it away"):
+            class Child(Base, mapping=False):
+                b: int
+
+    def test_the_ban_reaches_a_distant_base(self) -> None:
+        class Base(Magic, mapping=True):
+            a: int
+
+        class Middle(Base):
+            b: int
+
+        with pytest.raises(TypeError, match="Middle"):
+            class Child(Middle, mapping=False):
+                c: int
+
+    def test_a_subclass_that_keeps_it_reports_its_own_fields(self) -> None:
+        class Base(Magic, mapping=True):
+            a: int
+
+        class Child(Base):
+            b: int
+
+        assert dict(Child(1, 2)) == {"a": 1, "b": 2}
+
+    def test_mapping_false_is_fine_without_a_dict_like_base(self) -> None:
+        class Base(Magic):
+            a: int
+
+        class Child(Base, mapping=False):
+            b: int
+
+        from collections.abc import Mapping
+
+        assert not isinstance(Child(1, 2), Mapping)
 
     def test_mapping_not_key_field(self) -> None:
         class Point(Magic, mapping=True):
