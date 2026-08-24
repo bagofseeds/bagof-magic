@@ -36,7 +36,7 @@ question of what you want the type hints to *do*.
 | | | | | |
 | **Generated methods** | | | | |
 | `__init__` / `__repr__` / `__eq__` | yes | yes | yes | **yes** |
-| Full set of ordering methods | yes | yes | no | *[partial][order]* |
+| Full set of ordering methods | yes | yes | no | **yes** |
 | `__slots__` | yes | yes | no | **yes** |
 | Keyword-only and positional-only fields | keyword only | keyword only | keyword only | **both** |
 | Rename a generated method | no | no | no | **yes** |
@@ -232,8 +232,6 @@ Being honest about the gaps, with links to where they are being worked on:
 - **Copy-with-changes and `asdict`.** [In progress][parity].
 - **Generic classes.** `class Box(Magic, Generic[T])` does not work yet
   — [tracked here][generics].
-- **The full set of ordering methods.** `order=True` gives you `<` and `>`
-  today, not `<=` and `>=` — [tracked here][order].
 - **Editor and type-checker support.** The others are understood by mypy and
   pyright today, so your editor completes the constructor and catches a wrong
   argument type. `magic` is not, yet — [tracked here][typing]. The route is
@@ -246,5 +244,4 @@ Being honest about the gaps, with links to where they are being worked on:
 [pydantic]: https://docs.pydantic.dev
 [parity]: https://github.com/bagofseeds/bagof-magic/issues/22
 [generics]: https://github.com/bagofseeds/bagof-magic/issues/18
-[order]: https://github.com/bagofseeds/bagof-magic/issues/17
 [typing]: https://github.com/bagofseeds/bagof-magic/issues/30
