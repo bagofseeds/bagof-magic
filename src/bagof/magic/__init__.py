@@ -621,24 +621,63 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
 
 
 def _find_hook(
-    namespace: dict, bases: tx.Tuple[type, ...], name: str
+    namespace: dict, mro: tx.Tuple[type, ...], name: str
 ) -> tx.Any:
     """The `__pre_init__` or `__post_init__` this class will call.
 
     A hook written in the class body wins; failing that, one inherited
-    from a base counts too, so that a family of classes can share a
-    single hook rather than repeating it in every subclass.
+    from a Magic base counts too, so that a family of classes can share
+    a single hook rather than repeating it in every subclass.
+
+    Only a Magic base is looked at. A class of somebody else's that
+    happens to have a method by one of these names wrote it for their
+    own library, and calling it with our arguments would do something
+    unwanted.
+
+    The search follows the real inheritance order and reads the class
+    dictionary directly, so it finds the same hook Python will call. A
+    plain attribute lookup would answer with the first base that has one
+    rather than the first in the inheritance order, and would fall
+    through to the metaclass if no base had one at all.
+
+    What comes back is what the class body held -- a plain function, or
+    a `staticmethod`, or anything else callable. `_bind_hook` turns that
+    into the thing the instance will actually call.
     """
     if name in namespace:
         return namespace[name]
-    for base in bases:
-        hook = getattr(base, name, None)
-        if hook is not None:
-            return hook
+    for base in mro:
+        if getattr(base, _FIELDS, None) is None:
+            continue
+        if name in base.__dict__:
+            return base.__dict__[name]
     return None
 
 
-def _hook_wants_arguments(name: str, hook: tx.Any) -> bool:
+#: Stand-in instance for working out what a hook's parameters will be.
+#: Binding a function to it gives the same signature binding it to a real
+#: instance would, and the class does not exist yet at this point.
+_HOOK_SELF = object()
+
+
+def _bind_hook(hook: tx.Any) -> tx.Any:
+    """The hook as the instance will call it.
+
+    The generated `__init__` calls `self.__post_init__(...)`, so what
+    matters is the parameters left *after* attribute access has done its
+    work: a plain method loses `self`, a `classmethod` loses `cls`, and
+    a `staticmethod` loses nothing. Letting the descriptor protocol
+    answer that is the only way to get all three right.
+    """
+    bind = getattr(type(hook), "__get__", None)
+    if bind is None:
+        # Not a descriptor -- a callable object, say, whose own
+        # `__call__` already hides its `self`.
+        return hook
+    return bind(hook, _HOOK_SELF, type(_HOOK_SELF))
+
+
+def _hook_wants_arguments(clsname: str, name: str, hook: tx.Any) -> bool:
     """Whether this hook is to be handed the values `__init__` got.
 
     A hook that declares a parameter wants them; one that declares none
@@ -646,9 +685,7 @@ def _hook_wants_arguments(name: str, hook: tx.Any) -> bool:
     there is only ever a single object to pass.
     """
     try:
-        # The hook is called as a method, so its first parameter is the
-        # instance and is not ours to fill in.
-        parameters = list(signature(hook).parameters.values())[1:]
+        parameters = list(signature(_bind_hook(hook)).parameters.values())
     except (TypeError, ValueError):
         # Nothing readable to go on. Passing the values is the safer
         # guess: a hook that wanted none fails loudly on the extra
@@ -672,17 +709,17 @@ def _hook_wants_arguments(name: str, hook: tx.Any) -> bool:
     if len(required) > 1:
         listed = ", ".join(parameter.name for parameter in required)
         raise TypeError(
-            f"{name} takes several arguments ({listed}), but it is called "
-            f"with one: an object holding every value passed to __init__. "
-            f"Give it a single parameter and read the values off that -- "
-            f"`def {name}(self, arguments)`, then "
-            f"`arguments.{required[0].name}`."
+            f"{clsname}.{name} takes several arguments ({listed}), but it "
+            f"is called with one: an object holding every value passed to "
+            f"__init__. Give it a single parameter and read the values off "
+            f"that -- `arguments.{required[0].name}` in place of "
+            f"`{required[0].name}`."
         )
     return bool(positional)
 
 
 def _prepost_hooks(
-    namespace: dict, bases: tx.Tuple[type, ...]
+    clsname: str, namespace: dict, mro: tx.Tuple[type, ...]
 ) -> tx.Dict[str, bool]:
     """Which init hooks to call, and whether each wants the values.
 
@@ -692,9 +729,9 @@ def _prepost_hooks(
     """
     hooks = {}
     for name in (_PRE_INIT_NAME, _POST_INIT_NAME):
-        hook = _find_hook(namespace, bases, name)
+        hook = _find_hook(namespace, mro, name)
         if hook is not None:
-            hooks[name] = _hook_wants_arguments(name, hook)
+            hooks[name] = _hook_wants_arguments(clsname, name, hook)
     return hooks
 
 
@@ -887,7 +924,7 @@ def __pre_new__(
         if field.order and not field.eq:
             raise ValueError('eq must be true if order is true')
 
-    prepost = _prepost_hooks(namespace, bases)
+    prepost = _prepost_hooks(clsname, namespace, mro)
 
     # Every generated method is also bound under a private name, whether
     # or not the class asked for the public one, so that a hand-written

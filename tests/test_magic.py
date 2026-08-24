@@ -3187,3 +3187,123 @@ class TestArguments:
         arguments = Arguments(keys=1, get=2)
         assert arguments["keys"] == 1
         assert arguments["get"] == 2
+
+
+class TestInitHookForms:
+    """The shapes a hook can take, and where one is looked for."""
+
+    def test_a_static_method_hook_gets_the_values(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            @staticmethod
+            def __post_init__(arguments: Arguments) -> None:
+                seen.append(arguments.x)
+
+        C(1)
+        assert seen == [1]
+
+    def test_a_static_method_hook_can_take_nothing(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            @staticmethod
+            def __post_init__() -> None:
+                seen.append("ran")
+
+        C(1)
+        assert seen == ["ran"]
+
+    def test_a_class_method_hook_gets_the_values(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int
+
+            @classmethod
+            def __post_init__(cls, arguments: Arguments) -> None:
+                seen.append((cls.__name__, arguments.x))
+
+        C(1)
+        assert seen == [("C", 1)]
+
+    def test_a_callable_object_hook_gets_the_values(self) -> None:
+        seen = []
+
+        class Recorder:
+            def __call__(self, arguments: Arguments) -> None:
+                seen.append(arguments.x)
+
+        class C(Magic):
+            x: int
+            __post_init__ = Recorder()
+
+        C(1)
+        assert seen == [1]
+
+    def test_a_hook_on_somebody_elses_base_is_left_alone(self) -> None:
+        seen = []
+
+        class Legacy:
+            """Not a Magic class: its hook was written for someone else."""
+
+            def __post_init__(self, tag: tx.Any) -> None:
+                seen.append(tag)
+
+        class C(Magic, Legacy):
+            x: int
+
+        C(1)
+        assert seen == []
+
+    def test_the_hook_is_read_in_inheritance_order(self) -> None:
+        seen = []
+
+        class Base(Magic):
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append(("base", dict(**arguments)))
+
+        class Left(Base):
+            pass
+
+        class Right(Base):
+            def __post_init__(self) -> None:
+                seen.append(("right", None))
+
+        class Both(Left, Right):
+            x: int
+
+        # `Right` comes before `Base` in the inheritance order, so its
+        # hook is the one called -- and it takes no argument.
+        Both(1)
+        assert seen == [("right", None)]
+
+    def test_the_error_names_the_class(self) -> None:
+        with pytest.raises(TypeError, match=r"Bad\.__post_init__"):
+            class Bad(Magic):
+                x: int
+                y: int
+
+                def __post_init__(self, x: int, y: int) -> None:
+                    """Two parameters, and only one object to pass."""
+
+    def test_a_value_named_like_the_slot_is_still_reachable(self) -> None:
+        seen = []
+
+        class C(Magic):
+            v: Annotated[int, Field(alias="_values")]
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append(arguments._values)
+
+        C(3)
+        assert seen == [3]
+
+    def test_a_mapping_is_passed_positionally(self) -> None:
+        # So that a value of any name can be given as a keyword.
+        arguments = Arguments(values=1, named=2)
+        assert (arguments.values, arguments.named) == (1, 2)

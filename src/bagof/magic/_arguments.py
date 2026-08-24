@@ -40,52 +40,55 @@ class Arguments:
     ```
 
     A value named `keys` or `get` can only be read by key, since those
-    two names belong to the methods.
+    two names belong to the methods. Every other name, including one
+    starting with an underscore, is reachable either way.
     """
 
-    __slots__ = ("_values",)
+    __slots__ = ("__values",)
 
     def __init__(
-        self, _values: tx.Optional[tx.Mapping] = None, **values
+        self, values: tx.Optional[tx.Mapping] = None, /, **named
     ) -> None:
         """
         Parameters
         ----------
-        _values : mapping, optional
+        values : mapping, optional
             The values, if it is easier to pass them as one mapping.
-        **values
+            Positional, so that a value of any name can be given as a
+            keyword without clashing with it.
+        **named
             The values, one keyword each.
         """
-        merged = dict(_values or {})
-        merged.update(values)
-        object.__setattr__(self, "_values", merged)
+        merged = dict(values or {})
+        merged.update(named)
+        object.__setattr__(self, "_Arguments__values", merged)
 
     def keys(self) -> tx.KeysView:
         """The names, in the order `__init__` declares them."""
-        return self._values.keys()
+        return self.__values.keys()
 
     def get(self, name: str, default: tx.Any = None) -> tx.Any:
         """The value passed for `name`, or `default` if there is none."""
-        return self._values.get(name, default)
+        return self.__values.get(name, default)
 
     def __getitem__(self, name: str) -> tx.Any:
         try:
-            return self._values[name]
+            return self.__values[name]
         except KeyError:
             raise KeyError(
                 f"{name!r} was not passed to __init__; it takes "
-                f"{', '.join(map(repr, self._values)) or 'no arguments'}"
+                f"{', '.join(map(repr, self.__values)) or 'no arguments'}"
             ) from None
 
     def __getattr__(self, name: str) -> tx.Any:
         # Only reached for a name that is not a slot or a method, so
         # every lookup here is either a value or a mistake.
         try:
-            return self._values[name]
+            return self.__values[name]
         except KeyError:
             raise AttributeError(
                 f"{name!r} was not passed to __init__; it takes "
-                f"{', '.join(map(repr, self._values)) or 'no arguments'}"
+                f"{', '.join(map(repr, self.__values)) or 'no arguments'}"
             ) from None
 
     def __setattr__(self, name: str, value: tx.Any) -> tx.NoReturn:
@@ -102,21 +105,21 @@ class Arguments:
         )
 
     def __contains__(self, name: str) -> bool:
-        return name in self._values
+        return name in self.__values
 
     def __iter__(self) -> tx.Iterator[str]:
-        return iter(self._values)
+        return iter(self.__values)
 
     def __len__(self) -> int:
-        return len(self._values)
+        return len(self.__values)
 
     def __eq__(self, other: tx.Any) -> bool:
         if other.__class__ is not self.__class__:
             return NotImplemented
-        return self._values == other._values
+        return self.__values == other.__values
 
     def __repr__(self) -> str:
         values = ", ".join(
-            f"{name}={value!r}" for name, value in self._values.items()
+            f"{name}={value!r}" for name, value in self.__values.items()
         )
         return f"{type(self).__name__}({values})"
