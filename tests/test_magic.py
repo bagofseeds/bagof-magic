@@ -3541,8 +3541,13 @@ class TestInitHookForms:
         class C(Magic, Legacy):
             x: int
 
-        C(1)
+        instance = C(1)
         assert seen == []
+
+        # Left alone, not taken away: it is still there for whoever
+        # wrote it to call.
+        instance.__post_init__("theirs")
+        assert seen == ["theirs"]
 
     def test_the_hook_is_read_in_inheritance_order(self) -> None:
         seen = []
@@ -3565,6 +3570,10 @@ class TestInitHookForms:
         # hook is the one called -- and it takes no argument.
         Both(1)
         assert seen == [("right", None)]
+
+        # `Left` does not override it, so there the base's hook runs.
+        Left()
+        assert seen[-1] == ("base", {})
 
     def test_the_error_names_the_class(self) -> None:
         with pytest.raises(TypeError, match=r"Bad\.__post_init__"):
