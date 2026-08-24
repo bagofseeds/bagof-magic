@@ -19,11 +19,7 @@ from bagof.magic.options import Options
 #: Every option, taken from the one place that decides what exists.
 OPTIONS = sorted(Options._DEFAULTS)
 
-
-def _root() -> tx.Optional[Path]:
-    """The repository root, or `None` when running from an installed copy."""
-    root = Path(magic.__file__).resolve().parents[3]
-    return root if (root / "README.md").is_file() else None
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _documented(text: str) -> tx.Set[str]:
@@ -51,10 +47,11 @@ def test_option_is_in_the_base_class_docstring(option: str) -> None:
     assert option in _documented(magic.Magic.__doc__)
 
 
+@pytest.mark.skipif(
+    not (ROOT / "README.md").is_file(),
+    reason="running from an installed copy, not a checkout",
+)
 @pytest.mark.parametrize("option", OPTIONS)
 def test_option_is_in_the_readme_table(option: str) -> None:
-    root = _root()
-    if root is None:
-        pytest.skip("running from an installed copy, with no README")
-    readme = (root / "README.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert f"| `{option}` |" in readme
