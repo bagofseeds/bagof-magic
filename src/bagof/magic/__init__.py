@@ -492,6 +492,60 @@ def _install(
     return False
 
 
+def _slot_names(
+    mro: tx.Tuple[type, ...], namespace: dict
+) -> tx.Tuple[str, ...]:
+    """Every slot an instance of the class being built can hold.
+
+    Slots are inherited, so this is the whole chain of bases and not
+    just what the class itself declares. `__dict__` and `__weakref__`
+    are left out: they are places to keep attributes, not attributes.
+    """
+    names = set()
+    for base in mro:
+        names.update(_get_slots(base))
+    own = namespace.get("__slots__")
+    names.update((own,) if isinstance(own, str) else (own or ()))
+    names -= {"__dict__", "__weakref__"}
+    return tuple(sorted(names))
+
+
+def _install_state(
+    namespace: dict,
+    generated: dict,
+    mro: tx.Tuple[type, ...],
+    qualname: str,
+    frozen: bool,
+) -> None:
+    """
+    Bind the two methods `pickle` and `copy` use to save and restore an
+    object, if this class needs them.
+
+    A frozen class needs them: restoring an object means putting the
+    saved values back on it, which a frozen class refuses through the
+    usual attribute assignment.
+
+    Every class below one of those needs a pair of its own as well. The
+    pair carries the names of the slots to save, so a base's pair leaves
+    out each slot the class has added, and a copy comes back missing
+    them.
+
+    There is no option to turn these off, and no plain-Python method to
+    put in their place, so the only question is whether to write them.
+    Methods you wrote yourself are left alone: the two have to agree
+    with each other, so writing one of them means both are yours.
+    """
+    if not frozen and not _inherited_generated(mro, "state"):
+        return
+    names = ("__getstate__", "__setstate__")
+    if any(name in namespace for name in names):
+        return
+    pair = _make_state(qualname, _slot_names(mro, namespace))
+    for name, fn in zip(names, pair):
+        namespace[name] = fn
+        generated[name] = "state"
+
+
 def _install_hash(
     namespace: dict,
     generated: dict,
@@ -594,16 +648,18 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     # into a factory, in which case the class attribute holding the
     # original must go, exactly as it would for a hand-written factory.
     #
-    # A field left out of `__init__` (a `ClassVar`, or `NoInit[...]`)
-    # keeps its default as a class attribute and is never assigned per
-    # instance, so there is nothing to promote and nothing to warn
-    # about: that value is meant to be shared.
+    # A `ClassVar` keeps its default as a class attribute and is never
+    # assigned per instance, so there is nothing to promote and nothing
+    # to warn about: that value is meant to be shared. Every other
+    # field's default reaches an instance -- as a parameter's default,
+    # or assigned by the generated `__init__` to a field that has no
+    # parameter of its own.
     default = field.default
     if (
         action == "allow" or
         default is MISSING or
         field.factory or
-        not field.init or
+        (field.var and not field.init) or
         not _is_mutable(default)
     ):
         return False
@@ -780,6 +836,17 @@ def __pre_new__(
         if _handle_mutable_default(field, options.mutable_default):
             namespace.pop(field.name, None)
 
+        # Python refuses to create a class where the same name is both
+        # a slot and a class attribute, so a default that is going to be
+        # stored in a slot cannot stay in the namespace. Every field
+        # that is stored on the instance -- that is, every field but a
+        # pseudo-field -- gets a slot, and the generated `__init__`
+        # assigns it its default, so the class attribute is dropped
+        # here. On a class that generates no `__init__` of its own the
+        # default is then only reachable through `__magic_init__`.
+        if options.slots and not field.var:
+            namespace.pop(field.name, None)
+
         # Use Key/Repr wrappers
         # (This is hacky and ugly -- should be reworked)
         if field.key is HIDE_IF_NONE:
@@ -895,11 +962,6 @@ def __pre_new__(
             f.public_name for f in fields.values() if f.init and f.positional
         ))
 
-    if options.frozen:
-        getstate, setstate = _make_state(qualname, real_fields)
-        namespace.setdefault("__getstate__", getstate)
-        namespace.setdefault("__setstate__", setstate)
-
     if options.mapping:
         dict_fields = {f.public_key: f for f in fields.values() if f.key}
         for name, func in _make_mapping(qualname, dict_fields).items():
@@ -965,6 +1027,12 @@ def __pre_new__(
             raise TypeError(f'{clsname} already specifies __slots__')
         weakref_slot = options.weakref_slot
         namespace["__slots__"] = _make_slots(bases, real_fields, weakref_slot)
+
+    # Saving an object means saving its slots, so this waits until
+    # `__slots__` is settled as well as `bases`.
+    _install_state(
+        namespace, generated, base_mro, qualname, bool(options.frozen),
+    )
 
     fnbuilder.insert_fns(clsname, namespace)
 
@@ -1234,6 +1302,12 @@ def _make_init(
 
     SELF = "self"
     seen_params = {}
+    # Fields that are stored on the instance without being a parameter:
+    # they are assigned their own default. A pseudo-field (`ClassVar`,
+    # `InitVar`) is not stored on the instance, and a field with neither
+    # a default nor a factory has nothing to assign -- `__post_init__`
+    # is where such a field gets its value.
+    own_defaults = {}
     for name, field in fields.items():
         if field.init and field.positional and not field.kw:
             positional_onlys[name] = field
@@ -1242,6 +1316,10 @@ def _make_init(
         elif field.init and not field.positional and field.kw:
             kw_onlys[name] = field
         else:
+            if not field.var and (
+                field.default is not MISSING or field.factory
+            ):
+                own_defaults[name] = field
             continue
         # The parameter is named after the field's *public* name, which
         # differs from the field name for an aliased or underscored
@@ -1350,6 +1428,25 @@ def _make_init(
             """)
         return body
 
+    def _make_own_default_elem(field: Field) -> str:
+        # The value comes from the field itself rather than from a
+        # parameter, and goes through the same converter and validator a
+        # parameter would. The locals are keyed by the field name, which
+        # no parameter uses: a parameter is named after the field's
+        # public name.
+        default = _DEFAULT(field.name)
+        locals[default] = field.factory if field.factory else field.default
+        value = f"{default}()" if field.factory else default
+        if field.converter:
+            locals[_CONVERTER(field.name)] = field.converter
+            value = f"{_CONVERTER(field.name)}({value})"
+        if field.validator:
+            locals[_VALIDATOR(field.name)] = field.validator
+            value = f"{_VALIDATOR(field.name)}({value})"
+        return dedent(f"""
+        object.__setattr__({SELF}, {field.name!r}, {value})
+        """)
+
     body = []
     if "pre" in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
@@ -1359,6 +1456,8 @@ def _make_init(
         body.append(_make_body_elem(field))
     for field in kw_onlys.values():
         body.append(_make_body_elem(field))
+    for field in own_defaults.values():
+        body.append(_make_own_default_elem(field))
     if "post" in prepost:
         body.append(_make_prepost_call(_POST_INIT_NAME))
 
@@ -1474,17 +1573,46 @@ def _make_assign(cls: type) -> type:
     return __delattr__, __setattr__
 
 
-def _make_state(qualname: str, fields: dict[str, Field]) -> tx.Callable:
+def _make_state(
+    qualname: str, slot_names: tx.Tuple[str, ...]
+) -> tx.Tuple[tx.Callable, tx.Callable]:
+    """
+    Build the pair `pickle` and `copy` use to save and restore an
+    object.
+
+    What is saved is everything an object is really carrying: its
+    attribute dictionary, and whichever of its slots have been given a
+    value. Fields are not singled out, so an attribute that was set on
+    the object without ever being declared survives a copy like any
+    other.
+
+    The saved value is a pair, `(attributes, slots)`, either half of
+    which is `None` when there is nothing of that kind to save. This is
+    the shape Python itself uses from 3.11 on for a class that does not
+    say otherwise -- written out here because the versions before that
+    have no method to borrow it from.
+    """
 
     def __getstate__(self: Magic) -> tx.Tuple:
-        kept = [f for f in fields.values() if not f.var]
-        return tuple(getattr(self, f.name) for f in kept)
+        attributes = getattr(self, "__dict__", None)
+        slots = {}
+        for name in slot_names:
+            try:
+                slots[name] = getattr(self, name)
+            except AttributeError:
+                # A slot that was never given a value stays empty on
+                # the copy too.
+                pass
+        return (dict(attributes) if attributes else None, slots or None)
 
     def __setstate__(self: Magic, state: tx.Tuple) -> None:
-        kept = [f for f in fields.values() if not f.var]
-        for field, value in zip(kept, state):
-            # use setattr because dataclass may be frozen
-            object.__setattr__(self, field.name, value)
+        attributes, slots = state
+        if attributes:
+            self.__dict__.update(attributes)
+        for name, value in (slots or {}).items():
+            # Straight through to the object, since assigning the usual
+            # way is what a frozen class refuses.
+            object.__setattr__(self, name, value)
 
     __getstate__.__qualname__ = f"{qualname}.__getstate__"
     __setstate__.__qualname__ = f"{qualname}.__setstate__"

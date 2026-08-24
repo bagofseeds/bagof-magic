@@ -1,5 +1,7 @@
 """Unit tests for the bagof.magic module."""
+import copy
 import operator
+import pickle
 from typing import ClassVar as TypingClassVar
 from typing import Optional, Union
 
@@ -37,6 +39,7 @@ from bagof.magic import (
 )
 from bagof.magic.constants import (
     _FIELDS,
+    _GENERATED,
     _OPTIONS,
     MISSING,
     REQUIRED,
@@ -638,6 +641,13 @@ class TestHash:
 # ======================================================================
 
 
+class _SlotsPoint(Magic, frozen=True, slots=True):
+    """A frozen, slotted class with a defaulted field of each kind."""
+
+    x: int = 3
+    origin: NoInit[int] = 0
+
+
 class TestSlots:
 
     def test_slots(self) -> None:
@@ -680,6 +690,128 @@ class TestSlots:
             class Bad(Magic, slots=True):
                 __slots__ = ('x',)
                 x: int
+
+    def test_slots_with_default(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            y: int = 4
+
+        assert Point.__slots__ == ("x", "y")
+        assert (Point().x, Point().y) == (3, 4)
+        assert (Point(1).x, Point(1, 2).y) == (1, 2)
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_with_factory_default(self) -> None:
+        class Bag(Magic, slots=True):
+            items: Factory[list]
+
+        first, second = Bag(), Bag()
+        first.items.append(1)
+        assert (first.items, second.items) == ([1], [])
+        assert Bag([2]).items == [2]
+
+    def test_slots_with_field_default(self) -> None:
+        class Point(Magic, slots=True):
+            x: Annotated[int, Field(default=3)]
+
+        assert Point.__slots__ == ("x",)
+        assert Point().x == 3
+        assert Point(1).x == 1
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_with_class_var(self) -> None:
+        class Point(Magic, slots=True):
+            kind: ClassVar[str] = "point"
+            x: int = 3
+
+        assert Point.__slots__ == ("x",)
+        assert Point.kind == "point"
+        assert Point().kind == "point"
+        # A class variable is shared: every instance sees a new value.
+        Point.kind = "dot"
+        assert Point().kind == "dot"
+
+    def test_slots_with_init_var(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            scale: InitVar[int] = 10
+
+            def __post_init__(self, scale: int) -> None:
+                self.x = self.x * scale
+
+        assert Point.__slots__ == ("x",)
+        assert Point().x == 30
+        assert Point(2, 3).x == 6
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_no_init_field_is_a_slot(self) -> None:
+        class Point(Magic, slots=True):
+            x: int = 3
+            doubled: NoInit[int] = 0
+
+            def __post_init__(self) -> None:
+                self.doubled = self.x * 2
+
+        assert Point.__slots__ == ("x", "doubled")
+        assert Point(4).doubled == 8
+        assert Point().doubled == 6
+        assert not hasattr(Point(), "__dict__")
+
+    def test_slots_frozen_default_survives_pickle_and_copy(self) -> None:
+        point = _SlotsPoint(1)
+        assert (point.x, point.origin) == (1, 0)
+        assert pickle.loads(pickle.dumps(point)) == point
+        assert copy.copy(point) == point
+        assert copy.deepcopy(point) == point
+
+    def test_slots_without_init_reaches_the_default_by_hand(self) -> None:
+        # Without an `__init__` of its own, nothing assigns the default,
+        # and under `slots` it is no longer a class attribute either.
+        class Point(Magic, slots=True, init=False):
+            x: int = 3
+
+        point = Point()
+        assert not hasattr(point, "x")
+        point.__magic_init__()
+        assert point.x == 3
+
+    def test_slots_subclass_with_defaults(self) -> None:
+        class Base(Magic, slots=True):
+            x: int = 1
+
+        class Derived(Base, slots=True):
+            x: int = 2
+            y: int = 3
+
+        assert Base.__slots__ == ("x",)
+        assert Derived.__slots__ == ("y",)
+        derived = Derived()
+        assert (derived.x, derived.y) == (2, 3)
+        assert not hasattr(derived, "__dict__")
+        derived.x = 5
+        assert derived.x == 5
+
+    def test_slots_frozen_with_default(self) -> None:
+        class Point(Magic, frozen=True, slots=True):
+            x: int = 3
+
+        point = Point()
+        assert point.x == 3
+        assert point == Point(3)
+        assert not hasattr(point, "__dict__")
+        with pytest.raises(AttributeError):
+            point.x = 4
+
+    def test_slots_weakref_with_default(self) -> None:
+        import weakref
+
+        class Point(Magic, slots=True, weakref_slot=True):
+            x: int = 3
+
+        assert Point.__slots__ == ("x", "__weakref__")
+        point = Point()
+        assert point.x == 3
+        assert weakref.ref(point)() is point
 
 
 # ======================================================================
@@ -823,6 +955,33 @@ class TestVarFields:
         w = WithInitVar(5, 10)
         assert w.x == 50
         assert not hasattr(w, "scale") or getattr(w, "scale", None) is None
+
+    def test_no_init_field_gets_its_default(self) -> None:
+        class Point(Magic):
+            x: int = 3
+            origin: NoInit[int] = 0
+
+        point = Point()
+        assert point.origin == 0
+        # The default is stored on the instance, so it can be replaced
+        # on one instance without touching the others.
+        point.origin = 5
+        assert (point.origin, Point().origin) == (5, 0)
+
+    def test_no_init_factory_is_called_per_instance(self) -> None:
+        class Bag(Magic):
+            items: NoInit[Factory[list]]
+
+        first, second = Bag(), Bag()
+        first.items.append(1)
+        assert (first.items, second.items) == ([1], [])
+
+    def test_no_init_field_is_converted_and_validated(self) -> None:
+        class Point(Magic, convert=True, validate=True):
+            x: int = 1
+            origin: NoInit[int] = "0"
+
+        assert Point().origin == 0
 
 
 # ======================================================================
@@ -1116,20 +1275,194 @@ class PickleFrozen(Magic, frozen=True):
     a: int
 
 
+class PickleThawed(PickleFrozen, frozen=False):
+    b: int
+
+
+class PickleFrozenChild(PickleFrozen, frozen=True):
+    b: int
+
+
+class PicklePlainChild(PicklePoint):
+    z: int
+
+
+class PickleGrandchild(PickleThawed):
+    c: int
+
+
+class PickleOwnState(PickleFrozen, frozen=False):
+    b: int
+
+    def __getstate__(self) -> dict:
+        return {"a": self.a, "b": self.b, "by_hand": True}
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+
+
+class PickleOnlyGet(PickleFrozen, frozen=False):
+    b: int
+
+    def __getstate__(self) -> dict:
+        return {"a": self.a, "b": self.b}
+
+
+class PickleOnlySet(PickleFrozen, frozen=False):
+    b: int
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+
+
+class PickleSlots(Magic, frozen=True, slots=True):
+    a: int
+
+
+class PickleSlotsChild(PickleSlots, frozen=False, slots=True):
+    b: int
+
+
+class PickleDictAndSlots(PickleFrozen, frozen=False, slots=True):
+    b: int
+
+
+class PicklePseudoField(Magic, frozen=True):
+    a: int
+    b: InitVar[int]
+
+    def __post_init__(self, b: int) -> None:
+        object.__setattr__(self, "b", b * 2)
+
+
+def _round_trips(obj: tx.Any) -> tx.List[tx.Any]:
+    """The object back from each of the three ways of copying it."""
+    return [
+        pickle.loads(pickle.dumps(obj)),
+        copy.copy(obj),
+        copy.deepcopy(obj),
+    ]
+
+
+class _PickleUnsetSlot(Magic, frozen=True, slots=True, init=False):
+    """A slotted class that assigns nothing, so its slot starts empty."""
+
+    x: int = 3
+
+
 class TestPickle:
 
     def test_pickle_round_trip(self) -> None:
-        import pickle
-
         restored = pickle.loads(pickle.dumps(PicklePoint(1, 2)))
         assert restored == PicklePoint(1, 2)
         assert restored.x == 1 and restored.y == 2
 
     def test_pickle_frozen(self) -> None:
-        import pickle
-
         restored = pickle.loads(pickle.dumps(PickleFrozen(5)))
         assert restored == PickleFrozen(5)
+
+    def test_pickle_unfrozen_subclass(self) -> None:
+        restored = pickle.loads(pickle.dumps(PickleThawed(1, 2)))
+        assert (restored.a, restored.b) == (1, 2)
+
+    def test_copy_unfrozen_subclass(self) -> None:
+        copied = copy.copy(PickleThawed(1, 2))
+        assert (copied.a, copied.b) == (1, 2)
+
+    def test_deepcopy_unfrozen_subclass(self) -> None:
+        original = PickleThawed(1, [2])
+        copied = copy.deepcopy(original)
+        assert (copied.a, copied.b) == (1, [2])
+        assert copied.b is not original.b
+
+    def test_pickle_frozen_subclass(self) -> None:
+        restored = pickle.loads(pickle.dumps(PickleFrozenChild(1, 2)))
+        assert (restored.a, restored.b) == (1, 2)
+
+    def test_pickle_grandchild(self) -> None:
+        # Two steps below the frozen class the pair started with.
+        restored = pickle.loads(pickle.dumps(PickleGrandchild(1, 2, 3)))
+        assert (restored.a, restored.b, restored.c) == (1, 2, 3)
+
+    def test_plain_subclass_keeps_default_pickling(self) -> None:
+        # Nothing frozen anywhere, so there is nothing to write.
+        assert "__getstate__" not in PicklePlainChild.__dict__
+        assert "__setstate__" not in PicklePlainChild.__dict__
+        restored = pickle.loads(pickle.dumps(PicklePlainChild(1, 2, 3)))
+        assert restored == PicklePlainChild(1, 2, 3)
+
+    def test_own_state_methods_are_kept(self) -> None:
+        restored = pickle.loads(pickle.dumps(PickleOwnState(1, 2)))
+        assert (restored.a, restored.b) == (1, 2)
+        assert restored.by_hand is True
+        assert "__getstate__" not in PickleOwnState.__dict__[_GENERATED]
+        assert "__setstate__" not in PickleOwnState.__dict__[_GENERATED]
+
+    def test_only_getstate_written_leaves_both_alone(self) -> None:
+        # The two have to agree, so half a pair of your own means the
+        # whole pair is yours.
+        assert PickleOnlyGet(1, 2).__getstate__() == {"a": 1, "b": 2}
+        assert "__setstate__" not in PickleOnlyGet.__dict__
+        assert "__getstate__" not in PickleOnlyGet.__dict__[_GENERATED]
+        assert "__setstate__" not in PickleOnlyGet.__dict__[_GENERATED]
+
+    def test_only_setstate_written_leaves_both_alone(self) -> None:
+        obj = PickleOnlySet(1, 2)
+        obj.__setstate__({"a": 3, "b": 4})
+        assert (obj.a, obj.b) == (3, 4)
+        assert "__getstate__" not in PickleOnlySet.__dict__
+        assert "__getstate__" not in PickleOnlySet.__dict__[_GENERATED]
+        assert "__setstate__" not in PickleOnlySet.__dict__[_GENERATED]
+
+    def test_extra_attribute_survives_plain(self) -> None:
+        obj = PicklePoint(1, 2)
+        obj.extra = 99
+        for restored in _round_trips(obj):
+            assert restored.extra == 99
+
+    def test_extra_attribute_survives_frozen(self) -> None:
+        obj = PickleFrozen(1)
+        object.__setattr__(obj, "extra", 99)
+        for restored in _round_trips(obj):
+            assert (restored.a, restored.extra) == (1, 99)
+
+    def test_extra_attribute_survives_unfrozen_subclass(self) -> None:
+        obj = PickleThawed(1, 2)
+        obj.extra = 99
+        for restored in _round_trips(obj):
+            assert (restored.a, restored.b, restored.extra) == (1, 2, 99)
+
+    def test_slots_survive(self) -> None:
+        # A slotted class has no attribute dictionary, so everything it
+        # holds is in its slots.
+        for restored in _round_trips(PickleSlots(1)):
+            assert restored.a == 1
+
+    def test_slots_survive_subclass(self) -> None:
+        for restored in _round_trips(PickleSlotsChild(1, 2)):
+            assert (restored.a, restored.b) == (1, 2)
+
+    def test_dict_and_slots_both_survive(self) -> None:
+        # This one has both: `a` comes from a base with an attribute
+        # dictionary, `b` is a slot.
+        obj = PickleDictAndSlots(1, 2)
+        obj.extra = 99
+        for restored in _round_trips(obj):
+            assert (restored.a, restored.b, restored.extra) == (1, 2, 99)
+
+    def test_stored_pseudo_field_survives(self) -> None:
+        # `b` is not a field of its own, but it is on the object.
+        for restored in _round_trips(PicklePseudoField(1, 2)):
+            assert (restored.a, restored.b) == (1, 4)
+
+    def test_an_empty_slot_stays_empty(self) -> None:
+        # With no `__init__` of its own, nothing assigns `x`, so the
+        # slot holds no value at all -- and the copy must not invent
+        # one.
+        obj = copy.deepcopy(_PickleUnsetSlot())
+        assert not hasattr(obj, "x")
+        obj.__magic_init__()
+        assert copy.deepcopy(obj).x == 3
 
 
 # ======================================================================
@@ -3003,6 +3336,16 @@ class TestMutableDefaults:
 
             class C(Magic, mutable_default="copy"):
                 x: list = []
+
+    def test_no_init_list_default_is_per_instance(self) -> None:
+        # A field left out of `__init__` is still stored per instance,
+        # so its default is copied like any other.
+        class C(Magic):
+            x: NoInit[list] = []
+
+        a, b = C(), C()
+        a.x.append(1)
+        assert (a.x, b.x) == ([1], [])
 
     def test_class_variable_is_still_shared(self) -> None:
         # A `ClassVar` is a class attribute by definition: it is never
