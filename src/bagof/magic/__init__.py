@@ -40,6 +40,8 @@ eq : bool | str, default=True
     Generate `__eq__` method
 order : bool | str, default=False
     Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods
+hash : bool | str, default=None
+    Generate `__hash__` method; if `None`, decide automatically
 unsafe_hash : bool, default=False
     Always generate `__hash__` method
 frozen : bool, default=False
@@ -48,6 +50,8 @@ match_args : bool | str, default=False
     Generate `__match_args__` for pattern matching
 kw_only : bool, default=False
     Make all fields keyword-only by default
+positional_only : bool, default=False
+    Make all fields positional-only by default
 slots : bool, default=False
     Generate `__slots__` and remove `__dict__`
 weakref_slot : bool, default=False
@@ -62,6 +66,10 @@ validate : bool, default=False
     Use field type as validator if none is provided
 mapping : bool, default=False
     Implement the `Mapping` protocol; a subclass cannot turn it off
+reverse : bool, default=False
+    Use the reverse MRO order to determine field order
+doc : bool | str, default=True
+    Add field documentation to class docstring
 
 Examples
 --------
@@ -576,8 +584,9 @@ def _install_hash(
     private = _MAGIC("hash")
     if private in namespace:
         raise TypeError(
-            f"{private!r} is generated; define '__hash__' instead and call "
-            f"{private!r} from it"
+            f"{private} is written by Magic, so a class cannot define its "
+            f"own. Write __hash__ instead, and call {private} from it if "
+            f"you want the generated one."
         )
     namespace[private] = _hash_add(qualname, real_fields)
 
