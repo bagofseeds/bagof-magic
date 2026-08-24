@@ -129,6 +129,9 @@ import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
 # internals
+from ._fields import *  # noqa: F401, F403
+from ._fields import Field
+from ._fields import __all__ as __all_fields__
 from .constants import (
     _CONVERTER,
     _DEFAULT,
@@ -146,9 +149,6 @@ from .constants import (
     SHOW_ATTR,
     _HasFactory,
 )
-from .fields import *  # noqa: F401, F403
-from .fields import Field
-from .fields import __all__ as __all_fields__
 from .options import *  # noqa: F401, F403
 from .options import Options
 from .options import __all__ as __all_options__
