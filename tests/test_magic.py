@@ -2342,6 +2342,31 @@ class TestRebuild:
 
         assert (G(1) == G(1)) is False
 
+    def test_a_field_written_as_a_default_survives_a_rebuild(self) -> None:
+        # The first build consumes a `Field()` used as a default value --
+        # the class attribute becomes the plain default, or goes away --
+        # so a rebuild would otherwise see a field stripped of
+        # everything the `Field()` said.
+        class P(Magic):
+            x: int
+
+        @magic(frozen=True)
+        class Rebuilt(P):
+            y: int = Field(repr=False)
+            z: int = Field(default=5, repr=False)
+
+        class Direct(P, frozen=True):
+            y: int = Field(repr=False)
+            z: int = Field(default=5, repr=False)
+
+        rebuilt = {f.name: f for f in m.fields(Rebuilt)}
+        direct = {f.name: f for f in m.fields(Direct)}
+        assert bool(rebuilt["y"].repr) is bool(direct["y"].repr) is False
+        assert bool(rebuilt["z"].repr) is bool(direct["z"].repr) is False
+        assert rebuilt["z"].default == direct["z"].default == 5
+        assert repr(Rebuilt(1, 2)) == "Rebuilt(x=1)"
+        assert repr(Direct(1, 2)) == "Direct(x=1)"
+
 
 class TestPrivateInitIsNeverInherited:
 

@@ -131,6 +131,7 @@ from bagof.core.magic import UnionType as _UnionType
 # internals
 from .constants import (
     _CONVERTER,
+    _DECLARED,
     _DEFAULT,
     _DISCARD,
     _FIELDS,
@@ -176,10 +177,13 @@ def __post_new__(cls: type) -> type:
     fields = getattr(cls, _FIELDS, {})
     fields = {name: field for name, field in fields.items() if not field.var}
     __delattr__, __setattr__ = _make_assign(cls)
-    # Recorded like everything else this package binds, so that a
-    # rebuild drops them and installs a pair closed over the new
-    # options -- otherwise `@magic(frozen=True)` on an already-built
-    # class kept the unfrozen `__setattr__` from the first build.
+    # Recorded like everything else this package binds. A rebuild
+    # (`@magic`, `slots`) copies the class dict, and nothing in a copied
+    # `__setattr__` says whether the user wrote it or a previous build
+    # did -- so without the record, `@magic(frozen=True)` on an
+    # already-built class kept the *unfrozen* pair from the first build.
+    # `attrs` keeps the same bookkeeping for the same attribute, under
+    # the name `__attrs_own_setattr__`.
     written = cls.__dict__.get(_GENERATED)
     if "__setattr__" not in cls.__dict__:
         cls.__setattr__ = __setattr__
@@ -501,6 +505,9 @@ def __pre_new__(
     # hand-written, and are protected from being regenerated.
     for name in namespace.pop(_GENERATED, None) or ():
         namespace.pop(name, None)
+    # ...and put back the class-body values the first build consumed, so
+    # a `Field()` written as a default still says what it said.
+    namespace.update(namespace.pop(_DECLARED, None) or {})
 
     # Get globals of the module where this class is defined.
     # `__module__` is absent when the class is built through the
@@ -571,6 +578,7 @@ def __pre_new__(
     # Now find fields in our class.  While doing so, validate some
     # things, and set the d
     cls_fields = []
+    declared = {}
     for field_name, type_ in cls_annotations.items():
 
         if field_name[:2] == "__":
@@ -585,6 +593,11 @@ def __pre_new__(
         # default. This is so that normal class introspection sees a
         # real default value, not a `Field`.
         if isinstance(namespace.get(field.name), Field):
+            # Remembered before it is consumed: the class attribute is
+            # about to become the plain default, or to go away, and a
+            # rebuild would otherwise see a field stripped of
+            # everything the `Field()` said.
+            declared[field.name] = namespace[field.name]
             field.update(namespace[field.name])
             if field.default is MISSING:
                 # If there's no default, delete the class attribute.
@@ -797,6 +810,8 @@ def __pre_new__(
             written[init_name] = "init"
 
     namespace[_GENERATED] = written
+    if declared:
+        namespace[_DECLARED] = declared
 
     # Add attributes to class documentation
     # `python -OO` asks for docstrings to be dropped; a generated one is
