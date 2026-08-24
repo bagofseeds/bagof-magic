@@ -2240,19 +2240,17 @@ class TestGeneratedMethodNames:
         assert R.__setup__.__name__ == "__setup__"
 
     def test_a_reserved_private_name_is_rejected(self) -> None:
+        # The class never finishes being built, so bind an existing
+        # function rather than writing a body that can never run.
         with pytest.raises(TypeError, match="__magic_init__"):
             class U(Magic):
                 x: int
-
-                def __magic_init__(self) -> None:
-                    ...
+                __magic_init__ = object.__init__
 
         with pytest.raises(TypeError, match="__magic_eq__"):
             class V(Magic):
                 x: int
-
-                def __magic_eq__(self, other: tx.Any) -> bool:
-                    return True
+                __magic_eq__ = object.__eq__
 
 
 class TestRenamedOptionsAreNeutralised:
@@ -2491,9 +2489,7 @@ class TestReservedPrivateHash:
         with pytest.raises(TypeError, match="__magic_hash__"):
             class E(Magic):
                 x: int
-
-                def __magic_hash__(self) -> int:
-                    return 7
+                __magic_hash__ = object.__hash__
 
 
 class TestInstallInternals:
@@ -2528,6 +2524,13 @@ class TestInstallInternals:
             def __eq__(self, other: tx.Any) -> bool:
                 return NotImplemented
 
+        # Returning NotImplemented leaves Python to fall back on
+        # identity, so two of these are equal only if they are the same
+        # object.
+        one = C(1)
+        assert one == one
+        assert C(1) != C(1)
+
         # Writing `__eq__` in a class body without a `__hash__` makes
         # that class unhashable -- Python's own rule, which applies here
         # exactly as it would to a class Magic had never touched.
@@ -2545,3 +2548,4 @@ class TestInstallInternals:
             __hash__ = Base.__hash__
 
         assert hash(D(1)) == 5
+        assert D(1) != D(1)
