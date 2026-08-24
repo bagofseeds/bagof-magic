@@ -1344,6 +1344,12 @@ def _round_trips(obj: tx.Any) -> tx.List[tx.Any]:
     ]
 
 
+class _PickleUnsetSlot(Magic, frozen=True, slots=True, init=False):
+    """A slotted class that assigns nothing, so its slot starts empty."""
+
+    x: int = 3
+
+
 class TestPickle:
 
     def test_pickle_round_trip(self) -> None:
@@ -1448,6 +1454,15 @@ class TestPickle:
         # `b` is not a field of its own, but it is on the object.
         for restored in _round_trips(PicklePseudoField(1, 2)):
             assert (restored.a, restored.b) == (1, 4)
+
+    def test_an_empty_slot_stays_empty(self) -> None:
+        # With no `__init__` of its own, nothing assigns `x`, so the
+        # slot holds no value at all -- and the copy must not invent
+        # one.
+        obj = copy.deepcopy(_PickleUnsetSlot())
+        assert not hasattr(obj, "x")
+        obj.__magic_init__()
+        assert copy.deepcopy(obj).x == 3
 
 
 # ======================================================================
