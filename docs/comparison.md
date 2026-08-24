@@ -47,7 +47,7 @@ question of what you want the type hints to *do*.
 | Copy with changes | `replace` | `evolve` | `model_copy` | *[not yet][parity]* |
 | Convert to a plain `dict` | `asdict` | `asdict` | `model_dump` | *[not yet][parity]* |
 | JSON schema | no | no | yes | no |
-| Generic classes | yes | yes | yes | **yes** |
+| Generic classes | yes | yes | yes | **yes**, *[without substitution][generics]* |
 | Runtime dependency | none | `attrs` | `pydantic-core` (compiled) | the `bagof` packages |
 
 ## The same class, four ways
@@ -230,6 +230,11 @@ Being honest about the gaps, with links to where they are being worked on:
 - **JSON schema and serialisation.** Pydantic's real draw, and `magic` has
   neither yet.
 - **Copy-with-changes and `asdict`.** [In progress][parity].
+- **Type parameters in a generic class.** `class Box(Magic, Generic[T])`
+  works, but a subclass that fills the parameter in — `class IntBox(Box[int])`
+  — leaves the field's type as `T`, so conversion and validation have nothing
+  to work from and let any value through. [Tracked here][generics]. Pydantic
+  substitutes the parameter; `dataclasses` and `attrs` do not either.
 - **Editor and type-checker support.** The others are understood by mypy and
   pyright today, so your editor completes the constructor and catches a wrong
   argument type. `magic` is not, yet — [tracked here][typing]. The route is
@@ -241,4 +246,5 @@ Being honest about the gaps, with links to where they are being worked on:
 [attrs]: https://www.attrs.org
 [pydantic]: https://docs.pydantic.dev
 [parity]: https://github.com/bagofseeds/bagof-magic/issues/22
+[generics]: https://github.com/bagofseeds/bagof-magic/issues/50
 [typing]: https://github.com/bagofseeds/bagof-magic/issues/30

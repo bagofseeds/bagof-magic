@@ -3894,11 +3894,11 @@ class GenericBox(Magic, tx.Generic[_T]):
     item: _T
 
 
-class GenericPlain(Magic):
+class PlainBase(Magic):
     a: int
 
 
-class GenericChild(GenericPlain, tx.Generic[_T]):
+class GenericSubclass(PlainBase, tx.Generic[_T]):
     b: _T
 
 
@@ -3923,9 +3923,9 @@ class TestGenericClasses:
         assert box == GenericBox(1)
 
     def test_a_generic_subclass_of_a_plain_class(self) -> None:
-        child = GenericChild(1, "two")
+        child = GenericSubclass(1, "two")
         assert (child.a, child.b) == (1, "two")
-        assert GenericChild.__parameters__ == (_T,)
+        assert GenericSubclass.__parameters__ == (_T,)
 
     def test_a_plain_subclass_of_a_generic_class(self) -> None:
         class Labelled(GenericBox[int]):

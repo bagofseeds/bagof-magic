@@ -833,8 +833,8 @@ def _mro(
 
     Python works an order out for a class that exists, so a throwaway
     class is built here just to read it back off. Its first entry is
-    that throwaway class; every entry after it is a real base, ending
-    with `object`.
+    that throwaway class; every entry after it is an ancestor the real
+    class will have, ending with `object`.
 
     A class written as `class Box(Magic, Generic[T])` reaches this
     module with `Generic[T]` already replaced by plain `Generic` in its
@@ -843,11 +843,10 @@ def _mro(
     written -- so the throwaway is given the same one, and is measured
     against the same bases as the real class.
     """
-    stand_in = {}
-    orig_bases = namespace.get("__orig_bases__")
-    if orig_bases is not None:
-        stand_in["__orig_bases__"] = orig_bases
-    return type(_DISCARD, bases, stand_in).__mro__
+    stand_in_namespace = {}
+    if "__orig_bases__" in namespace:
+        stand_in_namespace["__orig_bases__"] = namespace["__orig_bases__"]
+    return type(_DISCARD, bases, stand_in_namespace).__mro__
 
 
 def __pre_new__(
