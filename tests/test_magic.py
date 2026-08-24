@@ -2092,13 +2092,20 @@ class TestMutableDefaults:
         assert C().z is C().z
 
     def test_unhashable_user_class_is_copied(self) -> None:
+        written = _Unhashable()
+
         class C(Magic):
-            x: _Unhashable = _Unhashable()
+            x: _Unhashable = written
 
         a, b = C(), C()
         assert a.x is not b.x
+        # A copy, not a different object: it still equals what was
+        # written, and equals the other instance's until one is changed.
+        assert a.x == written
+        assert a.x == b.x
         a.x.items = [1]
         assert b.x.items == []
+        assert a.x != b.x
 
     def test_the_copy_is_shallow(self) -> None:
         # Each instance gets its own list; what that list holds is the
