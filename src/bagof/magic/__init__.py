@@ -125,6 +125,7 @@ import sys
 from abc import ABCMeta
 from collections import abc as _abc
 from functools import partial
+from inspect import Parameter, signature
 from textwrap import dedent, indent
 
 # externals
@@ -132,10 +133,14 @@ import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
 # internals
+from ._arguments import *  # noqa: F401, F403
+from ._arguments import Arguments
+from ._arguments import __all__ as __all_arguments__
 from ._fields import *  # noqa: F401, F403
 from ._fields import Field
 from ._fields import __all__ as __all_fields__
 from .constants import (
+    _ARGUMENTS,
     _CONVERTER,
     _DEFAULT,
     _DISCARD,
@@ -159,6 +164,7 @@ from .options import Options
 from .options import __all__ as __all_options__
 from .utils import _get_origin, rebuild_cls
 
+__all__ += __all_arguments__
 __all__ += __all_fields__
 __all__ += __all_options__
 
@@ -614,6 +620,84 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     return True
 
 
+def _find_hook(
+    namespace: dict, bases: tx.Tuple[type, ...], name: str
+) -> tx.Any:
+    """The `__pre_init__` or `__post_init__` this class will call.
+
+    A hook written in the class body wins; failing that, one inherited
+    from a base counts too, so that a family of classes can share a
+    single hook rather than repeating it in every subclass.
+    """
+    if name in namespace:
+        return namespace[name]
+    for base in bases:
+        hook = getattr(base, name, None)
+        if hook is not None:
+            return hook
+    return None
+
+
+def _hook_wants_arguments(name: str, hook: tx.Any) -> bool:
+    """Whether this hook is to be handed the values `__init__` got.
+
+    A hook that declares a parameter wants them; one that declares none
+    is called with nothing. Declaring more than one is a mistake, since
+    there is only ever a single object to pass.
+    """
+    try:
+        # The hook is called as a method, so its first parameter is the
+        # instance and is not ours to fill in.
+        parameters = list(signature(hook).parameters.values())[1:]
+    except (TypeError, ValueError):
+        # Nothing readable to go on. Passing the values is the safer
+        # guess: a hook that wanted none fails loudly on the extra
+        # argument, where a hook that wanted them and got none would
+        # quietly do the wrong thing.
+        return True
+
+    positional = [
+        parameter for parameter in parameters
+        if parameter.kind in (
+            Parameter.POSITIONAL_ONLY,
+            Parameter.POSITIONAL_OR_KEYWORD,
+            Parameter.VAR_POSITIONAL,
+        )
+    ]
+    required = [
+        parameter for parameter in positional
+        if parameter.default is Parameter.empty
+        and parameter.kind is not Parameter.VAR_POSITIONAL
+    ]
+    if len(required) > 1:
+        listed = ", ".join(parameter.name for parameter in required)
+        raise TypeError(
+            f"{name} takes several arguments ({listed}), but it is called "
+            f"with one: an object holding every value passed to __init__. "
+            f"Give it a single parameter and read the values off that -- "
+            f"`def {name}(self, arguments)`, then "
+            f"`arguments.{required[0].name}`."
+        )
+    return bool(positional)
+
+
+def _prepost_hooks(
+    namespace: dict, bases: tx.Tuple[type, ...]
+) -> tx.Dict[str, bool]:
+    """Which init hooks to call, and whether each wants the values.
+
+    Maps `__pre_init__` and/or `__post_init__` -- whichever the class
+    has -- to whether the generated `__init__` should hand it an
+    `Arguments` object.
+    """
+    hooks = {}
+    for name in (_PRE_INIT_NAME, _POST_INIT_NAME):
+        hook = _find_hook(namespace, bases, name)
+        if hook is not None:
+            hooks[name] = _hook_wants_arguments(name, hook)
+    return hooks
+
+
 def __pre_new__(
 
     metacls: MetaMagic,
@@ -803,13 +887,7 @@ def __pre_new__(
         if field.order and not field.eq:
             raise ValueError('eq must be true if order is true')
 
-    # Check if pre and/or post init methods are defined in this class.
-    prepost = []
-    if _PRE_INIT_NAME in namespace:
-        prepost += ["pre"]
-    if _POST_INIT_NAME in namespace:
-        prepost += ["post"]
-    prepost = "+".join(prepost)
+    prepost = _prepost_hooks(namespace, bases)
 
     # Every generated method is also bound under a private name, whether
     # or not the class asked for the public one, so that a hand-written
@@ -1185,7 +1263,7 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
 
 
 def _make_init(
-    fields: dict[str, Field], prepost: str=""
+    fields: dict[str, Field], prepost: tx.Mapping[str, bool]
 ) -> dict:
 
     locals = {"object": object, "_HasFactory": _HasFactory}
@@ -1265,20 +1343,34 @@ def _make_init(
 
     _check_signature(signature)
 
+    parameters = list(positional_onlys.values())
+    parameters += list(args.values())
+    parameters += list(kw_onlys.values())
+
     def _make_prepost_call(func: str) -> str:
-        prepost_args = []
-        for field in positional_onlys.values():
-            if field.var:
-                prepost_args.append(f"{field.public_name}")
-        for field in args.values():
-            if field.var:
-                prepost_args.append(f"{field.public_name}")
-        for field in kw_onlys.values():
-            if field.var:
-                name = field.public_name
-                prepost_args.append(f"{name}={name}")
-        prepost_args = ", ".join(prepost_args)
-        return f"{SELF}.{func}({prepost_args})"
+        # A hook that declares no parameter is called with nothing; one
+        # that declares a parameter is handed every value `__init__` was
+        # called with, keyed by the name the caller would have used.
+        if not prepost[func]:
+            return f"{SELF}.{func}()"
+        locals[_ARGUMENTS] = Arguments
+        values = ", ".join(
+            f"{field.public_name!r}: {field.public_name}"
+            for field in parameters
+        )
+        return f"{SELF}.{func}({_ARGUMENTS}({{{values}}}))"
+
+    def _make_factory_elem(field: Field) -> str:
+        # A defaulted-by-factory parameter arrives holding the factory
+        # rather than a value. Every one of them is resolved before the
+        # first hook runs, so that `__pre_init__` sees real values.
+        if not field.factory:
+            return ""
+        name = field.public_name
+        return dedent(f"""
+        if isinstance({name}, _HasFactory):
+            {name} = {name}()
+        """)
 
     def _make_body_elem(field: Field) -> str:
         # The body reads the *parameter*, which is named after the
@@ -1286,11 +1378,6 @@ def _make_init(
         # own name.
         name = field.public_name
         body = ""
-        if field.factory:
-            body += dedent(f"""
-            if isinstance({name}, _HasFactory):
-                {name} = {name}()
-            """)
         if field.converter:
             locals[_CONVERTER(name)] = field.converter
             body += dedent(f"""
@@ -1309,16 +1396,11 @@ def _make_init(
             """)
         return body
 
-    body = []
-    if "pre" in prepost:
+    body = [_make_factory_elem(field) for field in parameters]
+    if _PRE_INIT_NAME in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
-    for field in positional_onlys.values():
-        body.append(_make_body_elem(field))
-    for field in args.values():
-        body.append(_make_body_elem(field))
-    for field in kw_onlys.values():
-        body.append(_make_body_elem(field))
-    if "post" in prepost:
+    body += [_make_body_elem(field) for field in parameters]
+    if _POST_INIT_NAME in prepost:
         body.append(_make_prepost_call(_POST_INIT_NAME))
 
     return {
