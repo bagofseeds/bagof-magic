@@ -197,6 +197,27 @@ Set `mutable_default="raise"` to be stopped at the class definition instead,
 as `dataclasses` and `attrs` do — or `"allow"` when one shared object really
 is what you want.
 
+**Hooks around construction.** Write `__pre_init__` or `__post_init__` and
+it runs on the way in. Give it a parameter and it receives everything the
+constructor was called with — `__pre_init__` sees the values as passed,
+`__post_init__` sees them as stored:
+
+```python
+from bagof.magic import Magic, InitVar
+
+class Circle(Magic):
+    radius: float
+    scale: InitVar[float] = 1.0      # passed in, used, not kept
+
+    def __post_init__(self, arguments):
+        self.radius = self.radius * arguments.scale
+```
+
+```pycon
+>>> Circle(2.0, scale=3.0)
+Circle(radius=6.0)
+```
+
 **Documentation that writes itself.** Describe a field and it shows up in the
 class docstring and in the generated `__init__`:
 
