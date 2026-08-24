@@ -806,6 +806,30 @@ def _prepost_hooks(
     return hooks
 
 
+def _mro(
+    bases: tx.Tuple[type, ...], namespace: dict
+) -> tx.Tuple[type, ...]:
+    """The resolution order of a class built from `bases`.
+
+    Python works an order out for a class that exists, so a throwaway
+    class is built here just to read it back off. Its first entry is
+    that throwaway class; every entry after it is a real base, ending
+    with `object`.
+
+    A class written as `class Box(Magic, Generic[T])` reaches this
+    module with `Generic[T]` already replaced by plain `Generic` in its
+    bases, and `Generic` refuses to be a base on its own. What tells
+    the two apart is `__orig_bases__` -- the bases as they were
+    written -- so the throwaway is given the same one, and is measured
+    against the same bases as the real class.
+    """
+    stand_in = {}
+    orig_bases = namespace.get("__orig_bases__")
+    if orig_bases is not None:
+        stand_in["__orig_bases__"] = orig_bases
+    return type(_DISCARD, bases, stand_in).__mro__
+
+
 def __pre_new__(
 
     metacls: MetaMagic,
@@ -865,7 +889,7 @@ def __pre_new__(
 
     # Find our base classes in reverse MRO order, so that order is
     # obtained from MRO, but value is obtained from most derived class.
-    mro = type(_DISCARD, bases, {}).__mro__
+    mro = _mro(bases, namespace)
     for b in reversed(mro):
         # Only process classes that have been processed by our
         # decorator.  That is, they have a _FIELDS attribute.
@@ -1077,7 +1101,7 @@ def __pre_new__(
     # The generated methods are installed here, once `bases` is settled:
     # the `mapping` option can add one, and working out what a class
     # would otherwise inherit means looking at the bases it really has.
-    base_mro = type(_DISCARD, bases, {}).__mro__[1:]
+    base_mro = _mro(bases, namespace)[1:]
 
     repr_fields = {name: f for name, f in fields.items() if f.repr}
     _install(
@@ -1130,7 +1154,11 @@ def __pre_new__(
         if '__slots__' in namespace:
             raise TypeError(f'{clsname} already specifies __slots__')
         weakref_slot = options.weakref_slot
-        namespace["__slots__"] = _make_slots(bases, real_fields, weakref_slot)
+        # Every class this one inherits from, `object` aside: a field
+        # already given a slot by one of them does not need another.
+        namespace["__slots__"] = _make_slots(
+            base_mro[:-1], real_fields, weakref_slot
+        )
 
     # Saving an object means saving its slots, so this waits until
     # `__slots__` is settled as well as `bases`.
@@ -1748,14 +1776,13 @@ def _get_slots(cls: type) -> tx.Iterator[str]:
 
 
 def _make_slots(
-    bases: tuple[type, ...],
+    ancestors: tx.Sequence[type],
     fields: dict[str, Field],
     weakref_slot: bool = False,
 ) -> tx.Union[tuple[str, ...], dict[str, tx.Optional[str]]]:
-    mro = type(_DISCARD, bases, {}).__mro__[1:-1]
     inherited_slots = set(
         slot
-        for base in mro
+        for base in ancestors
         for slot in _get_slots(base)
     )
 

@@ -3774,3 +3774,117 @@ class TestInitHookForms:
         # So that a value of any name can be given as a keyword.
         arguments = Arguments(values=1, named=2)
         assert (arguments.values, arguments.named) == (1, 2)
+
+
+# ======================================================================
+# Generic classes
+# ======================================================================
+
+_T = tx.TypeVar("_T")
+_TInt = tx.TypeVar("_TInt", bound=int)
+
+
+class GenericBox(Magic, tx.Generic[_T]):
+    item: _T
+
+
+class GenericPlain(Magic):
+    a: int
+
+
+class GenericChild(GenericPlain, tx.Generic[_T]):
+    b: _T
+
+
+class TestGenericClasses:
+    """A class that takes a type parameter: `class Box(Magic, Generic[T])`."""
+
+    def test_a_generic_class_can_be_defined(self) -> None:
+        # Regression: `Generic` used to refuse the class outright.
+        assert GenericBox.__parameters__ == (_T,)
+        assert [f.name for f in m.fields(GenericBox)] == ["item"]
+
+    def test_the_generated_methods_work(self) -> None:
+        box = GenericBox(1)
+        assert box.item == 1
+        assert repr(box) == "GenericBox(item=1)"
+        assert box == GenericBox(1)
+        assert box != GenericBox(2)
+
+    def test_a_parameterised_class_builds_an_instance(self) -> None:
+        box = GenericBox[int](1)
+        assert isinstance(box, GenericBox)
+        assert box == GenericBox(1)
+
+    def test_a_generic_subclass_of_a_plain_class(self) -> None:
+        child = GenericChild(1, "two")
+        assert (child.a, child.b) == (1, "two")
+        assert GenericChild.__parameters__ == (_T,)
+
+    def test_a_plain_subclass_of_a_generic_class(self) -> None:
+        class Labelled(GenericBox[int]):
+            label: str = "?"
+
+        assert Labelled(1, "one") == Labelled(1, "one")
+        assert repr(Labelled(1)) == "Labelled(item=1, label='?')"
+
+    def test_the_decorator_form(self) -> None:
+        @magic
+        class Box(tx.Generic[_T]):
+            item: _T
+
+        assert Box.__parameters__ == (_T,)
+        assert Box[str]("one").item == "one"
+
+    def test_slots_leave_no_instance_dict(self) -> None:
+        class Box(Magic, tx.Generic[_T], slots=True):
+            item: _T
+
+        assert Box.__slots__ == ("item",)
+        assert not hasattr(Box(1), "__dict__")
+
+    def test_frozen_and_ordered(self) -> None:
+        class Box(Magic, tx.Generic[_T], frozen=True, order=True):
+            item: _T
+
+        assert sorted([Box(2), Box(1)]) == [Box(1), Box(2)]
+        assert hash(Box(1)) == hash(Box(1))
+
+    def test_round_trips(self) -> None:
+        assert _round_trips(GenericBox(1)) == [GenericBox(1)] * 3
+        assert _round_trips(GenericBox[int]) == [GenericBox[int]] * 3
+
+    def test_a_bare_type_parameter_converts_to_nothing(self) -> None:
+        # There is no type to convert to, so the value is left alone.
+        class Box(Magic, tx.Generic[_T], convert=True):
+            item: _T
+
+        assert Box("one").item == "one"
+
+    def test_a_bare_type_parameter_accepts_any_value(self) -> None:
+        class Box(Magic, tx.Generic[_T], validate=True):
+            item: _T
+
+        assert Box("one").item == "one"
+
+    def test_a_bounded_type_parameter_converts_to_its_bound(self) -> None:
+        class Box(Magic, tx.Generic[_TInt], convert=True):
+            item: _TInt
+
+        assert Box("1").item == 1
+
+    def test_a_bounded_type_parameter_validates_against_its_bound(
+        self
+    ) -> None:
+        class Box(Magic, tx.Generic[_TInt], validate=True):
+            item: _TInt
+
+        assert Box(1).item == 1
+        with pytest.raises(ValidationError):
+            Box("one")
+
+    def test_plain_generic_is_still_refused(self) -> None:
+        # `Generic` itself is not a base you can write; only `Generic[T]`.
+        with pytest.raises(TypeError, match="plain Generic"):
+            class Box(Magic, tx.Generic):
+                item: int
