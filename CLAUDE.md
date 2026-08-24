@@ -41,7 +41,10 @@ src/bagof/magic/
   utils.py      # SlotsBase, rebuild_cls, the `slots` decorator
   _resolve.py   # adapters to bagof-converters / -validators / -factories
 tests/
-  test_magic.py
+  test_magic.py                 # the builder, option by option
+  test_docstrings.py            # every `pycon` block in a docstring or page
+  test_options_are_documented.py  # every option is written down everywhere
+  test_licensing.py             # the license files reach the wheel
   test_import.py
 ```
 
@@ -96,14 +99,17 @@ will look "dead" on the other — that is expected, not a gap.
    source uses `__magic_<field>_type__` and friends; an error message must
    name the *field*, not the local.
 6. **A new class option has to be registered in six places.** The `@slots`
-   list and `_DEFAULTS` in `options.py`, and then the option list written out
-   three times in `__init__.py` — the module docstring, `_DOC_OPTIONS`, and
-   the `MetaMagic` and `Magic` docstrings — plus the settings table in
-   `README.md` and the comparison table in `docs/comparison.md`. Grep for an
-   existing option name to find them all. `MetaMagic.__doc__` and
-   `Magic.__doc__` are passed through `str.format`, so a `{` in one of them
-   is read as a placeholder: spell an option's accepted values in prose, not
-   in numpydoc's `{"a", "b"}` notation.
+   list and `_DEFAULTS` in `options.py`, the option list written out three
+   times — the module docstring at the top of `__init__.py`, and the
+   `MetaMagic` and `Magic` docstrings — and the settings table in
+   `README.md`. `tests/test_options_are_documented.py` checks all six, so a
+   missing one is a test failure rather than a doc page that quietly
+   disagrees with the code. The comparison table in `docs/comparison.md` is
+   not one row per option and is not checked; update it by hand when a new
+   option is worth comparing. `MetaMagic.__doc__` and `Magic.__doc__` are
+   passed through `str.format`, so a `{` in one of them is read as a
+   placeholder: spell an option's accepted values in prose, not in
+   numpydoc's `{"a", "b"}` notation.
 
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 
