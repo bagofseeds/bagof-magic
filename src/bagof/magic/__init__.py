@@ -129,6 +129,9 @@ import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
 # internals
+from ._fields import *  # noqa: F401, F403
+from ._fields import Field
+from ._fields import __all__ as __all_fields__
 from .constants import (
     _CONVERTER,
     _DEFAULT,
@@ -146,9 +149,6 @@ from .constants import (
     SHOW_ATTR,
     _HasFactory,
 )
-from .fields import *  # noqa: F401, F403
-from .fields import Field
-from .fields import __all__ as __all_fields__
 from .options import *  # noqa: F401, F403
 from .options import Options
 from .options import __all__ as __all_options__
@@ -1152,49 +1152,6 @@ def _make_mapping(
 # derive from ABCs (e.g. Mapping).
 
 
-_DOC_OPTIONS = """
-init : bool | str, default=True
-    Generate `__init__` method.
-repr : bool | str, default=True
-    Generate `__repr__` method.
-eq : bool | str, default=True
-    Generate `__eq__` method.
-order : bool | str, default=False
-    Generate `__lt__` method.
-hash : bool | str, default=None
-    Generate `__hash__` method.
-    If `None`, decide automatically.
-unsafe_hash : bool, default=False
-    Always generate `__hash__` method.
-frozen : bool, default=False
-    Disable `__setattr__` and `__delattr__`.
-match_args : bool | str, default=False
-    Generate `__match_args__` for pattern matching.
-kw_only : bool, default=False
-    Make all fields keyword-only by default.
-positional_only : bool, default=False
-    Make all fields positional-only by default.
-slots : bool, default=False
-    Generate `__slots__` and remove `__dict__`.
-weakref_slot : bool, default=False
-    Generate a weakref slot in `__slots__`.
-factory : bool, default=False
-    Use field type as factory if none is provided.
-convert : bool, default=False
-    Use field type as converter if none is provided.
-validate : bool, default=False
-    Use field type as validator if none is provided.
-mapping : bool, default=False
-    Implement the `Mapping` protocol.
-reverse : bool, default=False
-    Use the reverse MRO order to determine field order.
-    This only affects the relative order of the fields of one class
-    with respect to the fields of its base classes.
-doc : bool | str, default=True
-    Add field documentation to class docstring.
-""".strip()
-
-
 class MetaMagic(ABCMeta):
     """
     Examples
@@ -1342,13 +1299,6 @@ class Magic(metaclass=MetaMagic):
 
     # Set __slots__ so that inheriting classes can have slot=True
     __slots__ = ()
-
-
-# `python -OO` strips docstrings, so there may be nothing to format.
-if MetaMagic.__doc__:
-    MetaMagic.__doc__ = MetaMagic.__doc__.format(DOC_OPTIONS=_DOC_OPTIONS)
-if Magic.__doc__:
-    Magic.__doc__ = Magic.__doc__.format(DOC_OPTIONS=_DOC_OPTIONS)
 
 
 # ----------------------------------------------------------------------

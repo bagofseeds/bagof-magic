@@ -27,10 +27,14 @@ A `dataclass`-like base class whose behaviour is driven by **type hints**.
 
 ```
 src/bagof/magic/
-  __init__.py   # the builder: MetaMagic, Magic, the `magic` decorator, and
-                #   every `_make_*` method generator
-  fields.py     # Field, and the annotation family (Default, Factory,
-                #   ConvertTo, Validate, Init, KwOnly, ClassVar, Doc, ...)
+  __init__.py   # the builder: MetaMagic, Magic, the `magic` decorator, the
+                #   module-level `fields()` helper, and every `_make_*` method
+                #   generator
+  _fields.py    # Field, and the annotation family (Default, Factory,
+                #   ConvertTo, Validate, Init, KwOnly, ClassVar, Doc, ...) --
+                #   named with a leading underscore so the module doesn't
+                #   shadow the top-level `fields()` function at the dotted
+                #   path `bagof.magic.fields` in griffe's API-reference model
   options.py    # Options -- the resolved per-class option set
   constants.py  # sentinels (MISSING, REQUIRED, SHOW_ATTR) and the
                 #   `__magic_*__` attribute names
@@ -107,7 +111,7 @@ public docstring:
    library, not what the builder does internally.
 3. **Real `pycon`, not pseudo-code.** An example that shows a value must show
    the value the interpreter actually prints. For the annotation family in
-   `fields.py` this means showing the lowering as it really is:
+   `_fields.py` this means showing the lowering as it really is:
 
    ```pycon
    >>> Factory[list]
