@@ -130,6 +130,7 @@ from __future__ import annotations
 
 __all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 # stdlib
+import builtins
 import copy
 import operator
 import sys
@@ -303,7 +304,45 @@ def _add_fields(
             fields.setdefault(name, old_field)
 
 
-def _namespace_annotations(namespace: dict) -> dict:
+class _ForwardRefScope(dict):
+    # A scope in which a name that is bound nowhere evaluates to a
+    # `ForwardRef` instead of raising `NameError`. Evaluating an
+    # annotation in such a scope recovers the *shape* of the hint --
+    # `ClassVar[...]`, `Annotated[...]`, and so the whole annotation
+    # family -- even when the type it refers to does not exist yet.
+
+    def __missing__(self, name: str) -> tx.ForwardRef:
+        return tx.ForwardRef(name)
+
+
+def _annotation_scope(namespace: dict, globals: dict) -> _ForwardRefScope:
+    # The names an annotation written in this class body can refer to:
+    # the builtins, then the defining module, then the class body itself
+    # (each shadowing the one before, as Python resolves them).
+    scope = _ForwardRefScope(vars(builtins))
+    scope.update(globals)
+    scope.update(namespace)
+    return scope
+
+
+def _evaluate_annotation(source: str, scope: _ForwardRefScope) -> tx.Any:
+    # An annotation reaches us as text under `from __future__ import
+    # annotations`, and as text whenever it is quoted. Read back the
+    # object it describes, so the annotation family is seen at all.
+    #
+    # An unbound *name* becomes a `ForwardRef`, but an unbound name used
+    # as anything more than a name does not survive: `Outer.Nested` asks
+    # a `ForwardRef` for an attribute, `Missing(1)` calls one. Those, and
+    # anything else that fails to evaluate, keep the string they came
+    # from -- the field then carries the annotation exactly as written,
+    # which is all that was ever available for it.
+    try:
+        return eval(source, {}, scope)
+    except Exception:
+        return source
+
+
+def _namespace_annotations(namespace: dict, globals: dict) -> dict:
     # The annotations declared in a class body, read from the namespace the
     # metaclass receives -- before the class object exists.
     #
@@ -313,19 +352,42 @@ def _namespace_annotations(namespace: dict) -> dict:
     if "__annotations__" in namespace:
         # Python <= 3.13: coverage runs on 3.14+, where annotations are lazy
         # and the namespace never carries __annotations__, so this is dead.
-        return namespace["__annotations__"]  # pragma: no cover
-    try:
-        import annotationlib
-    except ImportError:  # pragma: no cover  -- Python < 3.14
-        return {}
-    annotate = annotationlib.get_annotate_from_class_namespace(namespace)
-    if annotate is None:
-        return {}
-    # FORWARDREF never raises on not-yet-defined names (they become
-    # ``ForwardRef``), which keeps class creation robust.
-    return annotationlib.call_annotate_function(
-        annotate, annotationlib.Format.FORWARDREF
-    )
+        annotations = namespace["__annotations__"]  # pragma: no cover
+    else:
+        try:
+            import annotationlib
+        except ImportError:  # pragma: no cover  -- Python < 3.14
+            return {}
+        annotate = annotationlib.get_annotate_from_class_namespace(namespace)
+        if annotate is None:
+            return {}
+        # FORWARDREF never raises on not-yet-defined names (they become
+        # ``ForwardRef``), which keeps class creation robust.
+        annotations = annotationlib.call_annotate_function(
+            annotate, annotationlib.Format.FORWARDREF
+        )
+    return _resolve_string_annotations(annotations, namespace, globals)
+
+
+def _resolve_string_annotations(
+    annotations: dict, namespace: dict, globals: dict
+) -> dict:
+    # Annotations that are text -- every one of them under `from
+    # __future__ import annotations`, and any single quoted one
+    # otherwise -- are read back into the objects they name. Whatever
+    # already arrived as an object is left alone, so on Python 3.14+,
+    # where the runtime hands over `ForwardRef`s of its own, there is
+    # nothing here to redo.
+    if not any(isinstance(hint, str) for hint in annotations.values()):
+        return annotations
+    scope = _annotation_scope(namespace, globals)
+    return {
+        name: (
+            _evaluate_annotation(hint, scope)
+            if isinstance(hint, str) else hint
+        )
+        for name, hint in annotations.items()
+    }
 
 
 class _BadSignature(SyntaxError):
@@ -969,7 +1031,7 @@ def __pre_new__(
     # actual default value.  Pseudo-fields ClassVars and InitVars are
     # included, despite the fact that they're not real fields.  That's
     # dealt with later.
-    cls_annotations = _namespace_annotations(namespace)
+    cls_annotations = _namespace_annotations(namespace, globals)
 
     # Now find fields in our class.  While doing so, validate some
     # things, and set the d

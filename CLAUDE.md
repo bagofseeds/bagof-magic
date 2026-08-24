@@ -89,6 +89,28 @@ Tests that exercise internals import them from the module that defines them
 CI runs both, so a change here needs testing on both. Coverage of one branch
 will look "dead" on the other — that is expected, not a gap.
 
+Whichever path they came from, annotations that are **text** are read back
+into objects by `_resolve_string_annotations`. A module with `from __future__
+import annotations` (and any single quoted annotation anywhere else) hands
+over strings, and a string hides the entire annotation family — `ClassVar`,
+`KwOnly`, `Frozen`, an `alias` inside `Annotated`, all of it — because there
+is no `Annotated` metadata to find. The source is evaluated in
+`_annotation_scope`: builtins, then the defining module's globals, then the
+class body, wrapped in a `dict` subclass whose `__missing__` answers with a
+`ForwardRef`. So the *shape* of a hint survives even when the type it names
+does not exist yet, which is what a self-referential class needs. An unbound
+name used as more than a name (`Outer.Nested`, `Missing[int]`) cannot survive
+that and keeps the string it came from.
+
+Only the structure is recovered eagerly, because it decides the generated
+`__init__`, which is compiled once. A converter, validator or factory
+resolved from a hint that is still a `ForwardRef` is the other half of the
+problem (#13) and wants deferred resolution instead.
+
+`tests/test_annotations_as_strings.py` is the regression suite, and its
+future import is what makes it one — `tests/test_magic.py` cannot see any of
+this, since annotations there are already objects.
+
 ## Conventions specific to this repo (do not regress)
 
 1. **Wide Python (3.8+).** Runtime code must stay old-compatible: no walrus in
