@@ -287,14 +287,19 @@ def _unbuildable_init(clsname: str, reason: str) -> tx.Callable:
 
 
 def _no_order(self: Magic, other: tx.Any) -> tx.Any:
-    """Stand-in for a generated ordering a derived class turned off."""
+    """Take the place of an ordering method a subclass turned off.
+
+    Returning `NotImplemented` tells Python nobody knows how to compare
+    these two, so it raises its usual "'<' not supported between
+    instances of ..." -- which is what a class without ordering should
+    do. There is no `object.__lt__` to fall back on, hence this.
+    """
     return NotImplemented
 
 
-#: What a turned-off option leaves in place of a generated method.
-#: `object` has no `__lt__`, so ordering falls back to a
-#: `NotImplemented` -- which lets Python raise its usual "not supported
-#: between instances" rather than "NoneType is not callable".
+#: What is put in place of a generated method when an option is turned
+#: off. These are the behaviours a plain Python class has: comparison by
+#: identity, the `<Thing object at 0x...>` repr, and no ordering.
 _NEUTRAL = {
     "repr": object.__repr__,
     "eq": object.__eq__,
@@ -303,54 +308,63 @@ _NEUTRAL = {
 }
 
 
-def _written(cls: type) -> dict:
-    """The `{name: slot}` this package bound on `cls` itself.
+def _generated_methods(cls: type) -> dict:
+    """Which methods on this class were written by Magic, and for what.
 
-    Not the same question as "is `cls` a Magic class", which `_FIELDS`
-    already answers: a Magic class's `__eq__` may well be the user's,
-    since a method in the class body always wins. Only this says which
-    of the two a given name holds, which is what deciding whether to
-    neutralise it needs.
+    Maps the name a method was bound under to the option that produced
+    it -- `{"__eq__": "eq"}` normally, `{"__same__": "eq"}` if the class
+    asked for `eq="__same__"`.
 
-    Recorded per class rather than marked on the function, because a
-    generated slot may hold something unmarkable -- `__hash__ = None`,
-    or a slot wrapper like `object.__eq__` left by a turned-off option.
+    This is not the same question as "is this a Magic class". A Magic
+    class can perfectly well have a hand-written `__eq__`, because a
+    method in the class body always wins over the generated one. Only
+    this record can tell the two apart, and telling them apart is what
+    decides whether a subclass may replace the method.
+
+    It is a record on the class rather than a mark on the method itself
+    because some of what gets bound cannot carry a mark: a generated
+    `__hash__` is sometimes `None`, and a turned-off option leaves
+    behind `object.__eq__`, which is a built-in.
     """
     return cls.__dict__.get(_GENERATED) or {}
 
 
-def _defines(mro: tx.Tuple[type, ...], name: str) -> tx.Any:
-    """The first class in `mro` that defines `name`, or `None`."""
+def _defining_class(mro: tx.Tuple[type, ...], name: str) -> tx.Any:
+    """Which class actually provides `name` -- the one Python will use."""
     for base in mro:
         if name in base.__dict__:
             return base
     return None
 
 
-def _generated_names(mro: tx.Tuple[type, ...], slot: str) -> tx.List[str]:
-    """Names in the bases whose *resolved* method for `slot` is ours.
+def _inherited_generated(
+    mro: tx.Tuple[type, ...], slot: str
+) -> tx.List[str]:
+    """Names inherited from a base that hold a method Magic generated.
 
-    More than one, because a base may have bound it under a name of its
-    own (`eq="__same__"`) while an ancestor still holds the dunder. A
-    name is only included when the class that actually provides it --
-    the first in the MRO, which is the one Python will use -- is the
-    class that recorded it, so a hand-written method nearer the front
-    shadows a generated one behind it and is left alone.
+    There can be more than one: a base may have asked for the method
+    under a name of its own (`eq="__same__"`) while a class further up
+    still has it under `__eq__`.
+
+    A name only counts if the class actually providing it is the class
+    that generated it. That way a hand-written method closer to the
+    front of the inheritance chain -- the one Python would really call
+    -- hides a generated one behind it, and is left alone.
     """
     names = []
     for base in mro:
-        for name, base_slot in _written(base).items():
+        for name, base_slot in _generated_methods(base).items():
             if base_slot != slot or name in names:
                 continue
-            owner = _defines(mro, name)
-            if owner is not None and name in _written(owner):
+            owner = _defining_class(mro, name)
+            if owner is not None and name in _generated_methods(owner):
                 names.append(name)
     return names
 
 
 def _install(
     namespace: dict,
-    written: dict,
+    generated: dict,
     mro: tx.Tuple[type, ...],
     slot: str,
     public: str,
@@ -358,53 +372,58 @@ def _install(
     enabled: bool,
 ) -> bool:
     """
-    Bind a generated method, and report whether the public name is ours.
+    Put one generated method on the class being built.
 
-    The private name is always bound, so a hand-written method can
-    delegate to the generated one. The public name is bound only when
-    the option asks for it -- and when it does not, every name in the
-    bases holding a *generated* method for this slot is neutralised,
-    because each was built for another class's fields and would
-    otherwise answer in this one's place. A hand-written method is
-    never replaced -- in this class, or in a base that would win the
-    MRO ahead of any generated one.
+    It is always bound under its private name (`__magic_eq__` and
+    friends), so that a hand-written method can call the generated one.
+    It is bound under its public name (`__eq__`) only if the class asked
+    for that method.
+
+    If the class did *not* ask for it, any generated method it would
+    otherwise inherit is replaced by the plain-Python behaviour. A
+    generated method belongs to the class it was made for: it only
+    knows that class's fields, so letting it answer for a different
+    class gives wrong answers. Methods you wrote yourself are never
+    replaced.
+
+    Returns whether the public name ended up holding our method.
     """
     private = _MAGIC(slot)
     if private in namespace:
         raise TypeError(
-            f"{private!r} is generated; define {public!r} instead and call "
-            f"{private!r} from it"
+            f"{private} is written by Magic, so a class cannot define its "
+            f"own. Write {public} instead, and call {private} from it if "
+            f"you want the generated one."
         )
     namespace[private] = fn
 
-    written[private] = slot
+    generated[private] = slot
 
-    # Whatever names the bases bound for this slot, other than the one
-    # this class is about to use, hold a method built for another
-    # class's fields. That includes the dunder when this class has
-    # renamed the slot: asking for the method under another name is
-    # also a way of saying the dunder should not be generated.
-    for name in _generated_names(mro, slot):
+    # Replace any inherited generated method for this option, apart from
+    # the one this class is about to write. This also covers a class
+    # that renamed the method: asking for it under another name is a way
+    # of saying you do not want the usual one.
+    for name in _inherited_generated(mro, slot):
         if name != public and name not in namespace:
             namespace[name] = _NEUTRAL[slot]
-            written[name] = slot
+            generated[name] = slot
 
     if enabled:
         if public in namespace:
             return False
         namespace[public] = fn
-        written[public] = slot
+        generated[public] = slot
         return True
 
-    if public not in namespace and public in _generated_names(mro, slot):
+    if public not in namespace and public in _inherited_generated(mro, slot):
         namespace[public] = _NEUTRAL[slot]
-        written[public] = slot
+        generated[public] = slot
     return False
 
 
 def _install_hash(
     namespace: dict,
-    written: dict,
+    generated: dict,
     mro: tx.Tuple[type, ...],
     options: Options,
     qualname: str,
@@ -413,13 +432,14 @@ def _install_hash(
     eq_is_identity: bool,
 ) -> None:
     """
-    Decide what `__hash__` should be, and bind it.
+    Work out what `__hash__` should be for this class, and bind it.
 
-    The field-wise hash is always available privately. What lands on the
-    public name is chosen here rather than left to inheritance, because
-    writing `__eq__` into a class body makes Python drop `__hash__`
-    unless one is given too -- so "leave it alone" is not an option once
-    an `__eq__` has been installed.
+    A hash built from the fields is always available under
+    `__magic_hash__`. What ends up on `__hash__` itself is decided here
+    rather than simply inherited, because Python drops `__hash__` from
+    any class that defines `__eq__` without also defining `__hash__` --
+    so once an `__eq__` has been written, leaving `__hash__` alone is
+    not one of the choices.
     """
     private = _MAGIC("hash")
     if private in namespace:
@@ -428,7 +448,7 @@ def _install_hash(
             f"{private!r} from it"
         )
     namespace[private] = _hash_add(qualname, real_fields)
-    written[private] = "hash"
+    generated[private] = "hash"
 
     # A truthy `hash` means "generate one", the same force the
     # `unsafe_hash` column applies. `False` means never, and `None` (the
@@ -442,7 +462,7 @@ def _install_hash(
         make = False
 
     public = options.hash if isinstance(options.hash, str) else "__hash__"
-    inherited = _generated_names(mro, "hash")
+    inherited = _inherited_generated(mro, "hash")
 
     if make:
         # `_hash_exception` raises here, which is the point of it.
@@ -460,7 +480,7 @@ def _install_hash(
         owner = next(
             (base for base in mro
              if "__hash__" in base.__dict__
-             and "__hash__" not in _written(base)),
+             and "__hash__" not in _generated_methods(base)),
             None,
         )
         value = owner.__dict__["__hash__"] if owner else object.__hash__
@@ -474,7 +494,7 @@ def _install_hash(
     for name in [public] + inherited:
         if name not in namespace:
             namespace[name] = value
-            written[name] = "hash"
+            generated[name] = "hash"
 
 
 def __pre_new__(
@@ -491,20 +511,16 @@ def __pre_new__(
         # without including the class itself.
         return clsname, bases, namespace
 
-    # Rebuilding an already-built class -- `@magic` on a class that
-    # inherits `Magic`, a second `@magic`, `utils.slots` on a Magic
-    # class -- copies the class dict, and nothing in a copied method
-    # says whether the user wrote it or the first build did. The
-    # options belong on the class statement, which needs no rebuild.
-    #
-    # `_FIELDS` is the marker for "this came out of a build": a direct
-    # lookup, so an inherited one does not count, and it is set for
-    # every class including one with no fields at all.
+    # `_FIELDS` in the namespace means this class has been through here
+    # before. A direct lookup, so a base class having it does not count.
     if _FIELDS in namespace:
         raise TypeError(
-            f"{clsname} has already been built by Magic, so it cannot be "
-            f"rebuilt: pass the options to the class statement instead, "
-            f"as `class {clsname}(..., <options>)`"
+            f"{clsname} is already a Magic class, so it cannot be built a "
+            f"second time. This happens when @magic is used twice on the "
+            f"same class, or when it is used on a class that already "
+            f"inherits from Magic. Put the options on the class statement "
+            f"instead -- `class {clsname}(Magic, frozen=True)` -- which "
+            f"does the same job."
         )
 
     # Get globals of the module where this class is defined.
@@ -667,16 +683,17 @@ def __pre_new__(
         prepost += ["post"]
     prepost = "+".join(prepost)
 
-    # Every generated method is bound under a private name whatever the
-    # options say, so a hand-written one can delegate to it:
-    #     def __init__(self, raw): self.__magic_init__(int(raw))
-    # The public name is bound only when the option asks for it.
+    # Every generated method is also bound under a private name, whether
+    # or not the class asked for the public one, so that a hand-written
+    # method can call the generated one:
     #
-    # `written` records `{name: slot}` for everything bound here, so a
-    # derived class can tell one of ours from a hand-written method even
-    # when the value cannot carry a marker (`__hash__ = None`, or a slot
-    # wrapper left by a turned-off option).
-    written = {}
+    #     def __init__(self, raw):
+    #         self.__magic_init__(int(raw))
+    #
+    # `generated` collects what gets bound here, and is stored on the
+    # finished class so that a subclass can tell a generated method from
+    # one you wrote.
+    generated = {}
     init_name = (
         ("__init__" if options.init is True else options.init)
         if options.init else None
@@ -689,11 +706,11 @@ def __pre_new__(
     except (_BadSignature, _DuplicateParameter) as error:
         if init_name:
             raise
-        # The class opted out of `__init__`, so the private one is only
-        # a convenience and its absence must not stop the class being
-        # built. It still gets a name of its own: without one, the
-        # documented `self.__magic_init__(...)` would quietly resolve to
-        # a base's, built over a different set of fields.
+        # This class does not want an `__init__`, so being unable to
+        # build one must not stop the class being created. It still gets
+        # its own `__magic_init__`, one that explains the problem if it
+        # is ever called -- without it, `self.__magic_init__(...)` would
+        # quietly find a base class's version and set the wrong fields.
         init_kwargs = None
         namespace.setdefault(
             _MAGIC("init"), _unbuildable_init(clsname, str(error))
@@ -737,37 +754,36 @@ def __pre_new__(
         if not any(issubclass(base, Mapping) for base in bases):
             bases += (Mapping,)
 
-    # The generated methods go in here, after `bases` is final: the
-    # mapping option can add a base, and what an inherited method would
-    # be has to be read from the MRO this class will really have.
+    # The generated methods are installed here, once `bases` is settled:
+    # the `mapping` option can add one, and working out what a class
+    # would otherwise inherit means looking at the bases it really has.
     base_mro = type(_DISCARD, bases, {}).__mro__[1:]
 
     repr_fields = {name: f for name, f in fields.items() if f.repr}
     _install(
-        namespace, written, base_mro, "repr",
+        namespace, generated, base_mro, "repr",
         options.repr if isinstance(options.repr, str) else "__repr__",
         _make_repr(qualname, repr_fields), bool(options.repr),
     )
 
     _install(
-        namespace, written, base_mro, "eq",
+        namespace, generated, base_mro, "eq",
         options.eq if isinstance(options.eq, str) else "__eq__",
         _make_eq(qualname, real_fields), bool(options.eq),
     )
 
     _install(
-        namespace, written, base_mro, "lt",
+        namespace, generated, base_mro, "lt",
         options.order if isinstance(options.order, str) else "__lt__",
         _make_lt(qualname, real_fields), bool(options.order),
     )
 
-    # The identity-hash signal is read straight from the namespace: what
-    # matters is whether `__eq__` ended up as the identity one, whether
-    # that came from `eq=False` or from the slot being renamed. It is
-    # also `__eq__` specifically -- not a renamed name -- that makes
-    # Python drop `__hash__`.
+    # Whether this class compares by identity is read back out of the
+    # namespace: what matters is where `__eq__` ended up, not how it got
+    # there. And it is `__eq__` under that exact name, no other, that
+    # makes Python drop `__hash__`.
     _install_hash(
-        namespace, written, base_mro, options, qualname or clsname,
+        namespace, generated, base_mro, options, qualname or clsname,
         real_fields,
         has_explicit_hash, namespace.get("__eq__") is object.__eq__,
     )
@@ -783,15 +799,14 @@ def __pre_new__(
 
     fnbuilder.insert_fns(clsname, namespace)
 
-    # `__magic_init__` is compiled by now; give it the name it will be
-    # known by -- it shows up in every TypeError and traceback -- and
-    # bind the public name to the same object when `init` asks for it.
+    # `__magic_init__` has been compiled by now. Give it the name people
+    # will see -- it appears in error messages and tracebacks -- and
+    # bind the public name to the same function if the class wants one.
     magic_init = namespace.get(_MAGIC("init"))
     if magic_init is not None:
-        # Recorded here rather than in `_install`, because this one is
-        # written by the builder -- and it has to be recorded, or a
-        # rebuild would not know to drop it.
-        written[_MAGIC("init")] = "init"
+        # Recorded here rather than in `_install`, because `__init__` is
+        # the one method compiled from source instead of being a closure.
+        generated[_MAGIC("init")] = "init"
     if magic_init is not None and init_kwargs is not None:
         magic_init.__name__ = init_name or "__init__"
         magic_init.__qualname__ = (
@@ -799,9 +814,9 @@ def __pre_new__(
         )
         if init_name and init_name not in namespace:
             namespace[init_name] = magic_init
-            written[init_name] = "init"
+            generated[init_name] = "init"
 
-    namespace[_GENERATED] = written
+    namespace[_GENERATED] = generated
 
     # Add attributes to class documentation
     # `python -OO` asks for docstrings to be dropped; a generated one is

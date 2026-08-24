@@ -2290,40 +2290,32 @@ class TestClassLevelHideIfNone:
 
 
 class TestRebuildingIsRejected:
-    """An already-built class cannot be rebuilt.
+    """A class can only be built by Magic once.
 
-    A rebuild copies the class dict, and nothing in a copied method says
-    whether the user wrote it or the first build did. Rather than try to
-    tell them apart, say so: the options belong on the class statement,
-    which needs no rebuild at all.
+    `@magic` on a class that already inherits `Magic`, or a second
+    `@magic` on the same class, would have to rebuild it -- and a
+    rebuilt class cannot tell the methods you wrote from the ones the
+    first build added. Both spellings have the same, simpler
+    alternative: put the options on the class statement.
     """
 
     def test_decorating_a_magic_subclass(self) -> None:
         class P(Magic):
             x: int
 
-        with pytest.raises(TypeError, match="already been built"):
+        with pytest.raises(TypeError, match="already a Magic class"):
             @magic(frozen=True)
             class C(P):
                 y: int = 0
 
     def test_double_decoration(self) -> None:
-        with pytest.raises(TypeError, match="already been built"):
+        with pytest.raises(TypeError, match="already a Magic class"):
             @magic(frozen=True)
             @magic()
             class D:
                 x: int
 
-    def test_the_slots_helper_on_a_magic_class(self) -> None:
-        # locals
-        from bagof.magic.utils import slots as slots_
-
-        with pytest.raises(TypeError, match="already been built"):
-            @slots_("x")
-            class S(Magic):
-                x: int
-
-    def test_the_error_names_the_class_and_the_alternative(self) -> None:
+    def test_the_error_explains_what_to_do(self) -> None:
         class P(Magic):
             x: int
 
@@ -2332,8 +2324,13 @@ class TestRebuildingIsRejected:
             class Chord(P):
                 y: int = 0
 
-        assert "Chord" in str(info.value)
-        assert "class Chord(..., <options>)" in str(info.value)
+        message = str(info.value)
+        # Names the class, both ways of getting here, and the fix --
+        # without mentioning metaclasses or anything else internal.
+        assert "Chord" in message
+        assert "@magic is used twice" in message
+        assert "already inherits from Magic" in message
+        assert "class Chord(Magic, frozen=True)" in message
 
     def test_the_class_statement_does_the_same_job(self) -> None:
         # What the error points at, and it needs no rebuild.
