@@ -18,7 +18,7 @@ import types
 
 import typing_extensions as tx
 
-from .constants import MISSING
+from ._constants import MISSING
 
 
 def _get_origin(type: tx.Any) -> tx.Any:

@@ -3,7 +3,7 @@ from __future__ import annotations
 __all__ = ["Options"]
 import typing_extensions as tx
 
-from .utils import SlotsBase, slots
+from ._utils import SlotsBase, slots
 
 
 @slots(

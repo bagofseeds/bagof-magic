@@ -20,11 +20,12 @@ import typing_extensions as tx
 import bagof.magic as magic
 
 SOURCES = [
+    "_api.py",
     "_arguments.py",
+    "_constants.py",
     "_fields.py",
-    "constants.py",
-    "options.py",
-    "__init__.py",
+    "_magic.py",
+    "_options.py",
 ]
 
 #: Hand-written pages, relative to the repository root.
