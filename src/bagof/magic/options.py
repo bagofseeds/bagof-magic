@@ -20,8 +20,7 @@ from .utils import SlotsBase, slots
     'slots',            # Generate __slots__ and remove __dict__
     'weakref_slot',     # Generate a weakref slot in __slots__
     'factory',          # Use field type as factory if none is provided
-    # What to do with a mutable default, such as `x: list = []`
-    'mutable_default',
+    'mutable_default',  # What to do with a mutable default (x: list = [])
     'convert',          # Use field type as converter if none is provided
     'validate',         # Use field type as validator if none is provided
     'mapping',          # Generate Mapping methods for dict-like behavior
