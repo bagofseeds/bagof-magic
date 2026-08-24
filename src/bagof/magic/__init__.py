@@ -306,6 +306,12 @@ _NEUTRAL = {
 def _written(cls: type) -> dict:
     """The `{name: slot}` this package bound on `cls` itself.
 
+    Not the same question as "is `cls` a Magic class", which `_FIELDS`
+    already answers: a Magic class's `__eq__` may well be the user's,
+    since a method in the class body always wins. Only this says which
+    of the two a given name holds, which is what deciding whether to
+    neutralise it needs.
+
     Recorded per class rather than marked on the function, because a
     generated slot may hold something unmarkable -- `__hash__ = None`,
     or a slot wrapper like `object.__eq__` left by a turned-off option.
@@ -490,7 +496,11 @@ def __pre_new__(
     # class -- copies the class dict, and nothing in a copied method
     # says whether the user wrote it or the first build did. The
     # options belong on the class statement, which needs no rebuild.
-    if _GENERATED in namespace:
+    #
+    # `_FIELDS` is the marker for "this came out of a build": a direct
+    # lookup, so an inherited one does not count, and it is set for
+    # every class including one with no fields at all.
+    if _FIELDS in namespace:
         raise TypeError(
             f"{clsname} has already been built by Magic, so it cannot be "
             f"rebuilt: pass the options to the class statement instead, "
