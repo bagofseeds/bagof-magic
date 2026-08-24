@@ -49,12 +49,6 @@ def _MAGIC(x: str) -> str: return f"__magic_{x}__"
 # option off can tell one of ours from a hand-written one.
 _GENERATED = "__magic_generated__"
 
-# The name of an attribute holding the class-body values the builder
-# consumed -- a `Field()` written as a default value is replaced by the
-# real default, or removed. Kept so that a rebuild can put the class
-# body back the way the user wrote it.
-_DECLARED = "__magic_declared__"
-
 # Name given to the local type variable when generating __init__
 def _TYPE(x: str) -> str: return f"__magic_{x}_type__"
 

@@ -2289,83 +2289,96 @@ class TestClassLevelHideIfNone:
         assert repr(C(5)) == "C(x=5, y=1)"
 
 
-class TestRebuild:
-    """`@magic`, `slots()` and anything else through `rebuild_cls`."""
+class TestRebuildingIsRejected:
+    """An already-built class cannot be rebuilt.
+
+    A rebuild copies the class dict, and nothing in a copied method says
+    whether the user wrote it or the first build did. Rather than try to
+    tell them apart, say so: the options belong on the class statement,
+    which needs no rebuild at all.
+    """
 
     def test_decorating_a_magic_subclass(self) -> None:
-        # Regression: `rebuild_cls` copies the class dict, so the second
-        # build was handed the first build's generated methods and took
-        # them for hand-written ones.
         class P(Magic):
             x: int
 
-        @magic(frozen=True)
-        class C(P):
+        with pytest.raises(TypeError, match="already been built"):
+            @magic(frozen=True)
+            class C(P):
+                y: int = 0
+
+    def test_double_decoration(self) -> None:
+        with pytest.raises(TypeError, match="already been built"):
+            @magic(frozen=True)
+            @magic()
+            class D:
+                x: int
+
+    def test_the_slots_helper_on_a_magic_class(self) -> None:
+        # locals
+        from bagof.magic.utils import slots as slots_
+
+        with pytest.raises(TypeError, match="already been built"):
+            @slots_("x")
+            class S(Magic):
+                x: int
+
+    def test_the_error_names_the_class_and_the_alternative(self) -> None:
+        class P(Magic):
+            x: int
+
+        with pytest.raises(TypeError) as info:
+            @magic(frozen=True)
+            class Chord(P):
+                y: int = 0
+
+        assert "Chord" in str(info.value)
+        assert "class Chord(..., <options>)" in str(info.value)
+
+    def test_the_class_statement_does_the_same_job(self) -> None:
+        # What the error points at, and it needs no rebuild.
+        class P(Magic):
+            x: int
+
+        class C(P, frozen=True):
             y: int = 0
 
-        assert C(1).x == 1
         assert repr(C(1)) == "C(x=1, y=0)"
         with pytest.raises(AttributeError, match="frozen"):
             C(1).y = 2
 
-    def test_double_decoration(self) -> None:
+
+class TestDecoratingAPlainClass:
+    """The decorator's actual job: a class Magic has not touched."""
+
+    def test_a_plain_class(self) -> None:
         @magic(frozen=True)
-        @magic()
-        class D:
-            x: int
+        class Point:
+            x: float
+            y: float
 
-        assert D(1).x == 1
+        assert repr(Point(1.0, 2.0)) == "Point(x=1.0, y=2.0)"
+        with pytest.raises(AttributeError, match="frozen"):
+            Point(1.0, 2.0).x = 3.0
 
-    def test_the_slots_helper(self) -> None:
-        # locals
-        from bagof.magic.utils import slots as slots_
-
-        @slots_("x")
-        class S(Magic):
-            x: int
-
-        assert S(1).x == 1
-
-    def test_a_rebuilt_class_still_records_what_it_bound(self) -> None:
-        # Otherwise a descendant reads the inherited methods as
-        # hand-written and refuses to neutralise them -- silently
-        # reinstating the fall-through this all exists to close.
-        class P(Magic):
-            x: int
-
-        @magic(frozen=True)
-        class C(P):
-            y: int = 0
-
-        class G(C, eq=False):
+    def test_a_plain_subclass_of_a_plain_class(self) -> None:
+        class Base:
             pass
 
-        assert (G(1) == G(1)) is False
-
-    def test_a_field_written_as_a_default_survives_a_rebuild(self) -> None:
-        # The first build consumes a `Field()` used as a default value --
-        # the class attribute becomes the plain default, or goes away --
-        # so a rebuild would otherwise see a field stripped of
-        # everything the `Field()` said.
-        class P(Magic):
+        @magic()
+        class C(Base):
             x: int
 
-        @magic(frozen=True)
-        class Rebuilt(P):
-            y: int = Field(repr=False)
-            z: int = Field(default=5, repr=False)
+        assert C(1).x == 1
+        assert isinstance(C(1), Base)
 
-        class Direct(P, frozen=True):
+    def test_a_field_written_as_a_default(self) -> None:
+        @magic()
+        class C:
+            x: int
             y: int = Field(repr=False)
-            z: int = Field(default=5, repr=False)
 
-        rebuilt = {f.name: f for f in m.fields(Rebuilt)}
-        direct = {f.name: f for f in m.fields(Direct)}
-        assert bool(rebuilt["y"].repr) is bool(direct["y"].repr) is False
-        assert bool(rebuilt["z"].repr) is bool(direct["z"].repr) is False
-        assert rebuilt["z"].default == direct["z"].default == 5
-        assert repr(Rebuilt(1, 2)) == "Rebuilt(x=1)"
-        assert repr(Direct(1, 2)) == "Direct(x=1)"
+        assert repr(C(1, 2)) == "C(x=1)"
 
 
 class TestPrivateInitIsNeverInherited:
