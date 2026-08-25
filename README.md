@@ -181,6 +181,31 @@ class Row(Magic, mapping=True):
 {'name': 'ada', 'age': 36}
 ```
 
+**A handful of functions** that work on any Magic class, or on one of its
+instances — `Point` from the top of this page, say:
+
+```pycon
+>>> from bagof.magic import replace, asdict, astuple
+>>> replace(Point(1.0, 2.0), y=20.0)
+Point(x=1.0, y=20.0)
+>>> asdict(Point(1.0, 2.0))
+{'x': 1.0, 'y': 2.0}
+>>> astuple(Point(1.0, 2.0))
+(1.0, 2.0)
+```
+
+`replace` builds the copy by calling the class again, so conversion,
+validation and the init hooks all run on the new values — which is also why it
+works on a frozen class. The other side of that: a `__post_init__` which works
+one field out from another works it out again, starting from the value it
+already worked out, so `replace` with no changes at all can come back
+different. `asdict` hands the values back exactly as they are stored: it does
+not copy them, and a field holding another object gives you that object rather
+than a dict of its fields.
+
+There is also `fields` and `fields_dict` for the fields themselves, and
+`is_magic` to ask whether a class was built by `Magic` at all.
+
 **Mutable defaults that are not shared.** In a plain class, `x: list = []`
 hands every instance the *same* list. Here each one gets its own:
 

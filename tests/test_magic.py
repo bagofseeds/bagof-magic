@@ -3999,6 +3999,462 @@ class TestGenericClasses:
 
 
 # ======================================================================
+# replace / asdict / astuple / fields_dict / is_magic
+# ======================================================================
+
+
+class TestParityHelpers:
+    """The functions that work on a built class or one of its instances."""
+
+    # -- replace -------------------------------------------------------
+
+    def test_replace_changes_one_value_and_keeps_the_rest(self) -> None:
+        class Point(Magic):
+            x: int
+            y: int
+
+        assert _api.replace(Point(1, 2), y=20) == Point(1, 20)
+
+    def test_replace_works_on_a_frozen_class(self) -> None:
+        class Point(Magic, frozen=True):
+            x: int
+            y: int
+
+        original = Point(1, 2)
+        assert _api.replace(original, x=10) == Point(10, 2)
+        # The original is untouched: a copy was built, not mutated.
+        assert original == Point(1, 2)
+
+    def test_replace_converts_the_new_value(self) -> None:
+        class Conv(Magic, convert=True):
+            n: int
+
+        assert _api.replace(Conv(1), n="5").n == 5
+
+    def test_replace_validates_the_new_value(self) -> None:
+        class Check(Magic, validate=True):
+            n: int
+
+        with pytest.raises(ValidationError):
+            _api.replace(Check(1), n="five")
+
+    def test_replace_runs_post_init(self) -> None:
+        class Doubled(Magic):
+            n: int
+
+            def __post_init__(self) -> None:
+                object.__setattr__(self, "n", self.n * 2)
+
+        assert Doubled(3).n == 6
+        assert _api.replace(Doubled(3), n=5).n == 10
+
+    def test_replace_names_changes_after_the_constructor(self) -> None:
+        class Account(Magic):
+            _id: Annotated[int, Field(alias="id")]
+
+        account = _api.replace(Account(1), id=2)
+        assert account._id == 2
+        with pytest.raises(TypeError, match="no field named '_id'"):
+            _api.replace(Account(1), _id=2)
+
+    def test_replace_rejects_a_name_that_is_not_a_field(self) -> None:
+        class Point(Magic):
+            x: int
+
+        with pytest.raises(TypeError, match="no field named 'z'"):
+            _api.replace(Point(1), z=2)
+
+    def test_replace_rejects_a_field_the_constructor_does_not_take(
+        self
+    ) -> None:
+        class Cached(Magic):
+            x: int
+            seen: NoInit[int] = 0
+
+        with pytest.raises(TypeError, match="does not take 'seen'"):
+            _api.replace(Cached(1), seen=5)
+
+    def test_replace_does_not_carry_over_a_non_init_field(self) -> None:
+        # It is not a constructor argument, so there is no way to hand it
+        # across: the copy gets whatever the class gives it.
+        class Cached(Magic):
+            x: int
+            seen: NoInit[int] = 0
+
+        original = Cached(1)
+        object.__setattr__(original, "seen", 99)
+        assert _api.replace(original, x=2).seen == 0
+
+    def test_replace_rejects_a_class_var(self) -> None:
+        class Counted(Magic):
+            x: int
+            unit: ClassVar[str] = "clicks"
+
+        with pytest.raises(TypeError, match="does not take 'unit'"):
+            _api.replace(Counted(1), unit="taps")
+
+    def test_replace_needs_an_init_var_that_has_no_default(self) -> None:
+        class Shifted(Magic):
+            x: int
+            by: InitVar[int]
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "x", self.x + arguments.by)
+
+        shifted = Shifted(1, by=2)
+        assert shifted.x == 3
+        with pytest.raises(TypeError, match="pass by= as well"):
+            _api.replace(shifted, x=10)
+        assert _api.replace(shifted, x=10, by=5).x == 15
+
+    def test_replace_lets_a_defaulted_init_var_default_again(self) -> None:
+        class Scaled(Magic):
+            size: float
+            scale: InitVar[float] = 1.0
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "size", self.size * arguments.scale)
+
+        scaled = Scaled(2.0, scale=3.0)
+        assert scaled.size == 6.0
+        assert _api.replace(scaled).size == 6.0
+        assert _api.replace(scaled, scale=2.0).size == 12.0
+
+    def test_replace_needs_an_instance(self) -> None:
+        class Point(Magic):
+            x: int
+
+        with pytest.raises(TypeError, match="needs an instance"):
+            _api.replace(Point, x=1)
+        with pytest.raises(TypeError, match="needs an instance"):
+            _api.replace(object())
+
+    # -- asdict --------------------------------------------------------
+
+    def test_asdict_returns_every_field_in_order(self) -> None:
+        class Point(Magic):
+            x: int
+            y: int
+
+        assert _api.asdict(Point(1, 2)) == {"x": 1, "y": 2}
+        assert list(_api.asdict(Point(1, 2))) == ["x", "y"]
+
+    def test_asdict_does_not_recurse_or_copy(self) -> None:
+        class Inner(Magic):
+            n: int
+
+        class Outer(Magic):
+            inner: Inner
+            items: list
+
+        items = [1, 2]
+        outer = Outer(Inner(1), items)
+        assert _api.asdict(outer) == {"inner": Inner(1), "items": [1, 2]}
+        assert isinstance(_api.asdict(outer)["inner"], Inner)
+        assert _api.asdict(outer)["items"] is items
+
+    def test_asdict_keys_by_the_constructor_name(self) -> None:
+        class Account(Magic):
+            _id: Annotated[int, Field(alias="id")]
+            _tag: str
+
+        assert _api.asdict(Account(1, "a")) == {"id": 1, "tag": "a"}
+
+    def test_asdict_skips_pseudo_fields(self) -> None:
+        class Shifted(Magic):
+            x: int
+            unit: ClassVar[str] = "m"
+            by: InitVar[int] = 0
+
+        assert _api.asdict(Shifted(1)) == {"x": 1}
+
+    def test_asdict_covers_more_than_dict(self) -> None:
+        # The dict-like interface is about the fields marked as keys;
+        # asdict is about all of them.
+        class Row(Magic, mapping=True):
+            name: str
+            age: Annotated[int, Field(key=False)]
+
+        row = Row("ada", 36)
+        assert dict(row) == {"name": "ada"}
+        assert _api.asdict(row) == {"name": "ada", "age": 36}
+
+    def test_asdict_needs_an_instance(self) -> None:
+        with pytest.raises(TypeError, match="needs an instance"):
+            _api.asdict(object())
+
+    # -- astuple -------------------------------------------------------
+
+    def test_astuple_returns_the_values_in_field_order(self) -> None:
+        class Point(Magic):
+            x: int
+            y: int
+
+        assert _api.astuple(Point(1, 2)) == (1, 2)
+
+    def test_astuple_follows_the_reverse_option(self) -> None:
+        class Base(Magic, reverse=True):
+            a: int
+
+        class Derived(Base):
+            b: int
+
+        assert [f.name for f in _api.fields(Derived)] == ["b", "a"]
+        assert _api.astuple(Derived(1, 2)) == (1, 2)
+        assert _api.asdict(Derived(1, 2)) == {"b": 1, "a": 2}
+
+    def test_astuple_does_not_recurse_or_copy(self) -> None:
+        class Inner(Magic):
+            n: int
+
+        class Outer(Magic):
+            inner: Inner
+
+        inner = Inner(1)
+        assert _api.astuple(Outer(inner)) == (inner,)
+        assert _api.astuple(Outer(inner))[0] is inner
+
+    def test_astuple_skips_pseudo_fields(self) -> None:
+        class Shifted(Magic):
+            x: int
+            unit: ClassVar[str] = "m"
+            by: InitVar[int] = 0
+
+        assert _api.astuple(Shifted(1)) == (1,)
+
+    def test_astuple_needs_an_instance(self) -> None:
+        with pytest.raises(TypeError, match="needs an instance"):
+            _api.astuple(object())
+
+    # -- fields_dict ---------------------------------------------------
+
+    def test_fields_dict_is_the_mapping_form_of_fields(self) -> None:
+        class Point(Magic):
+            x: int
+            y: int
+
+        found = _api.fields_dict(Point)
+        assert list(found) == ["x", "y"]
+        assert tuple(found.values()) == _api.fields(Point)
+
+    def test_fields_dict_keys_by_the_constructor_name(self) -> None:
+        class Account(Magic):
+            _id: Annotated[int, Field(alias="id")]
+
+        found = _api.fields_dict(Account)
+        assert list(found) == ["id"]
+        assert found["id"].name == "_id"
+
+    def test_fields_dict_skips_pseudo_fields(self) -> None:
+        class Shifted(Magic):
+            x: int
+            unit: ClassVar[str] = "m"
+            by: InitVar[int] = 0
+
+        assert list(_api.fields_dict(Shifted)) == ["x"]
+
+    def test_fields_dict_of_a_plain_class_is_empty(self) -> None:
+        # The same answer `fields` gives, for the same reason: a class
+        # that was never built has no fields to report.
+        class Plain:
+            x: int
+
+        assert _api.fields_dict(Plain) == {}
+
+    def test_two_fields_under_one_public_name_are_rejected(self) -> None:
+        # At most one of the two can be a constructor parameter -- here
+        # `_x` is, under the name `x` -- because the constructor refuses
+        # to be built with two parameters of one name. It says nothing
+        # about `x` itself, which is not a parameter at all.
+        class Clash(Magic):
+            x: NoInit[int] = 1
+            _x: int = 2
+
+        for call in (
+            lambda: _api.fields_dict(Clash),
+            lambda: _api.asdict(Clash(5)),
+            lambda: _api.astuple(Clash(5)),
+            lambda: _api.replace(Clash(5), x=6),
+        ):
+            with pytest.raises(TypeError, match="both known as 'x'"):
+                call()
+
+    def test_an_alias_can_collide_with_a_plain_field(self) -> None:
+        # No underscore in sight: an alias lands on the name another
+        # field already has.
+        class Coll(Magic):
+            a: Annotated[int, Field(alias="b")] = 1
+            b: NoInit[int] = 2
+
+        for call in (
+            lambda: _api.fields_dict(Coll),
+            lambda: _api.asdict(Coll(1)),
+            lambda: _api.astuple(Coll(1)),
+            lambda: _api.replace(Coll(1), b=9),
+        ):
+            with pytest.raises(TypeError, match="both known as 'b'"):
+                call()
+
+    # -- is_magic ------------------------------------------------------
+
+    def test_is_magic_on_every_shape(self) -> None:
+        class Point(Magic):
+            x: int
+
+        class Sub(Point):
+            y: int
+
+        @magic
+        class Decorated:
+            x: int
+
+        class Plain:
+            x: int
+
+        assert _api.is_magic(Point) and _api.is_magic(Point(1))
+        assert _api.is_magic(Sub) and _api.is_magic(Sub(1, 2))
+        assert _api.is_magic(Decorated) and _api.is_magic(Decorated(1))
+        assert _api.is_magic(Magic)
+        assert not _api.is_magic(Plain)
+        assert not _api.is_magic(Plain())
+        assert not _api.is_magic(int)
+        assert not _api.is_magic(3)
+
+    def test_is_magic_is_not_inheritance_from_magic(self) -> None:
+        # A decorated class gets the fields and the generated methods
+        # without gaining `Magic` as a base.
+        @magic
+        class Decorated:
+            x: int
+
+        assert not issubclass(Decorated, Magic)
+        assert _api.is_magic(Decorated)
+
+    # -- how each value is passed back ---------------------------------
+
+    def test_replace_with_a_positional_only_field(self) -> None:
+        # A positional-only parameter cannot be passed by name, so the
+        # copy has to count it off instead.
+        class P(Magic):
+            a: PositionalOnly[int] = 1
+            b: int = 2
+
+        assert _api.replace(P(7, 8), b=9) == P(7, 9)
+        assert _api.replace(P(7, 8), a=0) == P(0, 8)
+
+    def test_replace_on_a_positional_only_class(self) -> None:
+        class PO(Magic, positional_only=True):
+            x: int
+            y: int
+
+        assert _api.replace(PO(1, 2), y=3) == PO(1, 3)
+
+    def test_replace_with_every_kind_of_parameter(self) -> None:
+        class Mix(Magic):
+            a: PositionalOnly[int]
+            b: int
+            c: KwOnly[int] = 3
+
+        mixed = Mix(1, 2, c=4)
+        assert _api.replace(mixed, b=20) == Mix(1, 20, c=4)
+        assert _api.replace(mixed, a=9, c=5) == Mix(9, 2, c=5)
+
+    def test_replace_keeps_positional_only_arguments_lined_up(self) -> None:
+        # A defaulted InitVar sits between two positional-only fields.
+        # Leaving it out would shift every value after it along by one,
+        # so its default is passed in its place.
+        class Mid(Magic, positional_only=True):
+            seed: InitVar[int] = 1
+            value: int = 2
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "value", self.value + arguments.seed)
+
+        assert Mid(7, 8).value == 15
+        assert _api.replace(Mid(7, 8)).value == 16
+
+    def test_replace_hands_an_init_var_factory_back_to_the_class(
+        self
+    ) -> None:
+        class Seeded(Magic):
+            n: int = 0
+            extra: Annotated[list, Field(var=True, init=True, factory=list)]
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "n", self.n + len(arguments.extra))
+
+        assert Seeded(5).n == 5
+        assert _api.replace(Seeded(5), n=7).n == 7
+
+    def test_replace_rejects_a_field_that_is_no_kind_of_argument(
+        self
+    ) -> None:
+        # Neither by position nor by name leaves it out of the
+        # signature altogether, the same as opting out of `__init__`.
+        class Neither(Magic):
+            x: Annotated[int, Field(kw=False, positional=False)] = 5
+
+        assert _api.replace(Neither()) == Neither()
+        with pytest.raises(TypeError, match="does not take 'x'"):
+            _api.replace(Neither(), x=1)
+
+    # -- the sharp edges -----------------------------------------------
+
+    def test_replace_reruns_a_post_init_that_derives_a_field(self) -> None:
+        # The copy starts from the stored value, which the hook has
+        # already worked on, so it works on it again. Documented rather
+        # than papered over: there is no way to tell a derived value
+        # from an original one.
+        class Post(Magic):
+            x: int = 1
+            scale: InitVar[int] = 10
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "x", self.x * arguments.scale)
+
+        post = Post(5)
+        assert post.x == 50
+        assert _api.replace(post).x == 500
+        assert _api.replace(post, scale=1).x == 50
+
+    def test_an_unset_field_is_reported_not_leaked(self) -> None:
+        class Lazy(Magic):
+            a: int = 1
+            b: Annotated[int, Field(init=False, repr=False)]
+
+        lazy = Lazy()
+        assert lazy.a == 1
+        for call in (lambda: _api.asdict(lazy), lambda: _api.astuple(lazy)):
+            with pytest.raises(
+                AttributeError, match="Lazy.b has never been given a value"
+            ):
+                call()
+
+    def test_an_unset_field_is_reported_by_replace_too(self) -> None:
+        # Reachable through a hand-written `__init__` that leaves a
+        # constructor argument unassigned.
+        class Half(Magic, init=False):
+            a: int
+            b: int
+
+            def __init__(self, a: int) -> None:
+                object.__setattr__(self, "a", a)
+
+        with pytest.raises(
+            AttributeError, match="Half.b has never been given a value"
+        ):
+            _api.replace(Half(1), a=2)
+
+    # -- the public face -----------------------------------------------
+
+    def test_every_helper_is_exported(self) -> None:
+        import bagof.magic as package
+
+        for name in ("fields", "fields_dict", "asdict", "astuple",
+                     "replace", "is_magic"):
+            assert name in package.__all__
+            assert getattr(package, name) is getattr(_api, name)
+
 # Quoted annotations
 # ======================================================================
 # This module has no `from __future__ import annotations`, so an

@@ -44,8 +44,8 @@ question of what you want the type hints to *do*.
 | Docstring built from the fields | no | no | no | **yes** |
 | | | | | |
 | **Around the edges** | | | | |
-| Copy with changes | `replace` | `evolve` | `model_copy` | *[not yet][parity]* |
-| Convert to a plain `dict` | `asdict` | `asdict` | `model_dump` | *[not yet][parity]* |
+| Copy with changes | `replace` | `evolve` | `model_copy` | **`replace`** |
+| Convert to a plain `dict` | `asdict` | `asdict` | `model_dump` | **`asdict`**, *without recursing* |
 | JSON schema | no | no | yes | no |
 | Generic classes | yes | yes | yes | **yes**, *[without substitution][generics]* |
 | Runtime dependency | none | `attrs` | `pydantic-core` (compiled) | the `bagof` packages |
@@ -229,7 +229,10 @@ Being honest about the gaps, with links to where they are being worked on:
 
 - **JSON schema and serialisation.** Pydantic's real draw, and `magic` has
   neither yet.
-- **Copy-with-changes and `asdict`.** [In progress][parity].
+- **A recursive `asdict`.** `asdict` hands back the values as they are
+  stored, so a field holding another object gives you that object rather
+  than a dict of its fields. The others walk the whole tree, copying
+  lists and dicts as they go.
 - **Type parameters in a generic class.** `class Box(Magic, Generic[T])`
   works, but a subclass that fills the parameter in — `class IntBox(Box[int])`
   — leaves the field's type as `T`, so conversion and validation have nothing
@@ -245,6 +248,5 @@ Being honest about the gaps, with links to where they are being worked on:
 [dataclasses]: https://docs.python.org/3/library/dataclasses.html
 [attrs]: https://www.attrs.org
 [pydantic]: https://docs.pydantic.dev
-[parity]: https://github.com/bagofseeds/bagof-magic/issues/22
 [generics]: https://github.com/bagofseeds/bagof-magic/issues/50
 [typing]: https://github.com/bagofseeds/bagof-magic/issues/30
