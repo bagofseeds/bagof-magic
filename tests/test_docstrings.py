@@ -26,6 +26,7 @@ SOURCES = [
     "_fields.py",
     "_magic.py",
     "_options.py",
+    "_polymorph.py",
 ]
 
 #: Hand-written pages, relative to the repository root.

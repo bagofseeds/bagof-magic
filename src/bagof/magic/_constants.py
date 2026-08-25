@@ -36,6 +36,28 @@ _PRE_INIT_NAME = "__pre_init__"
 # if it exists.
 _POST_INIT_NAME = "__post_init__"
 
+# The name of an attribute on the class that stores which of its
+# subclasses it builds, for which arguments (see `_polymorph.py`). Only
+# a class that dispatches ever looks for it: choosing a subclass happens
+# in a metaclass `__call__`, and only a class written `polymorphic=...`
+# is given a metaclass that has one.
+_POLYMORPHS = '__magic_polymorphs__'
+
+# The name of an attribute on a *metaclass*, marking one that already
+# dispatches, so deriving another from it is recognised as unnecessary.
+_DISPATCHING = '__magic_dispatching__'
+
+# The name of an attribute on the class that stores the registration the
+# class statement asked for -- the class it registers with, what it
+# stands for, and how strong a claim that is.
+_REGISTRATION = '__magic_registration__'
+
+# The name of an attribute on the class that stores which of its fields
+# were given a default because the class registered for one exact value
+# of them. Inherited: a field pinned by a base is still pinned further
+# down, and `__init__` has to be built the same way there.
+_PINNED = '__magic_pinned__'
+
 # Name we give to classes that are only created temporarily to build the
 # MRO and then discarded.
 _DISCARD = "__magic_discard__"
@@ -74,6 +96,13 @@ _ARGUMENTS = "__magic_arguments__"
 # factory raises, and to the exception it is handed
 _FIELD_ERROR = "__magic_field_error__"
 _ERROR = "__magic_error__"
+
+# Name given, when generating __init__, to the local holding the sentinel
+# that stands for "this argument was not passed". It fills in for a
+# parameter that has no default and follows one that does -- which
+# Python's own syntax cannot spell -- and the body turns it back into
+# the usual "missing a required argument".
+_REQUIRED_ARG = "__magic_required__"
 
 # Name given to the local holding the value of a field that is not a
 # parameter, while it is being built, converted and validated

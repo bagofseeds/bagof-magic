@@ -443,6 +443,182 @@ delay : float, default=0.5
 
 ---
 
+## Building the right subclass
+
+A class can hand back one of its subclasses, chosen from the arguments it was
+given. Say which subclass stands for what, and call the base:
+
+```python
+class Chord(Magic, polymorphic=True):
+    root: str
+    mode: str = "major"
+    variant: str = "natural"
+
+class MinorChord(Chord, on={"mode": "minor"}):
+    def thirds(self) -> int:
+        return 3
+```
+
+```pycon
+>>> Chord(root="A", mode="minor")
+MinorChord(root='A', mode='minor', variant='natural')
+>>> Chord(root="C")
+Chord(root='C', mode='major', variant='natural')
+```
+
+A default counts as a value the caller wrote out, so `Chord(root="C")` and
+`Chord(root="C", mode="major")` always give you the same class.
+
+`MinorChord` does not have to write `mode` out again either: matching on one
+exact value gives the field that value as its default, so the subclass can be
+built on its own with only what is left.
+
+```pycon
+>>> MinorChord(root="A")
+MinorChord(root='A', mode='minor', variant='natural')
+```
+
+### Saying what a subclass stands for
+
+A constraint is a value to equal, a set to belong to, a pattern to match, a
+type to fit, or a question to answer:
+
+| Written as | Matches when |
+| --- | --- |
+| `"minor"` | the argument equals it |
+| `{"minor", "aeolian"}` | the argument is one of them |
+| `re.compile(r"m(in)?")` | the pattern matches the whole argument |
+| `int`, `Literal["a", "b"]` | the argument fits the type |
+| `lambda v: v > 3` | the call answers yes |
+| `...` | the argument was given at all |
+
+A subclass is in the running when *every* constraint it wrote matches.
+
+### Which subclass wins
+
+More conditions beats fewer, and a narrower condition beats a wider one. In
+order: how many fields the subclass constrains, then how precise those
+constraints are (an exact value, then a set, then a pattern, then a type),
+then how far down the hierarchy the subclass sits.
+
+Nothing else is looked at — in particular not the order the subclasses were
+written or imported, which is what makes these systems answer differently on
+a different day. Two subclasses that no rule separates raise
+`AmbiguousPolymorphError` instead, and `priority=` settles it. It is also how
+you spell "when nothing else fits", since a subclass that constrains nothing
+matches everything:
+
+```python
+class Note(Magic, polymorphic=True):
+    name: str
+
+class Sharp(Note, on={"name": lambda name: name.endswith("#")}):
+    pass
+
+class Natural(Note, on={}, priority=-1):
+    pass
+```
+
+```pycon
+>>> Note("C#")
+Sharp(name='C#')
+>>> Note("C")
+Natural(name='C')
+```
+
+### Narrowing more than once
+
+A subclass of a subclass registers with its parent, so each step narrows the
+choice by one:
+
+```python
+class HarmonicMinor(MinorChord, on={"variant": "harmonic"}):
+    pass
+```
+
+```pycon
+>>> Chord(root="A", mode="minor", variant="harmonic")
+HarmonicMinor(root='A', mode='minor', variant='harmonic')
+```
+
+Reaching `HarmonicMinor` means satisfying `MinorChord` first. Ask for
+`variant="harmonic"` without a `mode` and the first step matches nothing, so
+that is where it stops:
+
+```pycon
+>>> Chord(root="A", variant="harmonic")
+Chord(root='A', mode='major', variant='harmonic')
+```
+
+### Registering a class you did not write
+
+```pycon
+>>> class Diminished(Chord):
+...     pass
+...
+>>> Chord.register_polymorph(Diminished, mode="dim")
+<class '...Diminished'>
+>>> Chord(root="B", mode="dim")
+Diminished(root='B', mode='dim', variant='natural')
+```
+
+Registering later only changes what is built later; instances that already
+exist are untouched.
+
+### The two settings
+
+`polymorphic="strict"` refuses to build the class itself, and names the
+subclasses it considered — which is how one in a module nobody imported shows
+up as the missing import it is, rather than as a dispatch that quietly did
+nothing. It says so even when *nothing* has registered yet, since that is the
+same mistake one step earlier. A class that is itself registered somewhere is
+exempt: being built is the whole point of having registered, so a leaf with no
+subclasses of its own is built normally and the setting is safe to inherit
+down a whole hierarchy.
+
+`pin_discriminant` decides what the matched field becomes on the subclass.
+`"pin"`, the default, gives it that value as its default — it stays in the
+repr, in `==`, and in anything that walks the fields. `"classvar"` makes it a
+class attribute instead, stored once rather than once per instance; the
+constructor still accepts it and throws it away, so both
+`Chord(root="A", mode="sus")` and `SusChord(root="A", mode="sus")` keep
+working. `"keep"` leaves the field exactly as the subclass wrote it.
+
+A pinned value is a default the class author wrote — on the class statement
+rather than beside the field, but theirs either way — so it is converted,
+validated and copied per instance exactly as `mode: str = "minor"` would be,
+and `convert_defaults` and `validate_defaults` apply to it like any other
+default.
+
+```python
+class SusChord(Chord, on={"mode": "sus"}, pin_discriminant="classvar"):
+    pass
+```
+
+```pycon
+>>> SusChord.mode
+'sus'
+>>> SusChord(root="B")
+SusChord(root='B', variant='natural')
+```
+
+!!! warning "`classvar` and round trips"
+    Under `"classvar"` the discriminant is no longer one of the instance's
+    fields, so `asdict` leaves it out — and a dictionary without it cannot be
+    dispatched back to the same subclass. Use `"pin"` whenever the values
+    have to survive a round trip through a config file or a database.
+
+Writing the class attribute out yourself instead — `mode: ClassVar[str] =
+"minor"` — is refused, and the error says why: the base passes `mode` on to
+whatever it builds, so a subclass whose constructor does not take it could
+only be reached by a call that then fails. `pin_discriminant="classvar"` is
+that spelling, done in a way that keeps both calls working.
+
+Pickling and copying rebuild through the class an instance already has, so
+neither of them goes back through the dispatch.
+
+---
+
 ## The annotations
 
 Each of these can be used bare (`x: Frozen[int]`) or with a value
@@ -558,6 +734,8 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
 | `mapping` | `False` | behave like a dictionary; a subclass inherits the methods and cannot turn them off |
 | `override` | `False` | apply this class's settings to inherited fields too |
+| `polymorphic` | `False` | build one of this class's subclasses, chosen from the arguments; or `"strict"`, which refuses to build this class when none of them matches |
+| `pin_discriminant` | `"pin"` | what a subclass does with the field it matches on; or `"classvar"`, or `"keep"` |
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
 | `doc` | `True` | add the field table to the class docstring |
 

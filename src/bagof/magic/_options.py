@@ -29,6 +29,8 @@ from ._utils import SlotsBase, slots
     'mapping',          # Generate Mapping methods for dict-like behavior
     # Resolve an inherited field's settings again from this class
     'override',
+    'polymorphic',      # Build a registered subclass instead of this class
+    'pin_discriminant',  # What a subclass does with the field it matches on
     'reverse',          # Use the reverse MRO order when listing fields
     'doc',              # Generate class docstring from field docstrings
 )
@@ -70,6 +72,8 @@ class Options(SlotsBase):
         unresolved_hints="warn",
         mapping=False,
         override=False,
+        polymorphic=False,
+        pin_discriminant="pin",
         reverse=False,
         doc=True,
     )
