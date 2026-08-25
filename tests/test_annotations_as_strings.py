@@ -17,6 +17,7 @@ instead of taking the family down with it.
 from __future__ import annotations
 
 import inspect
+import sys
 import warnings
 from typing import TYPE_CHECKING
 
@@ -238,6 +239,22 @@ class TestUnavailableTypes:
         fields = Config.__magic_fields__
         assert m._doc_type(fields["names"].type) == "list[str]"
         assert m._doc_type(fields["timeout"].type) == "int | None"
+
+    @pytest.mark.skipif(
+        sys.version_info < (3, 9),
+        reason="list[str] cannot be built at runtime before 3.9",
+    )
+    def test_a_parameterised_builtin_generic_keeps_its_parameter(
+        self
+    ) -> None:
+        # Pins `_doc_type` itself, not just a class that carries the type
+        # by name. `list[str]` is a real object here (unlike the test
+        # above, where an unavailable type falls back to text), which is
+        # what exposes the parameter Python versions disagree on: on 3.9
+        # and 3.10, `isinstance(list[str], type)` is True, so a check that
+        # asks "is this a class" before "is this a parameterised generic"
+        # takes the wrong branch and reports the type as plain `list`.
+        assert m._doc_type(list[str]) == "list[str]"
 
     def test_a_class_can_refer_to_itself(self) -> None:
         class Node(Magic):
