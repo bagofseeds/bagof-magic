@@ -79,7 +79,9 @@ def _live_object(obj: griffe.Object) -> object:
         obj = obj.parent
     try:
         live = importlib.import_module(obj.path)
-    except ImportError:
+    # The site documents a package it has installed, so this is a
+    # guard rather than a path anything here takes.
+    except ImportError:  # pragma: no cover
         return None
     for name in reversed(path):
         live = getattr(live, name, None)
@@ -106,7 +108,9 @@ def _docstring(text: str, parent: griffe.Object) -> griffe.Docstring:
                 parser_options=obj.docstring.parser_options,
             )
         obj = obj.parent
-    return griffe.Docstring(text, parent=parent)
+    # Reached only if nothing up the chain has a docstring to take the
+    # parser settings from, which a documented module always does.
+    return griffe.Docstring(text, parent=parent)  # pragma: no cover
 
 
 def _parameters(func: object, fields: dict) -> griffe.Parameters:
@@ -120,7 +124,7 @@ def _parameters(func: object, fields: dict) -> griffe.Parameters:
     """
     try:
         signature = inspect.signature(func)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError):  # pragma: no cover -- it is compiled here
         return griffe.Parameters()
     by_parameter = {field.public_name: field for field in fields.values()}
     parameters = []
@@ -267,7 +271,7 @@ class MagicExtension(griffe.Extension):
         loader: griffe.GriffeLoader,
         **kwargs: object,
     ) -> None:
-        if is_magic is None:
+        if is_magic is None:  # pragma: no cover -- the package is installed
             return
         live = _live_object(cls)
         if not isinstance(live, type) or not is_magic(live):
@@ -291,7 +295,11 @@ class MagicExtension(griffe.Extension):
                 # body -- written by hand, and a hand-written method
                 # always wins over the generated one. What is already
                 # documented is what runs.
-                continue
+                #
+                # A hand-written method usually stops the generated one
+                # being recorded at all, so this is the belt to that
+                # brace rather than a path anything here takes.
+                continue  # pragma: no cover
             # A generated method carries no documentation of its own,
             # apart from `__init__`, which is written with the
             # per-parameter documentation the class already produces for

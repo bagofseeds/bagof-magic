@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import typing_extensions as tx
 
-from bagof.magic import ClassVar, Doc, Factory, Field, Frozen, KwOnly, Magic
+from bagof.magic import (
+    ClassVar, Doc, Factory, Field, Frozen, KwOnly, Magic, PositionalOnly,
+)
 
 
 class Point(Magic, frozen=True, convert=True):
@@ -49,6 +51,21 @@ class Recipe(Magic, validate=True, mapping=True):
     def __repr__(self) -> str:
         """Written by hand, and so left alone."""
         return "a recipe"
+
+
+class Undocumented(Magic):
+    x: int = 0
+
+
+class Fieldless(Magic):
+    """A Magic class with nothing in it."""
+
+
+class Corners(Magic):
+    """Fields that are not ordinary parameters."""
+
+    here: PositionalOnly[int] = 0
+    derived: tx.Annotated[int, Field(init=False, default=7)] = 7
 
 
 class Plain:
@@ -210,3 +227,41 @@ class TestLeftAlone:
             extensions=griffe.load_extensions(str(EXTENSION)),
         )
         assert "Fields" not in module["Magic"].docstring.value
+
+
+class TestCornersOfTheTable:
+    """Rows that only appear for a field that is not a plain parameter."""
+
+    def _row(self, example: griffe.Module, cls: str, field: str) -> str:
+        table = example[cls].docstring.value
+        return next(
+            line for line in table.splitlines()
+            if line.startswith(f"| `{field}`")
+        )
+
+    def test_a_positional_only_field_says_so(
+        self, example: griffe.Module
+    ) -> None:
+        assert "positional-only" in self._row(example, "Corners", "here")
+
+    def test_a_field_with_no_parameter_says_so(
+        self, example: griffe.Module
+    ) -> None:
+        assert "not a parameter" in self._row(example, "Corners", "derived")
+
+    def test_a_class_with_no_docstring_still_gets_the_table(
+        self, example: griffe.Module
+    ) -> None:
+        # There is nothing to append to, so the table becomes the whole
+        # docstring rather than being dropped.
+        docstring = example["Undocumented"].docstring
+        assert docstring is not None
+        assert "**Fields**" in docstring.value
+
+    def test_a_class_with_no_fields_is_left_alone(
+        self, example: griffe.Module
+    ) -> None:
+        # Its constructor takes nothing and its table would be empty, so
+        # the documentation says what it said before.
+        assert "**Fields**" not in example["Fieldless"].docstring.value
+        assert "__init__" not in example["Fieldless"].members
