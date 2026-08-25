@@ -22,9 +22,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 import typing_extensions as tx
+from bagof.converters import ConversionError
 from typing_extensions import Annotated, ForwardRef
 
 import bagof.magic._magic as m
+import bagof.magic._resolve as r
 from bagof.magic import (
     Arguments,
     ClassVar,
@@ -38,6 +40,8 @@ from bagof.magic import (
     Magic,
     NoInit,
     NoRepr,
+    Options,
+    Validate,
 )
 
 if TYPE_CHECKING:
@@ -414,3 +418,201 @@ class TestAnnotationsAreNotRun:
 
         assert caught == []
         assert Service.__magic_fields__["rate"].type == "decimal.Decimal"
+
+
+# ======================================================================
+# Hints that are not types yet
+# ======================================================================
+
+
+class Sizes(Magic, convert=True):
+    """A class written above the name its field is annotated with."""
+
+    width: Pixels = 0  # noqa: F821
+
+
+#: Bound after the class that uses it, the way a name further down a
+#: module is when the class statement runs.
+Pixels = int
+
+
+class TestHintsResolvedOnFirstUse:
+
+    def test_a_class_that_names_itself_is_converted_on_first_use(
+        self
+    ) -> None:
+        class Node(Magic, convert=True):
+            value: int = 0
+            parent: KwOnly[tx.Optional[Node]] = None
+
+        assert Node.__magic_fields__["parent"].type == ForwardRef(
+            "tx.Optional[Node]"
+        )
+        assert Node(1, parent=Node(2)).parent.value == 2
+        # The converter really is the one `Node` asks for: it builds a
+        # `Node` out of what it is given, and refuses what it cannot.
+        assert Node(1, parent=7).parent == Node(7)
+        with pytest.raises(ConversionError):
+            Node(1, parent="deep")
+
+    def test_a_name_bound_later_in_the_module_resolves_on_first_use(
+        self
+    ) -> None:
+        assert Sizes.__magic_fields__["width"].type == "Pixels"
+        assert Sizes("3").width == 3
+
+    def test_a_class_whose_types_are_all_there_is_unchanged(self) -> None:
+        class Config(Magic, convert=True, validate=True):
+            host: str = "localhost"
+            port: int = 8080
+            tags: Factory[list]
+
+        for field in Config.__magic_fields__.values():
+            assert not isinstance(field.converter, r._Deferred)
+            assert not isinstance(field.validator, r._Deferred)
+            assert not isinstance(field.factory, r._Deferred)
+        assert Config("h", "9000") == Config(host="h", port=9000)
+        assert Config().tags == []
+
+    def test_a_default_is_built_from_a_name_bound_later(self) -> None:
+        class Basket(Magic):
+            items: Factory[Pixels]  # noqa: F821
+
+        assert Basket().items == 0
+
+
+class TestHintsThatNeverResolve:
+
+    def test_the_field_carries_on_and_says_so_once(self) -> None:
+        class Server(Magic):
+            port: ConvertTo[decimal.Decimal] = 1
+
+        with pytest.warns(UserWarning, match="is not being converted") as told:
+            first = Server("8")
+        assert len(told) == 1
+        assert first.port == "8"
+
+        # Once for the field, not once per call: a converter on a hot
+        # constructor that said this every time would be unusable.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert Server("9").port == "9"
+            assert Server("10").port == "10"
+        assert caught == []
+
+    def test_the_message_names_the_field_and_the_missing_name(self) -> None:
+        class Server(Magic):
+            port: ConvertTo[decimal.Decimal] = 1
+
+        with pytest.warns(UserWarning) as told:
+            Server("8")
+        assert str(told[0].message).startswith(
+            "Server.port: the name `decimal` is not defined, so `port` is "
+            "not being converted."
+        )
+
+    def test_building_and_assigning_agree(self) -> None:
+        class Server(Magic):
+            port: ConvertTo[decimal.Decimal] = 1
+
+        with pytest.warns(UserWarning):
+            built = Server("8")
+        assigned = Server(1)
+        assigned.port = "8"
+        assert built.port == assigned.port == "8"
+
+    def test_a_value_is_not_validated_and_says_so(self) -> None:
+        class Server(Magic):
+            port: Validate[decimal.Decimal] = 1
+
+        with pytest.warns(UserWarning, match="is not being validated"):
+            assert Server("8").port == "8"
+
+    def test_they_can_be_made_an_error(self) -> None:
+        class Server(Magic, unresolved_hints="raise"):
+            port: ConvertTo[decimal.Decimal] = 1
+
+        with pytest.raises(NameError, match="`port` cannot be converted"):
+            Server("8")
+        # Settled once, and it stays settled.
+        with pytest.raises(NameError):
+            Server("9")
+
+    def test_they_can_be_passed_over_in_silence(self) -> None:
+        class Server(Magic, unresolved_hints="ignore"):
+            port: Validate[decimal.Decimal] = 1
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert Server("8").port == "8"
+        assert caught == []
+
+    def test_a_default_that_cannot_be_built_says_so_when_it_is_needed(
+        self
+    ) -> None:
+        class Basket(Magic):
+            items: Factory[decimal.Decimal]
+
+        with pytest.raises(NameError, match="no default value can be built"):
+            Basket()
+        # Nothing is wrong with a value that was passed in.
+        assert Basket(3).items == 3
+
+    def test_a_default_that_cannot_be_built_raises_whatever_is_asked(
+        self
+    ) -> None:
+        # There is no value to hand back in place of one that cannot be
+        # built, so "ignore" has nothing quieter to offer.
+        class Basket(Magic, unresolved_hints="ignore"):
+            items: Factory[decimal.Decimal]
+
+        with pytest.raises(NameError, match="`items`"):
+            Basket()
+
+    def test_an_unknown_setting_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="unresolved_hints must be"):
+
+            class Server(Magic, unresolved_hints="shrug"):
+                port: int = 1
+
+    def test_a_hint_that_is_a_call_is_still_never_called(self) -> None:
+        _side_effects.clear()
+
+        class Reckless(Magic, convert=True):
+            x: _record() = 1
+
+        with pytest.warns(UserWarning, match="could not be worked out"):
+            assert Reckless("3").x == "3"
+        assert _side_effects == []
+
+    def test_a_hint_that_is_not_an_expression_is_reported(self) -> None:
+        Odd = type(Magic)(
+            "Odd",
+            (Magic,),
+            {"__annotations__": {"x": "1 +"}, "x": 1},
+            convert=True,
+        )
+        with pytest.warns(UserWarning, match=r"`1 \+` could not be worked"):
+            assert Odd("3").x == "3"
+
+    def test_a_hint_whose_names_are_all_defined_is_reported_as_written(
+        self
+    ) -> None:
+        # Every name in it is there; what it spells is not, so there is
+        # no missing name to point at.
+        class Sized(Magic, convert=True):
+            width: inspect.NotAThing = 1
+
+        with pytest.warns(
+            UserWarning, match="`inspect.NotAThing` could not be worked out"
+        ):
+            assert Sized("3").width == "3"
+
+    def test_a_field_with_nowhere_to_look_still_names_itself(self) -> None:
+        # A field resolved on its own, outside a class statement, has no
+        # module to look a name up in and no class to be named after.
+        field = Field(name="port", type="NeverDefined", converter=True)
+        field.setdefault(Options.make_default())
+
+        with pytest.warns(UserWarning, match="^port: the name `NeverDefined`"):
+            assert field.converter("8") == "8"
