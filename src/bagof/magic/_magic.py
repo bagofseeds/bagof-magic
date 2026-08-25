@@ -35,11 +35,13 @@ Parameters
 init : bool | str, default=True
     Generate `__init__` method
 repr : bool | str, default=True
-    Generate `__repr__` method
+    Generate `__repr__` method; a field holding no value is left out
 eq : bool | str, default=True
-    Generate `__eq__` method
+    Generate `__eq__` method; two objects are equal when the same
+    fields are holding values and those values match
 order : bool | str, default=False
-    Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods
+    Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods; a field
+    holding no value stops the comparison
 hash : bool | str, default=None
     Generate `__hash__` method; if `None`, decide automatically
 unsafe_hash : bool, default=False
@@ -173,7 +175,7 @@ from ._constants import (
     _HasFactory,
 )
 from ._fields import *  # noqa: F401, F403
-from ._fields import Field
+from ._fields import Field, _stored
 from ._fields import __all__ as __all_fields__
 from ._options import *  # noqa: F401, F403
 from ._options import Options
@@ -1659,7 +1661,11 @@ def _hash_add(qualname: str, fields: dict) -> int:
     ]
 
     def __hash__(self: Magic) -> int:
-        values = tuple(getattr(self, f.name) for f in fields)
+        # What is hashed is what `__eq__` compares: for each field,
+        # whether it is holding a value and the value it holds. Two
+        # objects that are equal hash together, a field holding nothing
+        # included.
+        values = tuple(_stored(self, f) for f in fields)
         return hash(values)
 
     __hash__.__qualname__ = f"{qualname}.__hash__"
@@ -1940,18 +1946,44 @@ def _make_init(
 
 
 def _make_repr(qualname: str, fields: dict[str, Field]) -> tx.Callable:
+    """Build `__repr__`, over the fields that are shown.
+
+    A field is shown while it is holding a value, so which fields an
+    instance shows is a question about that instance rather than about
+    its class. A field holds nothing when the constructor does not take
+    it and it has no default -- one like that is only ever set by hand
+    -- and a field can also ask to be left out for as long as its value
+    is `None`.
+    """
 
     def __repr__(self: Magic) -> str:
-        params = [
-            f"{field.public_name}={getattr(self, field.name)!r}"
-            for field in fields.values()
-            if field.repr(getattr(self, field.name))
-        ]
+        params = []
+        for field in fields.values():
+            has_value, value = _stored(self, field)
+            if has_value and field.repr(value):
+                params.append(f"{field.public_name}={value!r}")
         params = ", ".join(params)
         return f"{self.__class__.__name__}({params})"
 
     __repr__.__qualname__ = f"{qualname}.__repr__"
     return __repr__
+
+
+def _matching(
+    this: tx.Tuple[bool, tx.Any], that: tx.Tuple[bool, tx.Any]
+) -> tx.Any:
+    """Whether two fields hold the same thing, or neither holds one.
+
+    Both halves of what `_stored` reports are compared, not just the
+    value. Two objects that differ in *which* of their fields have been
+    given a value are different objects, even where the values they do
+    have match -- otherwise `a == b` would be true while reading `a.x`
+    raises and reading `b.x` does not.
+    """
+    (this_has_value, this_value), (that_has_value, that_value) = this, that
+    if this_has_value != that_has_value:
+        return False
+    return not this_has_value or this_value == that_value
 
 
 def _make_eq(qualname: str, fields: dict[str, Field]) -> tx.Callable:
@@ -1961,7 +1993,7 @@ def _make_eq(qualname: str, fields: dict[str, Field]) -> tx.Callable:
             return True
         if other.__class__ is self.__class__:
             return all(
-                getattr(self, field.name) == getattr(other, field.name)
+                _matching(_stored(self, field), _stored(other, field))
                 for field in fields.values()
                 if field.eq
             )
@@ -1979,20 +2011,35 @@ def _make_order(
     # that take part in the ordering, as a tuple.
     name, compare = _ORDER_METHODS[slot]
 
+    def ordered_values(obj: Magic) -> tx.Tuple:
+        """The values being compared, in field order.
+
+        A field holding no value stops the comparison, with a message
+        naming it. Skipping it would move every field after it up a
+        position, so one position would stand for a different field
+        from one object to the next and the answer would mean nothing.
+        """
+        values = []
+        for field in fields.values():
+            if not field.order:
+                continue
+            has_value, value = _stored(obj, field)
+            if not has_value:
+                raise AttributeError(
+                    f"{type(obj).__name__}.{field.name} has never been "
+                    f"given a value, so these two cannot be ordered: a "
+                    f"comparison reads every field that takes part in the "
+                    f"ordering, and this one has nothing to read. Give the "
+                    f"field a default, set it in __post_init__, or leave "
+                    f"it out of the ordering with NoOrder."
+                )
+            values.append(value)
+        return tuple(values)
+
     def method(self: Magic, other: tx.Any) -> tx.Any:
         if other.__class__ is not self.__class__:
             return NotImplemented
-        this_value = tuple(
-            getattr(self, field.name)
-            for field in fields.values()
-            if field.order
-        )
-        other_value = tuple(
-            getattr(other, field.name)
-            for field in fields.values()
-            if field.order
-        )
-        return compare(this_value, other_value)
+        return compare(ordered_values(self), ordered_values(other))
 
     method.__name__ = name
     method.__qualname__ = f"{qualname}.{name}"
@@ -2150,13 +2197,6 @@ def _make_mapping(
     as its value is `None`.
     """
 
-    def _stored(self: Magic, field: Field) -> tx.Tuple[bool, tx.Any]:
-        """The value a field is holding, and whether it holds one."""
-        try:
-            return True, getattr(self, field.name)
-        except AttributeError:
-            return False, None
-
     def _is_key(self: Magic, field: Field) -> bool:
         """Whether a field is one of the keys as things stand."""
         has_value, value = _stored(self, field)
@@ -2290,14 +2330,20 @@ class MetaMagic(ABCMeta):
     init : bool | str, default=True
         Generate `__init__` method.
     repr : bool | str, default=True
-        Generate `__repr__` method.
+        Generate `__repr__` method. A field is shown while it is
+        holding a value, so a field the constructor does not take, with
+        no default, is left out until something sets it.
     eq : bool | str, default=True
-        Generate `__eq__` method.
+        Generate `__eq__` method. Two objects are equal when the same
+        fields are holding values and those values match: one that has
+        been given a value is never equal to one that is still without.
     order : bool | str, default=False
         Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
         Given a name, generate the `<` comparison under that name; the
         class is then left with none of the four comparison operators,
-        including any it would otherwise inherit.
+        including any it would otherwise inherit. A field holding no
+        value stops the comparison and says so, since an order over
+        part of an object is not an order over the object.
     hash : bool | str, default=None
         Generate `__hash__` method.
         If `None`, decide automatically.
@@ -2376,14 +2422,20 @@ class Magic(metaclass=MetaMagic):
     init : bool | str, default=True
         Generate `__init__` method.
     repr : bool | str, default=True
-        Generate `__repr__` method.
+        Generate `__repr__` method. A field is shown while it is
+        holding a value, so a field the constructor does not take, with
+        no default, is left out until something sets it.
     eq : bool | str, default=True
-        Generate `__eq__` method.
+        Generate `__eq__` method. Two objects are equal when the same
+        fields are holding values and those values match: one that has
+        been given a value is never equal to one that is still without.
     order : bool | str, default=False
         Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
         Given a name, generate the `<` comparison under that name; the
         class is then left with none of the four comparison operators,
-        including any it would otherwise inherit.
+        including any it would otherwise inherit. A field holding no
+        value stops the comparison and says so, since an order over
+        part of an object is not an order over the object.
     hash : bool | str, default=None
         Generate `__hash__` method.
         If `None`, decide automatically.

@@ -667,6 +667,60 @@ class TestRepr:
         p = Point(1, 2)
         assert "Point" not in repr(p) or "x=" not in repr(p)
 
+    # -- a field is shown only while it is holding a value -------------
+
+    def test_repr_leaves_out_a_field_with_no_value(self) -> None:
+        class Note(Magic):
+            text: str
+            pinned: NoInit[bool]
+
+        assert repr(Note("hello")) == "Note(text='hello')"
+
+    def test_a_repr_of_nothing_but_unset_fields_still_reads(self) -> None:
+        class Blank(Magic):
+            here: NoInit[int]
+            there: NoInit[int]
+
+        assert repr(Blank()) == "Blank()"
+
+    def test_a_field_given_a_value_joins_the_repr(self) -> None:
+        class Note(Magic):
+            text: str
+            pinned: NoInit[bool]
+
+        note = Note("hello")
+        note.pinned = True
+        assert repr(note) == "Note(text='hello', pinned=True)"
+
+    def test_a_field_filled_in_by_post_init_is_shown(self) -> None:
+        class Draft(Magic):
+            title: str
+            slug: NoInit[str]
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                self.slug = self.title.lower()
+
+        assert repr(Draft("Ada")) == "Draft(title='Ada', slug='ada')"
+
+    def test_hidden_while_none_and_holding_nothing_are_both_left_out(
+        self
+    ) -> None:
+        class C(Magic):
+            x: Annotated[Optional[int], Field(repr=HIDE_IF_NONE)]
+            y: NoInit[int]
+
+        c = C(None)
+        assert repr(c) == "C()"
+        c.x, c.y = 1, 2
+        assert repr(c) == "C(x=1, y=2)"
+
+    def test_a_class_whose_fields_all_have_values_is_unchanged(self) -> None:
+        class Point(Magic):
+            x: int
+            y: int = 1
+
+        assert repr(Point(1)) == "Point(x=1, y=1)"
+
 
 # ======================================================================
 # Eq / Order
@@ -817,6 +871,81 @@ class TestEqOrder:
             with pytest.raises(TypeError, match="not supported between"):
                 compare(Child(1, 0), Child(2, 0))
 
+    # -- a field with no value is counted, not skipped -----------------
+
+    def test_two_objects_with_the_same_field_unset_are_equal(self) -> None:
+        class Note(Magic):
+            text: str
+            pinned: NoInit[bool]
+
+        assert Note("hello") == Note("hello")
+        assert Note("hello") != Note("goodbye")
+
+    def test_a_field_with_a_value_differs_from_one_without(self) -> None:
+        class Note(Magic):
+            text: str
+            pinned: NoInit[bool]
+
+        filled, empty = Note("hello"), Note("hello")
+        filled.pinned = True
+        assert filled != empty
+        assert empty != filled
+        # Both holding the same value, they are equal again.
+        empty.pinned = True
+        assert filled == empty
+
+    def test_a_field_holding_none_is_not_a_field_holding_nothing(
+        self
+    ) -> None:
+        class Note(Magic):
+            pinned: NoInit[Optional[bool]]
+
+        holding_none = Note()
+        holding_none.pinned = None
+        assert holding_none != Note()
+
+    def test_a_field_left_out_of_eq_need_not_have_a_value(self) -> None:
+        class Note(Magic):
+            text: str
+            pinned: Annotated[bool, NoInit(), NoEq()]
+
+        filled, empty = Note("hello"), Note("hello")
+        filled.pinned = True
+        assert filled == empty
+
+    def test_ordering_says_which_field_has_no_value(self) -> None:
+        class Note(Magic, order=True):
+            text: str
+            weight: NoInit[int]
+
+        with pytest.raises(AttributeError, match="Note.weight has never"):
+            operator.lt(Note("a"), Note("b"))
+
+    def test_every_comparison_refuses_a_field_with_no_value(self) -> None:
+        class Note(Magic, order=True):
+            weight: NoInit[int]
+
+        for compare in (operator.lt, operator.le, operator.gt, operator.ge):
+            with pytest.raises(AttributeError, match="cannot be ordered"):
+                compare(Note(), Note())
+
+    def test_ordering_reads_the_other_object_as_well(self) -> None:
+        class Note(Magic, order=True):
+            weight: NoInit[int]
+
+        filled = Note()
+        filled.weight = 1
+        with pytest.raises(AttributeError, match="Note.weight has never"):
+            operator.lt(filled, Note())
+
+    def test_a_field_out_of_the_ordering_need_not_have_a_value(self) -> None:
+        class Note(Magic, order=True):
+            text: str
+            pinned: Annotated[bool, NoInit(), NoOrder()]
+
+        assert Note("a") < Note("b")
+        assert not Note("b") < Note("a")
+
     def test_order_requires_eq(self) -> None:
         with pytest.raises(ValueError, match="eq must be true"):
             class Bad(Magic):
@@ -864,6 +993,30 @@ class TestHash:
 
         s = {Point(1, 2), Point(1, 2), Point(3, 4)}
         assert len(s) == 2
+
+    # -- a field with no value hashes as one --------------------------
+
+    def test_hash_agrees_with_eq_about_a_field_with_no_value(self) -> None:
+        class Note(Magic, frozen=True, eq=True):
+            text: str
+            pinned: NoInit[bool]
+
+        assert Note("a") == Note("a")
+        assert hash(Note("a")) == hash(Note("a"))
+        assert len({Note("a"), Note("a")}) == 1
+
+    def test_hash_tells_a_field_with_a_value_from_one_without(self) -> None:
+        # Mutable, so that one of the two can be given a value: on a
+        # frozen class the field could never be set in the first place.
+        class Note(Magic, unsafe_hash=True):
+            text: str
+            pinned: NoInit[bool]
+
+        empty, filled = Note("a"), Note("a")
+        filled.pinned = True
+        assert filled != empty
+        assert hash(filled) != hash(empty)
+        assert len({empty, filled}) == 2
 
 
 # ======================================================================
