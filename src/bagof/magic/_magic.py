@@ -65,7 +65,8 @@ convert : bool, default=False
 validate : bool, default=False
     Use field type as validator if none is provided
 mapping : bool, default=False
-    Implement the `Mapping` protocol; a subclass cannot turn it off
+    Implement the `Mapping` protocol; a subclass cannot turn it off.
+    Only a field that is holding a value is a key
 reverse : bool, default=False
     Use the reverse MRO order to determine field order
 doc : bool | str, default=True
@@ -141,6 +142,7 @@ from collections import abc as _abc
 from functools import partial
 from inspect import Parameter, signature
 from textwrap import dedent, indent
+from types import MemberDescriptorType
 
 # externals
 import typing_extensions as tx
@@ -2136,42 +2138,102 @@ def _make_slots(
 def _make_mapping(
     qualname: str, fields: dict[str, Field]
 ) -> tx.Mapping[str, tx.Callable]:
+    """The dict-like methods, over the fields that carry a key.
+
+    A key is there while the field behind it is holding a value, so
+    which keys an instance has is a question about that instance rather
+    than about its class. A field holds nothing when the constructor
+    does not take it and it has no default -- one like that is only ever
+    set by hand -- and a field can also ask to be left out for as long
+    as its value is `None`.
+    """
+
+    def _stored(self: Magic, field: Field) -> tx.Tuple[bool, tx.Any]:
+        """The value a field is holding, and whether it holds one."""
+        try:
+            return True, getattr(self, field.name)
+        except AttributeError:
+            return False, None
+
+    def _is_key(self: Magic, field: Field) -> bool:
+        """Whether a field is one of the keys as things stand."""
+        has_value, value = _stored(self, field)
+        return has_value and bool(field.key(value))
+
+    def _value(self: Magic, key: str, field: Field) -> tx.Any:
+        """The value behind a key, or a `KeyError` saying why there is none.
+
+        A field holding nothing gets a written message: it is a real
+        field of a usable object, so "no such key" on its own reads as
+        if the name had been misspelt.
+        """
+        has_value, value = _stored(self, field)
+        if not has_value:
+            raise KeyError(
+                f"{type(self).__name__}.{field.name} has no value, so "
+                f"{key!r} is not one of the keys. Give the field a "
+                f"default, or set it in __post_init__."
+            )
+        if not field.key(value):
+            raise KeyError(key)
+        return value
 
     def __getitem__(self: Magic, key: str) -> tx.Any:
+        """The value behind a key.
+
+        Raises `KeyError` if the class has no such key, or if the field
+        behind it is holding no value.
+        """
         field = fields.get(key)
-        if field:
-            value = getattr(self, field.name)
-            if not field.key(value):
-                raise KeyError(key)
-            return value
-        raise KeyError(key)
+        if field is None:
+            raise KeyError(key)
+        return _value(self, key, field)
 
     def __setitem__(self: Magic, key: str, value: tx.Any) -> None:
+        """Give a key its value, adding it if it had none."""
         field = fields.get(key)
-        if field:
-            setattr(self, field.name, value)
-        else:
+        if field is None:
             raise KeyError(key)
+        setattr(self, field.name, value)
 
     def __delitem__(self: Magic, key: str) -> None:
+        """Take a key's value away, so the key goes with it."""
         field = fields.get(key)
-        if field:
-            delattr(self, field.name)
-        else:
+        if field is None:
             raise KeyError(key)
+        # Turn down a key that is not there before touching anything.
+        _value(self, key, field)
+        # A default sits on the class itself, where deleting cannot
+        # reach it: the field would go straight back to that value and
+        # the key would still be there afterwards. Under `slots` the
+        # class carries a slot rather than a value, and the field is
+        # left holding nothing, which is what deleting a key means.
+        standing_by = getattr(type(self), field.name, MISSING)
+        if standing_by is not MISSING and not isinstance(
+            standing_by, MemberDescriptorType
+        ):
+            raise TypeError(
+                f"{type(self).__name__}.{field.name} has a default, so "
+                f"deleting {key!r} would only put the default back and "
+                f"leave the key where it is. Give it another value "
+                f"instead."
+            )
+        delattr(self, field.name)
 
     def __iter__(self: Magic) -> tx.Iterator[str]:
+        """The keys that have a value, in field order."""
         for key, field in fields.items():
-            if field:
-                if not field.key(getattr(self, field.name)):
-                    continue
+            if _is_key(self, field):
                 yield key
 
     def __len__(self: Magic) -> int:
-        return sum(
-            field.key(getattr(self, field.name))
-            for field in fields.values()
-        )
+        """How many keys have a value.
+
+        Only the fields holding a value are counted, so two instances of
+        the same class can be of different lengths, and one instance's
+        length can change as it is filled in.
+        """
+        return sum(_is_key(self, field) for field in fields.values())
 
     __getitem__.__qualname__ = f"{qualname}.__getitem__"
     __setitem__.__qualname__ = f"{qualname}.__setitem__"
@@ -2263,7 +2325,10 @@ class MetaMagic(ABCMeta):
         Use field type as validator if none is provided.
     mapping : bool, default=False
         Implement the `Mapping` protocol. A subclass cannot turn it off
-        again.
+        again. Only a field that is holding a value is a key, so which
+        keys an instance has is a question about that instance: the
+        length can differ between two instances of one class, and can
+        change over an instance's life.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
         This only affects the relative order of the fields of one class
@@ -2346,7 +2411,10 @@ class Magic(metaclass=MetaMagic):
         Use field type as validator if none is provided.
     mapping : bool, default=False
         Implement the `Mapping` protocol. A subclass cannot turn it off
-        again.
+        again. Only a field that is holding a value is a key, so which
+        keys an instance has is a question about that instance: the
+        length can differ between two instances of one class, and can
+        change over an instance's life.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
         This only affects the relative order of the fields of one class

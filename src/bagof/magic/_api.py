@@ -61,19 +61,29 @@ def _is_parameter(field: Field) -> bool:
     return bool(field.init and (field.positional or field.kw))
 
 
+def _stored(obj: tx.Any, field: Field) -> tx.Tuple[bool, tx.Any]:
+    """The value a field holds, and whether it holds one at all.
+
+    A field that is not a constructor argument and has no default is
+    only ever set by hand, so an object can be perfectly usable and
+    still have nothing under this name.
+    """
+    try:
+        return True, getattr(obj, field.name)
+    except AttributeError:
+        return False, None
+
+
 def _value(obj: tx.Any, field: Field, caller: str) -> tx.Any:
     """The value a field holds, or a written error if it holds none."""
-    try:
-        return getattr(obj, field.name)
-    except AttributeError:
-        # A field that is not a constructor argument and has no default
-        # is only ever set by hand, so an object can be perfectly usable
-        # and still have nothing under this name.
+    has_value, value = _stored(obj, field)
+    if not has_value:
         raise AttributeError(
             f"{type(obj).__name__}.{field.name} has never been given a "
             f"value, so {caller}() has nothing to report for it. Give the "
             f"field a default, or set it in __post_init__."
-        ) from None
+        )
+    return value
 
 
 def _concrete(obj: tx.Any, caller: str) -> tx.Dict[str, Field]:
@@ -161,15 +171,8 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
     Returns
     -------
     values : dict[str, any]
-        Every concrete field (not `ClassVar` or `InitVar`), in field
-        order.
-
-    Raises
-    ------
-    AttributeError
-        If a field has never been given a value. A field the
-        constructor does not take, with no default, is only set if
-        something sets it by hand.
+        Every concrete field (not `ClassVar` or `InitVar`) that is
+        holding a value, in field order.
 
     !!! example
         ```pycon
@@ -180,6 +183,29 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
         >>> asdict(Point(1, 2))
         {'x': 1, 'y': 2}
         ```
+
+    !!! note "A field with no value is left out"
+        A field the constructor does not take, and that has no default,
+        holds nothing until something sets it -- so it is simply absent,
+        the way an optional key is absent from a dict. It comes back as
+        soon as it is given a value:
+
+        ```pycon
+        >>> class Draft(Magic):
+        ...     title: str
+        ...     slug: NoInit[str]
+        ...
+        >>> draft = Draft("Ada")
+        >>> asdict(draft)
+        {'title': 'Ada'}
+        >>> draft.slug = "ada"
+        >>> asdict(draft)
+        {'title': 'Ada', 'slug': 'ada'}
+        ```
+
+        `astuple` is the one that insists instead: a key says which
+        field it belongs to, a position does not, so a tuple is only
+        readable while every field is in it.
 
     !!! example "A nested object is left alone"
         ```pycon
@@ -198,7 +224,8 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
     !!! note "Not the same as `dict(obj)`"
         A class written with `mapping=True` can be passed to `dict`
         directly, and that covers the fields marked as keys, under the
-        key names they were given. `asdict` always covers every field.
+        key names they were given. `asdict` covers every field. The two
+        agree about a field with no value: neither shows one.
 
         ```pycon
         >>> class Row(Magic, mapping=True):
@@ -211,10 +238,12 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
         {'name': 'ada', 'age': 36}
         ```
     """
-    return {
-        name: _value(obj, field, "asdict")
-        for name, field in _concrete(obj, "asdict").items()
-    }
+    found = {}
+    for name, field in _concrete(obj, "asdict").items():
+        has_value, value = _stored(obj, field)
+        if has_value:
+            found[name] = value
+    return found
 
 
 def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
@@ -238,7 +267,9 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
     Raises
     ------
     AttributeError
-        If a field has never been given a value, as for `asdict`.
+        If a field has never been given a value. A field the
+        constructor does not take, with no default, is only set if
+        something sets it by hand.
 
     !!! example
         ```pycon
@@ -249,10 +280,19 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
         >>> astuple(Point(1, 2))
         (1, 2)
         ```
+
+    !!! note "A field with no value is an error here"
+        `asdict` and `dict(obj)` leave such a field out; this one says
+        so. A position only means anything while every field is in the
+        tuple: drop one and everything after it moves up, so the same
+        index would stand for a different field from one instance to
+        the next, with nothing in the tuple to show it.
     """
     # The same fields `asdict` reports, worked out the same way: a class
     # whose fields cannot be told apart by name is refused by both,
-    # rather than answering a tuple here and an error there.
+    # rather than answering a tuple here and an error there. A field
+    # holding no value is where the two part: a caller can see that a
+    # key is missing, but a short tuple looks like any other.
     return tuple(
         _value(obj, field, "astuple")
         for field in _concrete(obj, "astuple").values()
