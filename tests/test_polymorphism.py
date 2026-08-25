@@ -929,6 +929,20 @@ class TestPinnedValuesAsDefaults:
 
         assert One().n == "1"
 
+    def test_a_pinned_value_replaces_a_factory_default(self) -> None:
+        # The field had a default built from its type; the pin gives it
+        # one value instead, and the factory has to stop applying or the
+        # pinned value never reaches the instance.
+        class Tune(Magic, polymorphic=True, factory=True):
+            mode: str
+            n: int = 0
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        assert Minor().mode == "minor"
+        assert isinstance(Tune(mode="minor"), Minor)
+
     def test_a_pinned_mutable_value_is_still_not_shared(self) -> None:
         # Promoting it to a factory and skipping its conversion are two
         # different things happening to the same default.

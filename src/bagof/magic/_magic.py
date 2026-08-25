@@ -374,24 +374,6 @@ def _override_attrs(override: tx.Any, clsname: str) -> tx.Tuple[str, ...]:
     return tuple(attrs)
 
 
-def _wrap_show_attrs(field: Field) -> None:
-    # `repr` and `key` each answer two questions -- whether the field
-    # takes part, and under which name -- so once resolved they are held
-    # as a `SHOW_ATTR` rather than as a plain value.
-    # (This is hacky and ugly -- should be reworked)
-    if field.key is HIDE_IF_NONE:
-        field.key = HIDE_IF_NONE(field.public_name)
-    if not isinstance(field.key, SHOW_ATTR):
-        field.key = SHOW_ATTR(field.key)
-
-    if field.repr is HIDE_IF_NONE:
-        if field.var:
-            field.repr = SHOW_ATTR(False)
-        else:
-            field.repr = HIDE_IF_NONE(field.public_name)
-    if not isinstance(field.repr, SHOW_ATTR):
-        field.repr = SHOW_ATTR(field.repr)
-
 def _add_fields(
     fields: dict[str, Field],
     new_fields: tx.Iterable[Field],
@@ -1199,7 +1181,11 @@ def _pin_discriminants(
         if field.name in declared:
             continue
         field.default = spec.value
-        field.factory = False
+        # The pin is the value, so a default the field would otherwise
+        # have built for itself no longer applies -- and nothing is left
+        # behind to build it with.
+        field.build = False
+        field.factory = None
         if action == "classvar":
             field.var = True
             field.repr = SHOW_ATTR(False)
@@ -1246,7 +1232,7 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     if (
         action == "allow" or
         default is MISSING or
-        field.factory or
+        field.build or
         (field.var and not field.init) or
         not _is_mutable(default)
     ):
@@ -1281,7 +1267,7 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     # written as `lambda: copy(default)` would give.
     # Recorded as the field's own, so that a subclass resolving the
     # field again against its own settings does not undo it.
-    field._redeclare(factory=partial(copy.copy, default))
+    field._redeclare(build=True, factory=partial(copy.copy, default))
     field.default = MISSING
     return True
 
@@ -1614,7 +1600,6 @@ def __pre_new__(
     if override:
         for field in fields.values():
             field._reresolve(options, override, hints)
-            _wrap_show_attrs(field)
     # Annotations that are defined in this class (not in base
     # classes).  If __annotations__ isn't present, then this class
     # adds no new   We use this to compute fields that are
@@ -1682,8 +1667,6 @@ def __pre_new__(
         if options.slots and not field.var:
             namespace.pop(field.name, None)
 
-        _wrap_show_attrs(field)
-
         cls_fields.append(field)
 
     # Insert fields from this class, in correct order.
@@ -1728,7 +1711,7 @@ def __pre_new__(
     pinned = {
         name for name in pinned
         if name in fields
-        and (fields[name].default is not MISSING or fields[name].factory)
+        and (fields[name].default is not MISSING or fields[name].build)
     }
     if pinned:
         namespace[_PINNED] = frozenset(pinned)
@@ -2251,7 +2234,7 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
     name = name or field.public_name
 
     default = field.default
-    if field.factory:
+    if field.build:
         default = _HasFactory(field.factory)
 
     doctype = field.type
@@ -2324,7 +2307,7 @@ def _make_init(
         else:
             # Neither by position nor by name: no parameter at all.
             if not field.var and (
-                field.default is not MISSING or field.factory
+                field.default is not MISSING or field.build
             ):
                 own_defaults[name] = field
             continue
@@ -2349,7 +2332,7 @@ def _make_init(
         for field in list(positional_onlys.values()) + list(args.values()):
             if field.public_name in pinned:
                 after_pin = True
-            elif after_pin and field.default is MISSING and not field.factory:
+            elif after_pin and field.default is MISSING and not field.build:
                 required.add(field.public_name)
 
     def _skipped(field: Field) -> tx.Tuple[bool, bool]:
@@ -2358,22 +2341,22 @@ def _make_init(
         # its defaults unless it says otherwise, so both are usually
         # False and nothing below changes.
         return (
-            bool(field.converter) and not options.convert_defaults,
-            bool(field.validator) and not options.validate_defaults,
+            field.convert and not options.convert_defaults,
+            field.validate and not options.validate_defaults,
         )
 
     def _splits(field: Field) -> bool:
         # Whether this field has to tell a default apart from a value
         # the caller passed. It only does when it has a default to
         # arrive holding and a step for that default to skip.
-        if field.default is MISSING and not field.factory:
+        if field.default is MISSING and not field.build:
             return False
         return any(_skipped(field))
 
     def _make_signature_elem(field: Field) -> tx.Tuple[str, str]:
         name = field.public_name
         default = field.default
-        if field.factory:
+        if field.build:
             default = _HasFactory(field.factory)
         elif _splits(field):
             # The parameter carries a marker instead of the value, so
@@ -2486,7 +2469,7 @@ def _make_init(
         # which one arrived for the body below.
         name = field.public_name
         splits = _splits(field)
-        if not field.factory:
+        if not field.build:
             if not splits:
                 return ""
             # `is` against the one marker this parameter defaults to: a
@@ -2523,7 +2506,7 @@ def _make_init(
         skip_convert, skip_validate = _skipped(field)
         splits = _splits(field)
         body = ""
-        if field.converter:
+        if field.convert:
             locals[_CONVERTER(name)] = field.converter
             step = _guarded(
                 f"{name} = {_CONVERTER(name)}({name})",
@@ -2533,7 +2516,7 @@ def _make_init(
                 _only_when_passed(step, field)
                 if splits and skip_convert else step
             )
-        if field.validator:
+        if field.validate:
             locals[_VALIDATOR(name)] = field.validator
             step = _guarded(
                 f"{name} = {_VALIDATOR(name)}({name})",
@@ -2559,18 +2542,21 @@ def _make_init(
         # name, which no parameter uses: a parameter is named after the
         # field's public name.
         skip_convert, skip_validate = _skipped(field)
-        converter = None if skip_convert else field.converter
-        validator = None if skip_validate else field.validator
+        converter = validator = None
+        if field.convert and not skip_convert:
+            converter = field.converter
+        if field.validate and not skip_validate:
+            validator = field.validator
         default = _DEFAULT(field.name)
-        locals[default] = field.factory if field.factory else field.default
-        if not (field.factory or converter or validator):
+        locals[default] = field.factory if field.build else field.default
+        if not (field.build or converter or validator):
             return dedent(f"""
             {_OBJECT}.__setattr__({SELF}, {field.name!r}, {default})
             """)
         # Building, converting and validating are taken one at a time,
         # so that whichever of them fails can say what it was doing.
         value = _VALUE(field.name)
-        if field.factory:
+        if field.build:
             body = _guarded(f"{value} = {default}()", field, "build")
         else:
             body = dedent(f"""
@@ -2757,14 +2743,14 @@ def _make_assign(cls: type) -> type:
             # A converter and a validator say what went wrong and
             # nothing about where, so the class and the field are put in
             # front of the failure on its way out.
-            if field.converter:
+            if field.convert:
                 try:
                     value = field.converter(value)
                 except Exception as error:
                     field_error(
                         type(self).__name__, name, "convert", error, value
                     )
-            if field.validator:
+            if field.validate:
                 try:
                     value = field.validator(value)
                 except Exception as error:
