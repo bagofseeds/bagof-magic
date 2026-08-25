@@ -130,10 +130,12 @@ from __future__ import annotations
 
 __all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 # stdlib
+import ast
 import builtins
 import copy
 import operator
 import sys
+import warnings
 from abc import ABCMeta
 from collections import abc as _abc
 from functools import partial
@@ -304,45 +306,227 @@ def _add_fields(
             fields.setdefault(name, old_field)
 
 
-class _ForwardRefScope(dict):
-    # A scope in which a name that is bound nowhere evaluates to a
-    # `ForwardRef` instead of raising `NameError`. Evaluating an
-    # annotation in such a scope recovers the *shape* of the hint --
-    # `ClassVar[...]`, `Annotated[...]`, and so the whole annotation
-    # family -- even when the type it refers to does not exist yet.
+#: Names that mark the *structure* of an annotation: the family declared
+#: in `_fields.py` (`KwOnly`, `Frozen`, `ClassVar`, ...) plus the typing
+#: spellings the builder reads. Used to recognise a structural marker by
+#: name when the name itself is not defined at runtime.
+_STRUCTURAL_NAMES = frozenset(__all_fields__) | {"Annotated", "ClassVar"}
 
-    def __missing__(self, name: str) -> tx.ForwardRef:
-        return tx.ForwardRef(name)
+#: The expression nodes a *type* may be made of. A type is a name, an
+#: attribute of one, a subscript, a union, a literal, or a tuple of
+#: those -- never a call, so reading an annotation back never runs it.
+_TYPE_NODES = tuple(
+    node
+    for node in (
+        ast.Name, ast.Attribute, ast.Subscript, ast.Tuple, ast.List,
+        ast.Constant, ast.BinOp, ast.BitOr, ast.UnaryOp, ast.USub,
+        ast.Load, ast.Slice, ast.Ellipsis,
+        getattr(ast, "Index", None),
+    )
+    if node is not None
+)
+
+#: What may be added to those in a metadata slot -- `Annotated[int,
+#: Field(alias="n")]` and the extra arguments of the family's own
+#: spellings, `Doc[int, "..."]`. A call is allowed there, and only
+#: there, and only to a member of the annotation family.
+_METADATA_NODES = _TYPE_NODES + (
+    ast.Call, ast.keyword, ast.Dict, ast.Set, ast.Starred, ast.Lambda,
+)
 
 
-def _annotation_scope(namespace: dict, globals: dict) -> _ForwardRefScope:
-    # The names an annotation written in this class body can refer to:
-    # the builtins, then the defining module, then the class body itself
-    # (each shadowing the one before, as Python resolves them).
-    scope = _ForwardRefScope(vars(builtins))
-    scope.update(globals)
-    scope.update(namespace)
-    return scope
+class _UnreadableAnnotation(UserWarning):
+    """An annotation whose structure the builder could not read back."""
 
 
-def _evaluate_annotation(source: str, scope: _ForwardRefScope) -> tx.Any:
-    # An annotation reaches us as text under `from __future__ import
-    # annotations`, and as text whenever it is quoted. Read back the
-    # object it describes, so the annotation family is seen at all.
-    #
-    # An unbound *name* becomes a `ForwardRef`, but an unbound name used
-    # as anything more than a name does not survive: `Outer.Nested` asks
-    # a `ForwardRef` for an attribute, `Missing(1)` calls one. Those, and
-    # anything else that fails to evaluate, keep the string they came
-    # from -- the field then carries the annotation exactly as written,
-    # which is all that was ever available for it.
+def _caller_stacklevel() -> int:
+    # How far up the stack the class statement is, so a warning about an
+    # annotation is reported against the line that wrote it rather than
+    # against the builder.
+    frame = sys._getframe(1)
+    level = 1
+    while frame is not None and frame.f_globals.get("__name__") == __name__:
+        frame = frame.f_back
+        level += 1
+    return level
+
+
+def _dotted_name(node: ast.AST) -> tx.Optional[tx.List[str]]:
+    # ["registry", "Port"] for `registry.Port`, None for anything that
+    # is not a plain (possibly dotted) name.
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    parts.reverse()
+    return parts
+
+
+def _lookup_dotted(parts: tx.List[str], globals: dict) -> tx.Any:
+    # The object a dotted name refers to in the defining module, or
+    # MISSING when any step of it is not defined there. Only names are
+    # looked up this way, so nothing is ever called.
+    name = parts[0]
+    if name in globals:
+        value = globals[name]
+    elif hasattr(builtins, name):
+        value = getattr(builtins, name)
+    else:
+        return MISSING
+    for attr in parts[1:]:
+        try:
+            value = getattr(value, attr)
+        except AttributeError:
+            return MISSING
+    return value
+
+
+def _is_structural(value: tx.Any) -> bool:
+    # Does this marker decide how a field is built, rather than what it
+    # holds? `ClassVar[...]`, `Annotated[...]`, and every member of the
+    # family in `_fields.py` do.
+    if value is tx.ClassVar or value is tx.Annotated:
+        return True
+    return isinstance(value, type) and issubclass(value, Field)
+
+
+def _subscript_args(node: ast.Subscript) -> tx.List[ast.AST]:
+    # What is written between the brackets, one node per argument.
+    inner = node.slice
+    index = getattr(ast, "Index", None)
+    if index is not None and isinstance(inner, index):
+        # Python 3.8 wraps a subscript in an `Index` node.
+        inner = inner.value  # pragma: no cover
+    if isinstance(inner, ast.Tuple):
+        return list(inner.elts)
+    return [inner]
+
+
+def _is_type_expression(node: ast.AST) -> bool:
+    return all(isinstance(child, _TYPE_NODES) for child in ast.walk(node))
+
+
+def _is_metadata_expression(node: ast.AST, globals: dict) -> bool:
+    # A lambda is a value, not a call, so its body is never run here and
+    # is not inspected. Everything else must be made of metadata nodes,
+    # and a call in it must be to a member of the annotation family.
+    if isinstance(node, ast.Lambda):
+        return True
+    if not isinstance(node, _METADATA_NODES):
+        return False
+    if isinstance(node, ast.Call):
+        called = _dotted_name(node.func)
+        value = MISSING if called is None else _lookup_dotted(called, globals)
+        if not (isinstance(value, type) and issubclass(value, Field)):
+            return False
+    return all(
+        _is_metadata_expression(child, globals)
+        for child in ast.iter_child_nodes(node)
+    )
+
+
+def _evaluate(source: str, globals: dict) -> tx.Any:
+    # Evaluate text that has already been checked for what it is allowed
+    # to contain. A name that is not defined -- a type imported under
+    # `if TYPE_CHECKING:`, a spelling the running Python is too old for
+    # -- gives MISSING, and the caller keeps the text instead.
     try:
-        return eval(source, {}, scope)
+        return eval(source, globals)
     except Exception:
-        return source
+        return MISSING
 
 
-def _namespace_annotations(namespace: dict, globals: dict) -> dict:
+def _segment(source: str, node: ast.AST) -> str:
+    # The text a node was written as. `get_source_segment` answers None
+    # for a node without a position, which the parser does not produce.
+    return ast.get_source_segment(source, node) or source
+
+
+def _read_type(node: ast.AST, source: str, globals: dict) -> tx.Any:
+    # The type a node describes, or the text it was written as when the
+    # names in it are not available (or the spelling needs a newer
+    # Python than the one running).
+    text = _segment(source, node)
+    if not _is_type_expression(node):
+        return text
+    value = _evaluate(text, globals)
+    return text if value is MISSING else value
+
+
+def _read_annotation(
+    node: ast.AST, source: str, globals: dict, where: str
+) -> tx.Any:
+    # Read one annotation back from its text. The structure -- the
+    # marker a field is built by -- is recovered first and on its own,
+    # so a type that cannot be resolved never costs the field its
+    # `ClassVar`, `KwOnly` or `Frozen`.
+    marker = _structural_marker(node, globals, where)
+    if marker is MISSING:
+        return _read_type(node, source, globals)
+    payload, *metadata = _subscript_args(node)
+    type = _read_annotation(payload, source, globals, where)
+    if isinstance(type, str):
+        # The type is not available yet: carry it by name, the way a
+        # quoted annotation is carried.
+        type = tx.ForwardRef(type)
+    values = []
+    for meta in metadata:
+        if not _is_metadata_expression(meta, globals):
+            return _decline(node, source, where, _segment(source, meta))
+        value = _evaluate(_segment(source, meta), globals)
+        if value is MISSING:
+            return _decline(node, source, where, _segment(source, meta))
+        values.append(value)
+    try:
+        return marker[(type,) + tuple(values)] if values else marker[type]
+    except Exception:
+        return _decline(node, source, where, _segment(source, node))
+
+
+def _structural_marker(node: ast.AST, globals: dict, where: str) -> tx.Any:
+    # The marker a subscripted annotation is built by (`KwOnly` in
+    # `KwOnly[int]`), or MISSING when the annotation is a plain type.
+    if not isinstance(node, ast.Subscript):
+        return MISSING
+    parts = _dotted_name(node.value)
+    if parts is None:
+        return MISSING
+    marker = _lookup_dotted(parts, globals)
+    if marker is MISSING:
+        if parts[-1] in _STRUCTURAL_NAMES:
+            warnings.warn(
+                f"{where} is annotated with {'.'.join(parts)}, which is "
+                f"not defined where the class is written, so it cannot be "
+                f"applied to the field. A name only imported under `if "
+                f"TYPE_CHECKING:` is not there at runtime -- import "
+                f"{parts[0]} normally for the annotation to take effect.",
+                _UnreadableAnnotation,
+                stacklevel=_caller_stacklevel(),
+            )
+        return MISSING
+    return marker if _is_structural(marker) else MISSING
+
+
+def _decline(node: ast.AST, source: str, where: str, part: str) -> str:
+    # The marker was recognised but could not be rebuilt. Say so, and
+    # keep the annotation as the text it arrived as.
+    text = _segment(source, node)
+    warnings.warn(
+        f"{where} is annotated with {text}, and {part} could not be read "
+        f"back, so the annotation is kept as text and has no effect on "
+        f"how the field is built.",
+        _UnreadableAnnotation,
+        stacklevel=_caller_stacklevel(),
+    )
+    return text
+
+
+def _namespace_annotations(
+    namespace: dict, globals: dict, clsname: str
+) -> dict:
     # The annotations declared in a class body, read from the namespace the
     # metaclass receives -- before the class object exists.
     #
@@ -366,28 +550,33 @@ def _namespace_annotations(namespace: dict, globals: dict) -> dict:
         annotations = annotationlib.call_annotate_function(
             annotate, annotationlib.Format.FORWARDREF
         )
-    return _resolve_string_annotations(annotations, namespace, globals)
+    return _resolve_string_annotations(annotations, globals, clsname)
 
 
 def _resolve_string_annotations(
-    annotations: dict, namespace: dict, globals: dict
+    annotations: dict, globals: dict, clsname: str
 ) -> dict:
     # Annotations that are text -- every one of them under `from
     # __future__ import annotations`, and any single quoted one
-    # otherwise -- are read back into the objects they name. Whatever
-    # already arrived as an object is left alone, so on Python 3.14+,
-    # where the runtime hands over `ForwardRef`s of its own, there is
-    # nothing here to redo.
-    if not any(isinstance(hint, str) for hint in annotations.values()):
-        return annotations
-    scope = _annotation_scope(namespace, globals)
-    return {
-        name: (
-            _evaluate_annotation(hint, scope)
-            if isinstance(hint, str) else hint
+    # otherwise -- are read back far enough to see how each field is
+    # meant to be built. Whatever already arrived as an object is left
+    # alone, so on Python 3.14+, where the runtime hands over
+    # `ForwardRef`s of its own, there is nothing here to redo.
+    resolved = {}
+    for name, hint in annotations.items():
+        if not isinstance(hint, str):
+            resolved[name] = hint
+            continue
+        source = hint.strip()
+        try:
+            node = ast.parse(source, mode="eval").body
+        except SyntaxError:
+            resolved[name] = hint
+            continue
+        resolved[name] = _read_annotation(
+            node, source, globals, f"{clsname}.{name}"
         )
-        for name, hint in annotations.items()
-    }
+    return resolved
 
 
 class _BadSignature(SyntaxError):
@@ -1031,7 +1220,7 @@ def __pre_new__(
     # actual default value.  Pseudo-fields ClassVars and InitVars are
     # included, despite the fact that they're not real fields.  That's
     # dealt with later.
-    cls_annotations = _namespace_annotations(namespace, globals)
+    cls_annotations = _namespace_annotations(namespace, globals, clsname)
 
     # Now find fields in our class.  While doing so, validate some
     # things, and set the d
@@ -1483,6 +1672,20 @@ def _make_doc_class(fields: dict[str, Field]) -> str:
     return "\n\n".join([attrdocs, classattrdocs])
 
 
+def _doc_type(type: tx.Any) -> str:
+    """Spell a field's type the way the documentation should show it."""
+    if isinstance(type, tx.ForwardRef):
+        # A type that is not available where the class is written is
+        # carried by name. The name is what a reader recognises, so the
+        # documentation shows that rather than how it is carried.
+        return type.__forward_arg__
+    if isinstance(type, str):
+        return type
+    if isinstance(type, builtins.type):
+        return type.__qualname__
+    return repr(type)
+
+
 def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
 
     name = name or field.public_name
@@ -1509,18 +1712,9 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
             ))
         else:
             doctype = " | ".join([
-                arg.__qualname__
-                if isinstance(arg, type) else
-                repr(arg)
-                for arg in tx.get_args(doctype)
+                _doc_type(arg) for arg in tx.get_args(doctype)
             ])
-    doctype = (
-        doctype
-        if isinstance(doctype, str) else
-        doctype.__qualname__
-        if isinstance(doctype, type) else
-        repr(doctype)
-    )
+    doctype = _doc_type(doctype)
     doc = (
         f"{name} : {doctype}, optional"
         if default is None else
