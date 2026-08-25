@@ -10,6 +10,10 @@ from typing import Optional, Union
 
 import pytest
 import typing_extensions as tx
+from bagof.converters.exceptions import (
+    ConversionError,
+    ValueConversionError,
+)
 from bagof.validators.exceptions import ValidationError
 from typing_extensions import Annotated
 
@@ -5615,3 +5619,186 @@ class TestQuotedAnnotations:
 
         parameters = signature(Server.__init__).parameters
         assert parameters["debug"].kind is Parameter.KEYWORD_ONLY
+
+
+# ======================================================================
+# Which field a failure is about
+# ======================================================================
+# A converter, a validator and a factory each say what went wrong and
+# nothing about where. These are about the class and the field being
+# named too, without losing what went wrong.
+
+
+class TestTheFailingFieldIsNamed:
+
+    def test_conversion_names_the_class_and_the_field(self) -> None:
+        class Server(Magic, convert=True):
+            port: int
+
+        with pytest.raises(ConversionError) as caught:
+            Server("not a number")
+        assert "Server.port" in str(caught.value)
+        assert "'not a number'" in str(caught.value)
+
+    def test_validation_names_the_class_and_the_field(self) -> None:
+        class Server(Magic, validate=True):
+            port: int
+
+        with pytest.raises(ValidationError) as caught:
+            Server("nope")
+        assert "Server.port" in str(caught.value)
+        assert "'nope'" in str(caught.value)
+
+    def test_the_field_that_failed_is_the_one_named(self) -> None:
+        class Ports(Magic, convert=True):
+            first: int
+            second: int
+
+        with pytest.raises(ConversionError) as caught:
+            Ports(1, "not a number")
+        assert "Ports.second" in str(caught.value)
+        assert "Ports.first" not in str(caught.value)
+
+    def test_a_nested_class_names_every_field_on_the_way(self) -> None:
+        class Inner(Magic, convert=True):
+            name: str
+
+        class Outer(Magic, convert=True):
+            thing: Inner = None
+
+        with pytest.raises(ConversionError) as caught:
+            Outer()
+        assert "Outer.thing" in str(caught.value)
+        assert "Inner.name" in str(caught.value)
+
+    def test_a_factory_failure_names_the_field(self) -> None:
+        def boom() -> int:
+            raise ValueError("nothing to build it from")
+
+        class Server(Magic):
+            port: Factory[int, boom]
+
+        with pytest.raises(ValueError) as caught:
+            Server()
+        assert "Server.port: could not build a value" in str(caught.value)
+        assert "nothing to build it from" in str(caught.value)
+
+    def test_a_factory_failure_names_a_field_that_is_not_a_parameter(
+        self
+    ) -> None:
+        def boom() -> int:
+            raise ValueError("nothing to build it from")
+
+        class Server(Magic):
+            port: NoInit[Factory[int, boom]]
+
+        with pytest.raises(ValueError) as caught:
+            Server()
+        assert "Server.port: could not build a value" in str(caught.value)
+
+    def test_a_conversion_on_assignment_names_the_field(self) -> None:
+        class Server(Magic, convert=True):
+            port: int
+
+        server = Server(80)
+        with pytest.raises(ConversionError) as caught:
+            server.port = "not a number"
+        assert "Server.port" in str(caught.value)
+
+    def test_a_validation_on_assignment_names_the_field(self) -> None:
+        class Server(Magic, validate=True):
+            port: int
+
+        server = Server(80)
+        with pytest.raises(ValidationError) as caught:
+            server.port = "nope"
+        assert "Server.port" in str(caught.value)
+
+    def test_the_error_is_still_the_one_that_was_raised(self) -> None:
+        class Server(Magic, convert=True):
+            port: int
+
+        # The class is what a caller catches, so it is unchanged: the
+        # narrowest `except` written before still catches.
+        with pytest.raises(ValueConversionError) as caught:
+            Server("not a number")
+        assert type(caught.value) is type(caught.value.__cause__)
+        assert isinstance(caught.value, ValueError)
+
+    def test_what_the_error_was_carrying_comes_across(self) -> None:
+        class Server(Magic, convert=True):
+            port: int
+
+        with pytest.raises(ConversionError) as caught:
+            Server("not a number")
+        assert caught.value.value == "not a number"
+
+    def test_the_original_is_kept_whole_as_the_cause(self) -> None:
+        class Server(Magic, convert=True):
+            port: int
+
+        with pytest.raises(ConversionError) as caught:
+            Server("not a number")
+        original = caught.value.__cause__
+        assert isinstance(original, ConversionError)
+        # Every word of it is still there, at the end of the fuller one.
+        assert str(caught.value).endswith(str(original))
+
+    def test_an_ordinary_error_is_named_too(self) -> None:
+        def refuse(value: tx.Any) -> int:
+            raise ValueError("I would rather not")
+
+        class Server(Magic):
+            port: ConvertTo[int, refuse]
+
+        with pytest.raises(ValueError) as caught:
+            Server(80)
+        assert "Server.port" in str(caught.value)
+        assert "I would rather not" in str(caught.value)
+        assert isinstance(caught.value.__cause__, ValueError)
+
+    def test_an_error_that_needs_more_than_a_message_is_left_alone(
+        self
+    ) -> None:
+        class Fussy(Exception):
+            def __init__(self, what: str, why: str) -> None:
+                super().__init__(what, why)
+
+        raised = []
+
+        def refuse(value: tx.Any) -> int:
+            error = Fussy("no", "not that either")
+            raised.append(error)
+            raise error
+
+        class Server(Magic):
+            port: ConvertTo[int, refuse]
+
+        # Nothing can be added to this one without changing its class,
+        # and its class is what a caller catches, so it comes through
+        # exactly as it was raised.
+        with pytest.raises(Fussy) as caught:
+            Server(80)
+        assert caught.value is raised[0]
+        assert caught.value.args == ("no", "not that either")
+
+    def test_nothing_generated_is_mentioned(self) -> None:
+        class Server(Magic, convert=True, validate=True):
+            port: int
+
+        with pytest.raises(ConversionError) as caught:
+            Server("not a number")
+        assert "__magic" not in str(caught.value)
+
+    def test_a_value_that_is_fine_is_left_alone(self) -> None:
+        class Server(Magic, convert=True, validate=True):
+            port: int
+            name: str = "localhost"
+            spare: NoInit[int] = 8080
+
+        server = Server("80")
+        assert server.port == 80
+        assert server.name == "localhost"
+        assert server.spare == 8080
+        server.port = "443"
+        assert server.port == 443

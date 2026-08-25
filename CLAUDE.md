@@ -41,6 +41,8 @@ src/bagof/magic/
   _resolve.py   # adapters to bagof-converters / -validators / -factories,
                 #   and the deferred resolution of a hint that is still
                 #   a name when the class is built
+  _errors.py    # field_error -- names the class and the field when a
+                #   converter, a validator or a factory raises
 tests/
   test_magic.py                 # the builder, option by option
   test_docstrings.py            # every `pycon` block in a docstring or page
@@ -75,6 +77,14 @@ Tests that exercise internals import them from the module that defines them
 - **`_FuncBuilder` compiles `__init__`** from generated source text, because a
   real signature (defaults, positional-only markers, keyword-only markers) can
   only be produced by `exec`. Everything else is a closure.
+- **Every call to a converter, a validator or a factory is guarded**, in the
+  generated `__init__` and in `__setattr__` alike, and its failure goes
+  through `field_error` in `_errors.py` — which raises the same error again
+  (same class, so an existing `except` still catches) with the class, the
+  field and the value in front of the original text, and the original as its
+  cause. The guard is per call rather than one around the whole body: a
+  single one could only name the field by guessing which call raised, and a
+  `try` costs nothing while nothing fails.
 - **Options are inherited by merging down the MRO** (`Options.update` per base,
   in reverse MRO order), so a derived class only overrides what it states.
 
