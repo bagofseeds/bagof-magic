@@ -1982,6 +1982,15 @@ def _doc_type(type: tx.Any) -> str:
         return type.__forward_arg__
     if isinstance(type, str):
         return type
+    # A parameterised generic (`list[str]`) must be spelled out in full, not
+    # abbreviated to the plain class it wraps. Checking this before the
+    # `builtins.type` branch matters on Python 3.9 and 3.10, where
+    # `isinstance(list[str], type)` is True (a PEP 585 quirk fixed in 3.11) —
+    # so `type.__qualname__` there would silently drop the `[str]`.
+    # `_get_origin` returns the input unchanged when it has no origin, so
+    # comparing by identity is how "this has an origin" is asked here.
+    if _get_origin(type) is not type:
+        return repr(type)
     if isinstance(type, builtins.type):
         return type.__qualname__
     return repr(type)
