@@ -300,12 +300,12 @@ def discriminants(
     for name in names:
         field = table[name]
         default = field.default
-        if field.factory:
+        if field.build:
             # A factory default is built once per instance, and building
             # it here to read it would build it twice. A field defaulted
             # that way is read as absent when it is not passed.
             default = MISSING
-        convert = field.converter or None
+        convert = field.converter if field.convert else None
         found.append(_Discriminant(
             name,
             field.public_name,

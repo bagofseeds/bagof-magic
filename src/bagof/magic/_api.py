@@ -406,7 +406,7 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
             value = given.pop(name)
         elif not field.var:
             value = _value(obj, field, "replace")
-        elif field.factory:
+        elif field.build:
             # An InitVar is used during construction and not stored, so
             # there is nothing to carry over: its default stands in.
             # The constructor resolves a factory itself, and this is
