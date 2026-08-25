@@ -38,7 +38,9 @@ src/bagof/magic/
   _constants.py # sentinels (MISSING, REQUIRED, SHOW_ATTR) and the
                 #   `__magic_*__` attribute names
   _utils.py     # SlotsBase, rebuild_cls, the `slots` decorator
-  _resolve.py   # adapters to bagof-converters / -validators / -factories
+  _resolve.py   # adapters to bagof-converters / -validators / -factories,
+                #   and the deferred resolution of a hint that is still
+                #   a name when the class is built
 tests/
   test_magic.py                 # the builder, option by option
   test_docstrings.py            # every `pycon` block in a docstring or page
@@ -137,15 +139,54 @@ no structure to lose. `_doc_type` renders a type carried by name as that
 name, so generated documentation shows `parent : Node`.
 
 Only the structure is recovered eagerly, because it decides the generated
-`__init__`, which is compiled once. A converter, validator or factory
-resolved from a hint that is still a `ForwardRef` is the other half of the
-problem (#13) and wants deferred resolution instead.
+`__init__`, which is compiled once.
 
 `tests/test_annotations_as_strings.py` is the regression suite, and its
 future import is what makes it one — `tests/test_magic.py` cannot see any of
 this, since annotations there are already objects. The two quoted-annotation
 tests at the end of `test_magic.py` depend on that file *not* having the
 future import.
+
+### Hints that are still names when the class is built
+
+The other half of #13 is the converter, validator and factory a field
+resolves from its type. A hint that is still a `ForwardRef` or a string
+gives each of them something that fails on every value, so `_resolve.py`
+hands back a `_Deferred` instead: it evaluates the text the first time
+the field is *used*, builds the real converter/validator/factory there,
+caches it and delegates from then on. By first use the module has
+finished executing, so a class that names itself and a name written
+further down the file both simply resolve.
+
+Three things make that work, and each is load-bearing:
+
+- **The deferred callable is installed once, at build time.** `_make_init`
+  snapshots `field.converter` into the generated `__init__`'s locals,
+  while `__setattr__` reads it live on every call. Resolving later and
+  writing the answer back onto the `Field` would fix one path and leave
+  the other holding the old callable; doing the resolving *inside* the
+  installed object keeps both paths on the same one.
+- **`Hints` says where to look.** It holds the defining module's globals,
+  plus a namespace that `__post_new__` puts the class itself into under
+  its own name -- which is what lets a class written inside a function
+  (every class in the test suite) refer to itself.
+- **Whatever `_settle` works out is kept**, success or failure alike. A
+  hint that never resolves is therefore reported once for the field and
+  not once per call: a deferred converter on a hot constructor that said
+  so every time would be both a performance bug and a log flood, and
+  would end up suppressed wholesale.
+
+The `unresolved_hints` option chooses the report -- `"warn"` (the
+default) says so once and carries on, `"raise"` makes it a `NameError`,
+`"ignore"` says nothing. The per-resolver asymmetry is deliberate and
+lives in `_Kind.fallback`: a value can be passed through unconverted and
+unvalidated, but nothing can be invented in place of a default that
+cannot be built, so a factory raises whatever the option says.
+
+Evaluating the text later does not reopen the "an annotation is never
+called" rule. `_readable` refuses text with a call in it, so `x:
+_record()` is reported rather than run at first use, exactly as it is at
+class creation.
 
 ## Conventions specific to this repo (do not regress)
 
@@ -305,10 +346,9 @@ cd /tmp && PYTHONPATH=<repo>/src:<each sibling>/src:<site-packages> \
 
 ## Known follow-ups (see the tracking issues)
 
-- **Correctness**: unresolved string/forward annotations breaking
-  `convert`/`validate`/`factory` (#13); fields shared and mutated across
-  classes (#14); a disabled option falling through to `Magic`'s own
-  generated method (#23).
+- **Correctness**: fields shared and mutated across classes (#14); a
+  disabled option falling through to `Magic`'s own generated method
+  (#23).
 - **Model**: naming the field kind instead of inferring it from `init` (#16),
   which also carries the declared/resolved split that makes option inheritance
   work (#20).

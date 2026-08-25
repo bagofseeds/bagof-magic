@@ -164,6 +164,44 @@ The rules come from [`bagof-converters`][converters] and
 containers, unions, enums, `TypedDict`, dates, paths, numpy arrays — works
 here too.
 
+A hint may name something that does not exist yet when the class is
+written: a class that refers to itself, a name defined further down the
+file, a type imported only for type checking. It is looked up the first
+time the field is actually used instead, by which point the module has
+finished loading — so an ordinary forward reference simply works, and
+`Router("9000").port` below is a `Port`.
+
+```python
+class Router(Magic, convert=True):
+    port: "Port" = 8080
+
+class Port(int):
+    pass
+```
+
+If the name is still not there by then, the field carries on unconverted
+and unvalidated, and says so once:
+
+```
+Router.port: the name `Port` is not defined, so `port` is not being
+converted.
+```
+
+A field whose default was to be built from its type has nothing to carry
+on with, so that one raises instead.
+
+`unresolved_hints` decides what that report is. Turning it into an error
+is worth doing in CI, where a hint that never resolves is a mistake
+rather than something to live with:
+
+```python
+class Service(Magic, convert=True, unresolved_hints="raise"):
+    port: int = 8080
+```
+
+The third choice, `"ignore"`, says nothing at all — for a hint you know
+will not resolve and do not want to hear about again.
+
 ---
 
 ## Also included
@@ -406,6 +444,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `weakref_slot` | `False` | allow weak references under `slots` |
 | `convert` | `False` | convert every field from its type |
 | `validate` | `False` | check every field against its type |
+| `unresolved_hints` | `"warn"` | what to do when a type hint still names something undefined the first time a field needs it; or `"raise"`, or `"ignore"` |
 | `factory` | `False` | build every missing default from its type |
 | `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
 | `mapping` | `False` | behave like a dictionary; a subclass cannot turn it off again |
