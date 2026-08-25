@@ -162,6 +162,8 @@ from ._constants import (
     _CONVERTER,
     _DEFAULT,
     _DISCARD,
+    _ERROR,
+    _FIELD_ERROR,
     _FIELDS,
     _GENERATED,
     _HINTS,
@@ -173,11 +175,13 @@ from ._constants import (
     _SELF,
     _TYPE,
     _VALIDATOR,
+    _VALUE,
     HIDE_IF_NONE,
     MISSING,
     SHOW_ATTR,
     _HasFactory,
 )
+from ._errors import field_error
 from ._fields import *  # noqa: F401, F403
 from ._fields import Field, _stored
 from ._fields import __all__ as __all_fields__
@@ -1446,7 +1450,7 @@ def __pre_new__(
     # Build __init__. The builder writes source, so binding the public
     # name has to wait until `insert_fns` has compiled it (below).
     try:
-        init_kwargs = _make_init(fields, prepost)
+        init_kwargs = _make_init(fields, prepost, clsname)
     except _BadSignature as error:
         if init_name:
             raise
@@ -1841,7 +1845,9 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
 
 
 def _make_init(
-    fields: dict[str, Field], prepost: tx.Mapping[str, bool]
+    fields: dict[str, Field],
+    prepost: tx.Mapping[str, bool],
+    clsname: str,
 ) -> dict:
 
     locals = {"object": object, "_HasFactory": _HasFactory}
@@ -1942,6 +1948,33 @@ def _make_init(
         )
         return f"{SELF}.{func}({_ARGUMENTS}({{{values}}}))"
 
+    def _guarded(
+        call: str,
+        field: Field,
+        action: str,
+        value: tx.Optional[str] = None
+    ) -> str:
+        # A converter, a validator and a factory each say what went
+        # wrong and nothing about where, so the class and the field are
+        # put in front of the failure on its way out. The field is named
+        # the way it is written in the class, which is also the way
+        # `__setattr__` names it -- an aliased field's parameter goes by
+        # another name, but the value it fills in is this one.
+        #
+        # Only the call itself is guarded: nothing else that goes wrong
+        # nearby should be described as this field's fault.
+        locals[_FIELD_ERROR] = field_error
+        blamed = [repr(clsname), repr(field.name), repr(action), _ERROR]
+        if value is not None:
+            blamed.append(value)
+        blamed = ", ".join(blamed)
+        return dedent(f"""
+        try:
+            {call}
+        except Exception as {_ERROR}:
+            {_FIELD_ERROR}({blamed})
+        """)
+
     def _make_factory_elem(field: Field) -> str:
         # A defaulted-by-factory parameter arrives holding the factory
         # rather than a value. Every one of them is resolved before the
@@ -1949,10 +1982,10 @@ def _make_init(
         if not field.factory:
             return ""
         name = field.public_name
+        call = _guarded(f"{name} = {name}()", field, "build")
         return dedent(f"""
         if isinstance({name}, _HasFactory):
-            {name} = {name}()
-        """)
+        """) + indent(call, " " * 4)
 
     def _make_body_elem(field: Field) -> str:
         # The body reads the *parameter*, which is named after the
@@ -1962,14 +1995,16 @@ def _make_init(
         body = ""
         if field.converter:
             locals[_CONVERTER(name)] = field.converter
-            body += dedent(f"""
-            {name} = {_CONVERTER(name)}({name})
-            """)
+            body += _guarded(
+                f"{name} = {_CONVERTER(name)}({name})",
+                field, "convert", name
+            )
         if field.validator:
             locals[_VALIDATOR(name)] = field.validator
-            body += dedent(f"""
-            {name} = {_VALIDATOR(name)}({name})
-            """)
+            body += _guarded(
+                f"{name} = {_VALIDATOR(name)}({name})",
+                field, "validate", name
+            )
         if not field.var:
             # NOTE: we by pass the object's __setattr__ to avoid running
             # through conversion and validation multiple times.
@@ -1986,14 +2021,32 @@ def _make_init(
         # public name.
         default = _DEFAULT(field.name)
         locals[default] = field.factory if field.factory else field.default
-        value = f"{default}()" if field.factory else default
+        if not (field.factory or field.converter or field.validator):
+            return dedent(f"""
+            object.__setattr__({SELF}, {field.name!r}, {default})
+            """)
+        # Building, converting and validating are taken one at a time,
+        # so that whichever of them fails can say what it was doing.
+        value = _VALUE(field.name)
+        if field.factory:
+            body = _guarded(f"{value} = {default}()", field, "build")
+        else:
+            body = dedent(f"""
+            {value} = {default}
+            """)
         if field.converter:
             locals[_CONVERTER(field.name)] = field.converter
-            value = f"{_CONVERTER(field.name)}({value})"
+            body += _guarded(
+                f"{value} = {_CONVERTER(field.name)}({value})",
+                field, "convert", value
+            )
         if field.validator:
             locals[_VALIDATOR(field.name)] = field.validator
-            value = f"{_VALIDATOR(field.name)}({value})"
-        return dedent(f"""
+            body += _guarded(
+                f"{value} = {_VALIDATOR(field.name)}({value})",
+                field, "validate", value
+            )
+        return body + dedent(f"""
         object.__setattr__({SELF}, {field.name!r}, {value})
         """)
 
@@ -2143,10 +2196,23 @@ def _make_assign(cls: type) -> type:
         if field and not field.var:
             if field.frozen:
                 raise AttributeError(f"Cannot set frozen field {name!r}")
+            # A converter and a validator say what went wrong and
+            # nothing about where, so the class and the field are put in
+            # front of the failure on its way out.
             if field.converter:
-                value = field.converter(value)
+                try:
+                    value = field.converter(value)
+                except Exception as error:
+                    field_error(
+                        type(self).__name__, name, "convert", error, value
+                    )
             if field.validator:
-                value = field.validator(value)
+                try:
+                    value = field.validator(value)
+                except Exception as error:
+                    field_error(
+                        type(self).__name__, name, "validate", error, value
+                    )
         elif getattr(type(self), _OPTIONS).frozen:
             raise AttributeError(
                 f"Cannot set attribute {name!r} on frozen class"
