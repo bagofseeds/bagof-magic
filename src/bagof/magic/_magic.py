@@ -72,6 +72,9 @@ unresolved_hints : str, default="warn"
 mapping : bool, default=False
     Implement the `Mapping` protocol; a subclass cannot turn it off.
     Only a field that is holding a value is a key
+override : bool | str | list, default=False
+    Decide the settings of an inherited field again from this class;
+    a name, or a list of names, decides only those
 polymorphic : bool | str, default=False
     Build one of this class's subclasses instead of this class,
     chosen from the arguments it was given. A subclass says which
@@ -175,11 +178,15 @@ from ._constants import (
     _DEFAULT,
     _DISCARD,
     _ERROR,
+    _EXCEPTION,
     _FIELD_ERROR,
     _FIELDS,
     _GENERATED,
+    _HAS_FACTORY,
     _HINTS,
+    _ISINSTANCE,
     _MAGIC,
+    _OBJECT,
     _OPTIONS,
     _PINNED,
     _POLYMORPHS,
@@ -200,8 +207,10 @@ from ._constants import (
 )
 from ._errors import field_error
 from ._fields import *  # noqa: F401, F403
-from ._fields import Field, _stored
+from ._fields import _OVERRIDABLE, Field, _stored
 from ._fields import __all__ as __all_fields__
+from ._generics import substitute as _substitute
+from ._generics import type_arguments as _type_arguments
 from ._options import *  # noqa: F401, F403
 from ._options import Options
 from ._options import __all__ as __all_options__
@@ -296,6 +305,81 @@ def _inherit_attrs(
         if inherited is not MISSING:
             setattr(field, attr, inherited)
 
+
+def _fill_in_type(
+    field: Field,
+    arguments: tx.Dict[tx.Any, tx.Any],
+    hints: Hints,
+) -> None:
+    # Replace the type variables in a field's type with what the class
+    # being built says they stand for, and work out again whatever was
+    # worked out from that type. A converter, validator or factory the
+    # field was given rather than asked for is left alone: filling in a
+    # type variable says nothing about it.
+    #
+    # The field is one this class owns -- `_add_fields` copies on the way
+    # in -- so it is changed in place.
+    filled = _substitute(field.type, arguments)
+    if filled is field.type:
+        return
+    field.type = filled
+    field._rebuild(hints)
+
+def _override_attrs(override: tx.Any, clsname: str) -> tx.Tuple[str, ...]:
+    # The field attributes an inherited field works out again from this
+    # class's settings.
+    #
+    # `override` names settings; a field stores their answers under
+    # names of its own, so `_OVERRIDABLE` maps between the two.
+    if override is True:
+        names = tuple(_OVERRIDABLE)
+    elif not override:
+        return ()
+    elif isinstance(override, str):
+        names = (override,)
+    elif isinstance(override, tx.Iterable):
+        names = tuple(override)
+    else:
+        raise ValueError(
+            f"{clsname} passes override={override!r}, which is neither a "
+            f"setting name nor a list of them. Pass override=True for "
+            f"every setting a subclass can decide again, the name of one "
+            f"of them, or a list of names."
+        )
+
+    attrs = []
+    for name in names:
+        if name not in _OVERRIDABLE:
+            raise ValueError(
+                f"{clsname} asks to override {name!r}, which is not one of "
+                f"the settings a field takes from its class: "
+                f"{', '.join(sorted(_OVERRIDABLE))}. Those are the ones "
+                f"decided per field; the rest are about the class as a "
+                f"whole, and a subclass already decides them for itself."
+            )
+        for attr in _OVERRIDABLE[name]:
+            if attr not in attrs:
+                attrs.append(attr)
+    return tuple(attrs)
+
+
+def _wrap_show_attrs(field: Field) -> None:
+    # `repr` and `key` each answer two questions -- whether the field
+    # takes part, and under which name -- so once resolved they are held
+    # as a `SHOW_ATTR` rather than as a plain value.
+    # (This is hacky and ugly -- should be reworked)
+    if field.key is HIDE_IF_NONE:
+        field.key = HIDE_IF_NONE(field.public_name)
+    if not isinstance(field.key, SHOW_ATTR):
+        field.key = SHOW_ATTR(field.key)
+
+    if field.repr is HIDE_IF_NONE:
+        if field.var:
+            field.repr = SHOW_ATTR(False)
+        else:
+            field.repr = HIDE_IF_NONE(field.public_name)
+    if not isinstance(field.repr, SHOW_ATTR):
+        field.repr = SHOW_ATTR(field.repr)
 
 def _add_fields(
     fields: dict[str, Field],
@@ -1142,7 +1226,9 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     # A shallow copy, so each instance gets its own container while
     # what the container holds stays shared -- the same thing a factory
     # written as `lambda: copy(default)` would give.
-    field.factory = partial(copy.copy, default)
+    # Recorded as the field's own, so that a subclass resolving the
+    # field again against its own settings does not undo it.
+    field._redeclare(factory=partial(copy.copy, default))
     field.default = MISSING
     return True
 
@@ -1358,7 +1444,25 @@ def __pre_new__(
     # Find our base classes in reverse MRO order, so that order is
     # obtained from MRO, but value is obtained from most derived class.
     mro = _mro(bases, namespace)
-    for b in reversed(mro):
+
+    # What this class fills in for the type variables its bases were
+    # written with: `class IntBox(Box[int])` says that `Box`'s `T` is
+    # `int` here. Kept per base, so that two parameterised bases fill in
+    # their own variables and not each other's.
+    arguments = _type_arguments(namespace)
+
+    # Which of those applies to each inherited field, once every base has
+    # had its say. A field a later base also declares is that base's, so
+    # the last word on the field is the last word on its type variables
+    # too -- including "none", when that base fills nothing in.
+    inherited_arguments = {}
+
+    # `mro[0]` is the throwaway class built above to work out the
+    # inheritance order. It has no fields of its own -- it only inherits
+    # the most derived base's, which the loop reads off that base
+    # anyway -- and nothing was written as one of *its* type variables,
+    # so reading it would only undo what that base said.
+    for b in reversed(mro[1:]):
         # Only process classes that have been processed by our
         # decorator.  That is, they have a _FIELDS attribute.
         base_fields = getattr(b, _FIELDS, None)
@@ -1371,6 +1475,9 @@ def __pre_new__(
                 replace=True,
                 reverse=options.reverse
             )
+            if arguments:
+                for field_name in base_fields:
+                    inherited_arguments[field_name] = arguments.get(b)
 
     # Save final options for this class.
     options.update(Options(**kwargs))
@@ -1430,6 +1537,32 @@ def __pre_new__(
     hints = Hints(globals, {}, clsname, options.unresolved_hints)
     namespace[_HINTS] = hints
 
+    # Fill the type variables in on the fields that came from a base
+    # written with them. A field this class declares again is built from
+    # its own annotation further down and replaces the one filled in
+    # here, so only what really is inherited is touched.
+    for field_name, base_arguments in inherited_arguments.items():
+        if base_arguments:
+            _fill_in_type(fields[field_name], base_arguments, hints)
+    # An inherited field was resolved against the settings of the class
+    # that declared it, and keeps those answers. `override` names the
+    # settings this class decides again for every field it inherits --
+    # only where the field itself said nothing, since what a field asked
+    # for is restored unchanged. A field this class redeclares is built
+    # from its annotation below and replaces the inherited one, so it
+    # never goes through here.
+    #
+    # A converter, validator or factory rebuilt here looks a type named
+    # in text up where *this* class is written, which is where the class
+    # asking for the conversion can be read. A base in another module
+    # that annotated a field by name is the one case that reaches for a
+    # name this module may not have, and `unresolved_hints` says what
+    # happens then.
+    override = _override_attrs(options.override, clsname)
+    if override:
+        for field in fields.values():
+            field._reresolve(options, override, hints)
+            _wrap_show_attrs(field)
     # Annotations that are defined in this class (not in base
     # classes).  If __annotations__ isn't present, then this class
     # adds no new   We use this to compute fields that are
@@ -1497,20 +1630,7 @@ def __pre_new__(
         if options.slots and not field.var:
             namespace.pop(field.name, None)
 
-        # Use Key/Repr wrappers
-        # (This is hacky and ugly -- should be reworked)
-        if field.key is HIDE_IF_NONE:
-            field.key = HIDE_IF_NONE(field.public_name)
-        if not isinstance(field.key, SHOW_ATTR):
-            field.key = SHOW_ATTR(field.key)
-
-        if field.repr is HIDE_IF_NONE:
-            if field.var:
-                field.repr = SHOW_ATTR(False)
-            else:
-                field.repr = HIDE_IF_NONE(field.public_name)
-        if not isinstance(field.repr, SHOW_ATTR):
-            field.repr = SHOW_ATTR(field.repr)
+        _wrap_show_attrs(field)
 
         cls_fields.append(field)
 
@@ -2016,7 +2136,16 @@ def _make_init(
     pinned: tx.Container[str] = (),
 ) -> dict:
 
-    locals = {"object": object, "_HasFactory": _HasFactory}
+    # The body below is written in terms of these; each is carried
+    # under a namespaced name because the parameters of the function
+    # being generated are named after the fields, and a field is free to
+    # be called `object`, `isinstance` or anything else.
+    locals = {
+        _OBJECT: object,
+        _ISINSTANCE: isinstance,
+        _EXCEPTION: Exception,
+        _HAS_FACTORY: _HasFactory,
+    }
     positional_onlys, args, kw_onlys = {}, {}, {}
 
     SELF = "self"
@@ -2155,7 +2284,7 @@ def _make_init(
         return dedent(f"""
         try:
             {call}
-        except Exception as {_ERROR}:
+        except {_EXCEPTION} as {_ERROR}:
             {_FIELD_ERROR}({blamed})
         """)
 
@@ -2168,7 +2297,7 @@ def _make_init(
         name = field.public_name
         call = _guarded(f"{name} = {name}()", field, "build")
         return dedent(f"""
-        if isinstance({name}, _HasFactory):
+        if {_ISINSTANCE}({name}, {_HAS_FACTORY}):
         """) + indent(call, " " * 4)
 
     def _make_body_elem(field: Field) -> str:
@@ -2193,7 +2322,7 @@ def _make_init(
             # NOTE: we by pass the object's __setattr__ to avoid running
             # through conversion and validation multiple times.
             body += dedent(f"""
-            object.__setattr__({SELF}, {field.name!r}, {name})
+            {_OBJECT}.__setattr__({SELF}, {field.name!r}, {name})
             """)
         return body
 
@@ -2207,7 +2336,7 @@ def _make_init(
         locals[default] = field.factory if field.factory else field.default
         if not (field.factory or field.converter or field.validator):
             return dedent(f"""
-            object.__setattr__({SELF}, {field.name!r}, {default})
+            {_OBJECT}.__setattr__({SELF}, {field.name!r}, {default})
             """)
         # Building, converting and validating are taken one at a time,
         # so that whichever of them fails can say what it was doing.
@@ -2231,7 +2360,7 @@ def _make_init(
                 field, "validate", value
             )
         return body + dedent(f"""
-        object.__setattr__({SELF}, {field.name!r}, {value})
+        {_OBJECT}.__setattr__({SELF}, {field.name!r}, {value})
         """)
 
     def _make_required_elem(name: str) -> str:
@@ -2714,6 +2843,18 @@ class MetaMagic(ABCMeta):
         keys an instance has is a question about that instance: the
         length can differ between two instances of one class, and can
         change over an instance's life.
+    override : bool | str | list, default=False
+        Decide the settings of an inherited field again from this
+        class. A field is resolved against the settings of the class
+        that declares it and keeps those answers, so by default
+        `frozen=False` on a subclass only reaches the fields that
+        subclass declares itself; `override=True` applies this class's
+        settings to the fields it inherits as well. What a field asked
+        for in its own annotation always wins, whichever way this is
+        set. Give the name of a setting, or a list of names, to decide
+        only those again: frozen, kw_only, positional_only, convert,
+        validate, factory and repr are the ones a field takes from its
+        class.
     polymorphic : bool | str, default=False
         Build one of this class's subclasses instead of this class,
         chosen from the arguments it was given. A subclass says which
@@ -2908,6 +3049,18 @@ class Magic(metaclass=MetaMagic):
         keys an instance has is a question about that instance: the
         length can differ between two instances of one class, and can
         change over an instance's life.
+    override : bool | str | list, default=False
+        Decide the settings of an inherited field again from this
+        class. A field is resolved against the settings of the class
+        that declares it and keeps those answers, so by default
+        `frozen=False` on a subclass only reaches the fields that
+        subclass declares itself; `override=True` applies this class's
+        settings to the fields it inherits as well. What a field asked
+        for in its own annotation always wins, whichever way this is
+        set. Give the name of a setting, or a list of names, to decide
+        only those again: frozen, kw_only, positional_only, convert,
+        validate, factory and repr are the ones a field takes from its
+        class.
     polymorphic : bool | str, default=False
         Build one of this class's subclasses instead of this class,
         chosen from the arguments it was given. A subclass says which

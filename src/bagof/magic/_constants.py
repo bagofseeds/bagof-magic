@@ -103,6 +103,17 @@ _REQUIRED_ARG = "__magic_required__"
 # parameter, while it is being built, converted and validated
 def _VALUE(x: str) -> str: return f"__magic_{x}_value__"
 
+# Names given, when generating __init__, to the locals holding the
+# builtins and the factory marker its body is written in terms of. The
+# generated function's parameters are named after the fields, so a field
+# called `object` or `isinstance` would shadow the builtin of that name
+# for the whole body; carrying each under a namespaced name keeps it
+# reachable whatever the fields are called.
+_OBJECT = "__magic_object__"
+_ISINSTANCE = "__magic_isinstance__"
+_EXCEPTION = "__magic_exception__"
+_HAS_FACTORY = "__magic_has_factory__"
+
 # Name given to a method's return type variable when generating it
 def _RETURN_TYPE(x: str) -> str: return f"__magic_{x}_return_type__"
 

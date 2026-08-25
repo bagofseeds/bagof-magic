@@ -25,6 +25,8 @@ from ._utils import SlotsBase, slots
     'validate',         # Use field type as validator if none is provided
     'unresolved_hints',  # What to do about a type hint that never resolves
     'mapping',          # Generate Mapping methods for dict-like behavior
+    # Resolve an inherited field's settings again from this class
+    'override',
     'polymorphic',      # Build a registered subclass instead of this class
     'pin_discriminant',  # What a subclass does with the field it matches on
     'reverse',          # Use the reverse MRO order when listing fields
@@ -65,6 +67,7 @@ class Options(SlotsBase):
         validate=False,
         unresolved_hints="warn",
         mapping=False,
+        override=False,
         polymorphic=False,
         pin_discriminant="pin",
         reverse=False,

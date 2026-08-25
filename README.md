@@ -70,7 +70,23 @@ User(id=1, name='ada')
 ```
 
 A subclass that wants something different just says so — `class Draft(Record,
-frozen=False)`.
+frozen=False)`. That reaches the fields the subclass declares itself; add
+`override=True` for it to reach the inherited ones as well:
+
+```python
+class Draft(Record, frozen=False, override=True):
+    note: str = ""
+```
+
+```pycon
+>>> draft = Draft(id=1)
+>>> draft.id = 2
+>>> draft
+Draft(id=2, note='')
+```
+
+A field that asked for something in its own annotation — `Frozen[int]`,
+`KwOnly[int]` — keeps it either way.
 
 ### Per-field behaviour lives in the annotation
 
@@ -325,7 +341,8 @@ Circle(radius=6.0)
 ```
 
 **Generic classes.** A `Magic` class can take a type parameter like any
-other:
+other, and a subclass that says what it stands for gets fields of that
+type:
 
 ```python
 from typing import Generic, TypeVar
@@ -333,21 +350,31 @@ from bagof.magic import Magic
 
 T = TypeVar("T")
 
-class Box(Magic, Generic[T]):
+class Box(Magic, Generic[T], convert=True):
     item: T
+
+class IntBox(Box[int]):
+    pass
 ```
 
 ```pycon
->>> Box(1)
-Box(item=1)
->>> Box[str]("hello")
-Box(item='hello')
+>>> Box("1")
+Box(item='1')
+>>> IntBox("1")
+IntBox(item=1)
 ```
 
-The parameter is not filled in on the fields, though: a subclass written as
-`class IntBox(Box[int])` still sees `item` as `T`, so conversion and
-validation have nothing to go on there. Annotate the field with a real type
-in the subclass if you need those.
+`item` is `T` on `Box`, which is no type to convert to and nothing to
+validate against, and `int` on `IntBox` -- which is why one of them turns
+the string into a number and the other does not. It works the same way
+when the parameter is buried in the annotation (`List[T]`, `Optional[T]`,
+`Dict[str, T]`), and a class that fills in one parameter of two leaves the
+other standing for its own subclasses to fill in.
+
+Writing the parameter where the object is built -- `Box[int]("1")` -- is a
+different thing. That is a `typing` alias rather than a class, so it builds
+a plain `Box` and `item` stays as it was; give the subclass a name when you
+want the fields to follow.
 
 **Documentation that writes itself.** Describe a field and it shows up in the
 class docstring and in the generated `__init__`:
@@ -628,6 +655,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `factory` | `False` | build every missing default from its type |
 | `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
 | `mapping` | `False` | behave like a dictionary; a subclass cannot turn it off again |
+| `override` | `False` | apply this class's settings to inherited fields too |
 | `polymorphic` | `False` | build one of this class's subclasses, chosen from the arguments; or `"strict"`, which refuses to build this class when none of them matches |
 | `pin_discriminant` | `"pin"` | what a subclass does with the field it matches on; or `"classvar"`, or `"keep"` |
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
