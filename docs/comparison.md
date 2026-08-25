@@ -152,6 +152,11 @@ class User(Record):
 User(name='ada', age=36)
 ```
 
+A subclass that changes a setting changes it for the fields it declares
+itself. Add `override=True` and it changes for the inherited fields too —
+except where a field asked for something in its own annotation, which always
+wins.
+
 ### Per-field behaviour is part of the annotation
 
 The others put it in a `field()` call on the right-hand side, which pushes the
