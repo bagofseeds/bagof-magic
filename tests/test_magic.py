@@ -554,6 +554,8 @@ class TestParameterAnnotations:
         assert C().x == 7
         with pytest.raises(TypeError):
             C(7)
+        with pytest.raises(TypeError):
+            C(x=7)
 
     def test_no_init_still_takes_its_default(self) -> None:
         class C(Magic):
@@ -1837,7 +1839,7 @@ class TestMapping:
         class Base(Magic, mapping=True):
             a: int
 
-        with pytest.raises(TypeError, match="cannot take it away"):
+        with pytest.raises(TypeError, match="does not take them away"):
             class Child(Base, mapping=False):
                 b: int
 
@@ -1878,6 +1880,21 @@ class TestMapping:
             b: int
 
         assert dict(Child(1, 2)) == {"a": 1, "b": 2}
+
+    def test_mapping_false_is_fine_under_a_real_mapping_base(self) -> None:
+        # The ban is about the dict-like methods a Magic base generates,
+        # not about what the class is: a class that inherits a real
+        # Mapping and asks for no dict-like methods of its own is fine,
+        # and is a Mapping all the same.
+        from collections.abc import Mapping
+
+        class RealMap(Mapping):
+            pass
+
+        class Child(Magic, RealMap, mapping=False):
+            b: int
+
+        assert issubclass(Child, Mapping)
 
     def test_mapping_false_is_fine_without_a_dict_like_base(self) -> None:
         class Base(Magic):
@@ -3005,7 +3022,7 @@ class TestOverride:
         class Base(Magic, mapping=True):
             x: int = 1
 
-        with pytest.raises(TypeError, match="a subclass cannot take it"):
+        with pytest.raises(TypeError, match="does not take them away"):
             class Sub(Base, mapping=False, override=True):
                 pass
 
@@ -3535,6 +3552,30 @@ class TestDocGeneration:
         assert "Class Attributes" in doc
         assert "a classvar" in doc
 
+    def test_doc_a_pseudo_field_with_no_parameter_is_not_a_class_attribute(
+        self,
+    ) -> None:
+        # `NotKw` on a class that takes keywords only leaves the field
+        # with no parameter, which does not turn an `InitVar` into a
+        # class attribute -- nothing is stored on the class for it.
+        class C(Magic, kw_only=True):
+            x: InitVar[NotKw[int]] = 0
+            y: int = 1
+
+        doc = C.__doc__
+        assert "Class Attributes" not in doc
+        assert "x :" not in doc
+        assert "y : int, default=1" in doc
+
+    def test_doc_a_pseudo_field_that_is_never_an_argument_is_one(self) -> None:
+        # A pseudo-field that forbids both ways of passing it is what
+        # `ClassVar` is, however it is spelled.
+        class C(Magic):
+            x: InitVar[NoInit[int]] = 0
+
+        assert "Class Attributes" in C.__doc__
+        assert "x : int, default=0" in C.__doc__
+
     def test_make_doc_elem_annotated_type(self) -> None:
         # `field.type` being a bare Annotated is only reachable by building
         # a Field directly (the public API always strips Annotated).
@@ -3542,6 +3583,52 @@ class TestDocGeneration:
         doc = m._make_doc_elem(field)
         assert doc.startswith("x : int")
         assert "hi" in doc
+
+
+class TestGeneratedDocstring:
+    """The constructor's documentation is arbitrary text."""
+
+    def test_doc_holding_triple_quotes(self) -> None:
+        ends_a_docstring = 'ends a docstring: """ and then some'
+
+        class C(Magic):
+            x: Annotated[int, Doc(ends_a_docstring)]
+
+        assert ends_a_docstring in C.__magic_init__.__doc__
+        assert C(1).x == 1
+
+    def test_default_whose_repr_holds_triple_quotes(self) -> None:
+        class C(Magic):
+            x: str = 'holds """ inside'
+
+        assert 'holds """ inside' in C.__magic_init__.__doc__
+        assert C().x == 'holds """ inside'
+
+    def test_default_whose_repr_holds_a_backslash(self) -> None:
+        class C(Magic):
+            x: str = "a\\b\nc"
+
+        # What the documentation shows is the `repr()`, so the escapes are
+        # spelled out rather than acted on.
+        assert r"default='a\\b\nc'" in C.__magic_init__.__doc__
+        assert C().x == "a\\b\nc"
+
+    def test_an_ordinary_docstring_is_unchanged(self) -> None:
+        class C(Magic):
+            x: int
+            y: Annotated[str, Doc("why not")] = "hi"
+            z: Optional[float] = None
+
+        assert C.__magic_init__.__doc__ == (
+            "\n"
+            "        Parameters\n"
+            "        ----------\n"
+            "        x : int\n"
+            "        y : str, default='hi'\n"
+            "            why not\n"
+            "        z : float, optional\n"
+            "        "
+        )
 
 
 # ======================================================================

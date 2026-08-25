@@ -457,8 +457,26 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 
 Each one sets exactly what its name mentions, and what it sets wins over
 the class setting: on a `kw_only=True` class, `x: Positional[int]` can be
-passed by position anyway. What an annotation says nothing about follows
+passed by position anyway, while `x: NotKw[int]` forbids the one way in
+that was left and so has no parameter at all — it takes its default,
+exactly like `NoInit[int]`. What an annotation says nothing about follows
 the class as usual.
+
+Several of them go on one field by nesting, and when two disagree the outer
+one has the last word.
+
+```pycon
+>>> class ByName(Magic):
+...     x: Kw[NotKw[int]] = 0
+...
+>>> ByName(x=1)
+ByName(x=1)
+>>> class ByPosition(Magic):
+...     x: NotKw[Kw[int]] = 0
+...
+>>> ByPosition(1)
+ByPosition(x=1)
+```
 
 `Init` and `NoInit` say *whether* a field is an argument at all; `Kw`,
 `Positional` and the two `...Only` pairs say *how* it may be passed. A
@@ -523,7 +541,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `unresolved_hints` | `"warn"` | what to do when a type hint still names something undefined the first time a field needs it; or `"raise"`, or `"ignore"` |
 | `factory` | `False` | build every missing default from its type |
 | `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
-| `mapping` | `False` | behave like a dictionary; a subclass cannot turn it off again |
+| `mapping` | `False` | behave like a dictionary; a subclass inherits the methods and cannot turn them off |
 | `override` | `False` | apply this class's settings to inherited fields too |
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
 | `doc` | `True` | add the field table to the class docstring |
