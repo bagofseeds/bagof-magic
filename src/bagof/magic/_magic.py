@@ -306,6 +306,32 @@ def _add_fields(
             fields.setdefault(name, old_field)
 
 
+def _check_public_names(clsname: str, fields: dict[str, Field]) -> None:
+    # Two fields cannot answer to one outside name.
+    #
+    # A field is known outside the class by its alias, or by its own name
+    # with any leading underscore removed. That one name is the
+    # constructor parameter, the key `repr()` shows, the key of the
+    # dict-like view, and the key `fields_dict`, `asdict` and `replace`
+    # speak -- so when two fields share it, only one of them is ever
+    # reachable and the other is silently unreachable under it. The class
+    # is refused here, whether or not the pair would meet in a signature,
+    # so that every accessor can key by that name and trust it.
+    seen = {}
+    for name, field in fields.items():
+        public = field.public_name
+        if public in seen:
+            raise TypeError(
+                f"{clsname} has two fields, {seen[public]!r} and {name!r}, "
+                f"and both are known as {public!r} outside the class: that "
+                f"is the name the constructor takes and repr() shows. A "
+                f"field is known by its alias, or by its own name with any "
+                f"leading underscore removed. Rename one of the two fields, "
+                f"or give one of them an alias of its own."
+            )
+        seen[public] = name
+
+
 #: Names that mark the *structure* of an annotation: the family declared
 #: in `_fields.py` (`KwOnly`, `Frozen`, `ClassVar`, ...) plus the typing
 #: spellings the builder reads. Used to recognise a structural marker by
@@ -585,10 +611,6 @@ def _resolve_string_annotations(
 
 class _BadSignature(SyntaxError):
     """A field layout that cannot produce an `__init__` signature."""
-
-
-class _DuplicateParameter(TypeError):
-    """Two fields that would become the same `__init__` parameter."""
 
 
 def _unbuildable_init(clsname: str, reason: str) -> tx.Callable:
@@ -1306,6 +1328,8 @@ def __pre_new__(
                 f'{attr_name!r} is a field but has no type annotation'
             )
 
+    _check_public_names(clsname, fields)
+
     # Remember all of the fields on our class (including bases).
     namespace[_FIELDS] = fields
 
@@ -1350,7 +1374,7 @@ def __pre_new__(
     # name has to wait until `insert_fns` has compiled it (below).
     try:
         init_kwargs = _make_init(fields, prepost)
-    except (_BadSignature, _DuplicateParameter) as error:
+    except _BadSignature as error:
         if init_name:
             raise
         # This class does not want an `__init__`, so being unable to
@@ -1379,7 +1403,14 @@ def __pre_new__(
     real_fields = {name: f for name, f in fields.items() if not f.var}
 
     if options.mapping:
-        dict_fields = {f.public_key: f for f in fields.values() if f.key}
+        # Only real fields: a `ClassVar` belongs to the class and an
+        # `InitVar` is a constructor argument, so neither is part of the
+        # data and neither is stored on the instance. Reading one back
+        # off an instance answers with the class attribute, or with
+        # nothing at all.
+        dict_fields = {
+            f.public_key: f for f in real_fields.values() if f.key
+        }
         for name, func in _make_mapping(qualname, dict_fields).items():
             namespace.setdefault(name, func)
         Mapping = _abc.Mapping if options.frozen else _abc.MutableMapping
@@ -1739,7 +1770,6 @@ def _make_init(
     positional_onlys, args, kw_onlys = {}, {}, {}
 
     SELF = "self"
-    seen_params = {}
     # Fields that are stored on the instance without being a parameter:
     # they are assigned their own default. A pseudo-field (`ClassVar`,
     # `InitVar`) is not stored on the instance, and a field with neither
@@ -1761,16 +1791,10 @@ def _make_init(
             continue
         # The parameter is named after the field's *public* name, which
         # differs from the field name for an aliased or underscored
-        # field. Two fields that reduce to the same parameter would
-        # generate a signature with a duplicate argument.
-        public = field.public_name
-        if public in seen_params:
-            raise _DuplicateParameter(
-                f"fields {seen_params[public]!r} and {name!r} both map to "
-                f"the __init__ parameter {public!r}"
-            )
-        seen_params[public] = name
-        if public == "self":
+        # field. No two fields reach here under one public name: a class
+        # whose fields collide that way is refused before any method is
+        # built.
+        if field.public_name == "self":
             SELF = _SELF
 
     def _make_signature_elem(field: Field) -> tx.Tuple[str, str]:
