@@ -53,7 +53,6 @@ T = tx.TypeVar("T")
     'default',          # Default value for this field.
     # A factory function that generates a default value for this field.
     'factory',
-    'init',             # Include this field in the generated __init__ method.
     'repr',             # Include this field in the generated __repr__ method.
     'hash',             # Include this field in the generated __hash__ method.
     'eq',               # Include this field in the generated __eq__ method.
@@ -93,8 +92,15 @@ class Field(SlotsBase):
             The default value for the field.
         factory : Callable[[], any], default=`Options().factory`
             A factory function that generates a default value for the field.
-        init : bool, default=True
+        init : bool, optional
             Whether this field is a parameter of the generated `__init__`.
+            It is not stored but worked out from `kw` and `positional`:
+            reading it gives `kw or positional`, so a field that can be
+            passed neither by name nor by position is no parameter at
+            all. Passing `init=False` here forbids both ways; passing
+            `init=True` says nothing, since a field is a parameter
+            unless something says otherwise. Assigning to `field.init`
+            afterwards always sets both.
             Whether that method is generated at all is the class-level
             `init` option, which is a separate question.
         repr : bool, default=True (False for a pseudo-field)
@@ -115,7 +121,8 @@ class Field(SlotsBase):
         kw : bool, default=`not Options().positional_only`
             Make this field a keyword argument in the generated `__init__`
             method. To make the field keyword-only, set `positional=False`
-            as well.
+            as well; with both set to False the field is no argument at
+            all, the same as `init=False`.
         positional : bool, default=`not Options().kw_only`
             Make this field a positional argument in the generated `__init__`
             method. To make the field positional-only, set `kw=False` as well.
@@ -132,8 +139,9 @@ class Field(SlotsBase):
         var : bool, default=False
             Whether this field is a pseudo-field (InitVar or ClassVar).
             Pseudo-fields are not set by the generated `__init__` method,
-            but may one of its arguments (when `init=True`), or used in
-            the generated `__repr__` method (when `init=False, repr=True`).
+            but may be one of its arguments (when `init=True`), or used
+            in the generated `__repr__` method (when `init=False,
+            repr=True`).
             It is often more readable to use the `InitVar` and `ClassVar`
             annotations.
         doc : str, optional
@@ -167,6 +175,18 @@ class Field(SlotsBase):
         if compare is not MISSING:
             kwargs.setdefault("eq", compare)
             kwargs.setdefault("order", compare)
+        # `init` has no slot of its own, for the same reason `compare`
+        # has none: a field is an argument of the generated `__init__`
+        # when it can be passed by name, by position, or both, so `init`
+        # sets that pair. Only `init=False` says anything, though -- a
+        # field is an argument unless something says otherwise, so
+        # `init=True` is what it already would have been.
+        init = kwargs.pop("init", MISSING)
+        if init is True:
+            init = MISSING
+        if init is not MISSING:
+            kwargs.setdefault("kw", init)
+            kwargs.setdefault("positional", init)
         # set slots from keywords
         super().__init__(**kwargs)
 
@@ -179,6 +199,34 @@ class Field(SlotsBase):
             t = (t,)
         t, *args = t
         return tx.Annotated[(t, cls(True)) + tuple(args)]
+
+    @property
+    def init(self) -> bool:
+        """Whether the generated `__init__` takes this field as an
+        argument.
+
+        A field is an argument when it can be passed by keyword, by
+        position, or both, and is no argument at all when it can be
+        passed neither way. Reading this works that out from `kw` and
+        `positional`.
+
+        There are three ways to say it, and they do not all say the
+        same thing:
+
+        - `field.init = True` or `field.init = False` sets both `kw`
+          and `positional` to that, replacing whatever they held.
+          Assignment comes after the declarations have been read, so
+          there is nothing left for it to defer to.
+        - `Field(init=False)`, like `NoInit`, forbids both ways.
+        - `Field(init=True)`, like `Init`, says nothing at all: a field
+          is an argument unless something says otherwise, so how it may
+          be passed is left to `kw`, `positional` and the class.
+        """
+        return bool(self.kw or self.positional)
+
+    @init.setter
+    def init(self, value: bool) -> None:
+        self.kw = self.positional = value
 
     @property
     def public_name(self) -> str:
@@ -239,15 +287,12 @@ class Field(SlotsBase):
             self.doc = None
         if self.var is MISSING:
             self.var = False
-        # `init`, `repr`, `eq` and `order` are deliberately *not* read
-        # from the class options. Those decide whether a method is
-        # generated at all; this decides whether a field takes part in
-        # one. Conflating them made every generated method on a class
-        # that had opted out cover no fields -- so `__magic_eq__` on an
-        # `eq=False` class compared nothing and answered True for any
-        # two instances.
-        if self.init is MISSING:
-            self.init = True
+        # `repr`, `eq` and `order` are deliberately *not* read from the
+        # class options. Those decide whether a method is generated at
+        # all; this decides whether a field takes part in one. Conflating
+        # them made every generated method on a class that had opted out
+        # cover no fields -- so `__magic_eq__` on an `eq=False` class
+        # compared nothing and answered True for any two instances.
         if self.repr is MISSING:
             # A sentinel on the class option is a per-field instruction
             # ("show it only when it has a value"), so it propagates;
@@ -522,26 +567,32 @@ class Init(BoolAnnotatedField):
     """
     Include a field in the generated `__init__`, or leave it out.
 
-    A field left out still exists -- it takes its default or factory value --
-    it just cannot be passed in.
+    `NoInit` lets a field be passed neither by name nor by position: it
+    still exists and takes its default or factory value, it just cannot
+    be passed in.
+
+    `Init` is the other way round and says nothing new -- a field is a
+    parameter unless something says otherwise -- so it changes nothing
+    and is there to say so out loud. How the field may be passed stays
+    with the class, or with `Kw` and `Positional` if you want to say.
 
     !!! example "How it lowers"
         ```pycon
         >>> Init()
-        Init(init=True)
+        Init()
         >>> NoInit()
-        NoInit(init=False)
+        NoInit(kw=False, positional=False)
         >>> NoInit[int]
-        typing.Annotated[int, NoInit(init=False)]
+        typing.Annotated[int, NoInit(kw=False, positional=False)]
         ```
     """
 
-    __set_slots__ = 'init'
+    __set_slots__ = ()
 
 
 @slots
 class NoInit(Init, InversedBoolAnnotatedField):
-    __set_slots__ = 'init'
+    __set_slots__ = ('kw', 'positional')
 
 
 @slots
@@ -551,7 +602,7 @@ class Kw(BoolAnnotatedField):
 
     Pair it with `Positional` to say exactly how a field may be given.
     `KwOnly` and `PositionalOnly` are the two useful combinations, ready
-    made.
+    made; forbidding both is `NoInit`.
 
     !!! example "How it lowers"
         ```pycon
@@ -606,8 +657,11 @@ class NotPositional(Positional, InversedBoolAnnotatedField):
 class KwOnly(Kw, NotPositional): ...
 
 
+# Each inverse negates its own name: not keyword-only means the field may
+# also be passed by position, and not positional-only means it may also be
+# passed by name. Neither says anything about the other half of the pair.
 @slots
-class NotKwOnly(Kw, Positional): ...
+class NotKwOnly(Positional): ...
 
 
 @slots
@@ -615,7 +669,7 @@ class PositionalOnly(Positional, NotKw): ...
 
 
 @slots
-class NotPositionalOnly(Kw, Positional): ...
+class NotPositionalOnly(Kw): ...
 
 
 @slots
@@ -672,11 +726,11 @@ class Var(BoolAnnotatedField):
         >>> Var()
         Var(var=True)
         >>> InitVar()
-        InitVar(init=True, var=True)
+        InitVar(var=True)
         >>> ClassVar()
-        ClassVar(init=False, var=True)
+        ClassVar(kw=False, positional=False, var=True)
         >>> ClassVar[str]
-        typing.Annotated[str, ClassVar(init=False, var=True)]
+        typing.Annotated[str, ClassVar(kw=False, positional=False, var=True)]
         ```
 
     !!! example "In a class"
@@ -696,7 +750,7 @@ class Var(BoolAnnotatedField):
 
 
 @slots
-class InitVar(Var, Init): ...
+class InitVar(Var): ...
 
 
 @slots

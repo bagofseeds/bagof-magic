@@ -23,8 +23,10 @@ from bagof.magic import (
     Factory,
     Field,
     Frozen,
+    Init,
     InitVar,
     Key,
+    Kw,
     KwOnly,
     Magic,
     NoCompare,
@@ -36,6 +38,10 @@ from bagof.magic import (
     NotFrozen,
     NotKey,
     NotKw,
+    NotKwOnly,
+    NotPositional,
+    NotPositionalOnly,
+    Positional,
     PositionalOnly,
     Validate,
     magic,
@@ -415,6 +421,227 @@ class TestInit:
         p = Point()
         assert p.x == 0
         assert p.y == 0
+
+
+# ======================================================================
+# The parameter annotations
+# ======================================================================
+
+
+def _parameter_kind(annotation: tx.Any, **options: tx.Any) -> tx.Any:
+    """How the constructor of a one-field class takes that field.
+
+    `None` when it does not take it at all.
+    """
+
+    class One(Magic, **options):
+        x: annotation[int] = 0
+
+    parameter = signature(One).parameters.get("x")
+    return None if parameter is None else parameter.kind
+
+
+class TestParameterAnnotations:
+    """What each annotation makes of the field it is written on.
+
+    An annotation sets the halves of the pair its own name mentions --
+    may this field be passed by name, may it be passed by position --
+    and what it sets beats the class setting. Whatever it says nothing
+    about follows the class.
+    """
+
+    BOTH = Parameter.POSITIONAL_OR_KEYWORD
+    BY_NAME = Parameter.KEYWORD_ONLY
+    BY_POSITION = Parameter.POSITIONAL_ONLY
+    NEITHER = None
+
+    # (annotation, on a plain class, on kw_only=True, on
+    #  positional_only=True)
+    CASES = [
+        (Init, BOTH, BY_NAME, BY_POSITION),
+        (NoInit, NEITHER, NEITHER, NEITHER),
+        (Kw, BOTH, BY_NAME, BOTH),
+        (NotKw, BY_POSITION, NEITHER, BY_POSITION),
+        (Positional, BOTH, BOTH, BY_POSITION),
+        (NotPositional, BY_NAME, BY_NAME, NEITHER),
+        (KwOnly, BY_NAME, BY_NAME, BY_NAME),
+        (PositionalOnly, BY_POSITION, BY_POSITION, BY_POSITION),
+        (NotKwOnly, BOTH, BOTH, BY_POSITION),
+        (NotPositionalOnly, BOTH, BY_NAME, BOTH),
+    ]
+
+    @pytest.mark.parametrize(
+        "annotation,plain,kw_only,positional_only",
+        CASES,
+        ids=[case[0].__name__ for case in CASES],
+    )
+    def test_signature(
+        self,
+        annotation: tx.Any,
+        plain: tx.Any,
+        kw_only: tx.Any,
+        positional_only: tx.Any,
+    ) -> None:
+        assert _parameter_kind(annotation) is plain
+        assert _parameter_kind(annotation, kw_only=True) is kw_only
+        assert (
+            _parameter_kind(annotation, positional_only=True)
+            is positional_only
+        )
+
+    @pytest.mark.parametrize(
+        "options",
+        [{}, {"kw_only": True}, {"positional_only": True}],
+        ids=["plain", "kw_only", "positional_only"],
+    )
+    def test_init_leaves_the_signature_alone(
+        self, options: tx.Dict[str, bool]
+    ) -> None:
+        # `Init` only says a field is an argument, which it already
+        # was, so the signature must come out as if it were not there.
+        class Bare(Magic, **options):
+            a: int
+            b: int = 0
+
+        class Spelled(Magic, **options):
+            a: Init[int]
+            b: Init[int] = 0
+
+        assert str(signature(Spelled)) == str(signature(Bare))
+
+    def test_init_does_not_move_a_field_up_the_signature(self) -> None:
+        # A field that can be passed by position is bound before the
+        # keyword-only ones whatever order it was declared in, so an
+        # annotation that only means "yes, an argument" must not make
+        # one passable by position.
+        class E(Magic, kw_only=True):
+            a: int
+            x: Init[int]
+
+        assert list(signature(E).parameters) == ["a", "x"]
+        assert E(a=2, x=1) == E(x=1, a=2)
+        with pytest.raises(TypeError):
+            E(1, a=2)
+
+    def test_the_two_inverses_differ(self) -> None:
+        # Each is the negation of its own name: not keyword-only leaves
+        # the field passable by position, not positional-only leaves it
+        # passable by name.
+        class ByPositionToo(Magic, kw_only=True):
+            x: NotKwOnly[int]
+
+        class ByNameOnly(Magic, kw_only=True):
+            x: NotPositionalOnly[int]
+
+        assert ByPositionToo(1).x == 1
+        with pytest.raises(TypeError):
+            ByNameOnly(1)
+
+    def test_a_field_that_is_neither_is_no_parameter(self) -> None:
+        # The fourth state of the pair: on a class that asks for
+        # keywords only, forbidding keywords leaves no way in at all,
+        # and the field takes its default like a `NoInit` one.
+        class C(Magic, kw_only=True):
+            x: NotKw[int] = 7
+
+        assert C().x == 7
+        with pytest.raises(TypeError):
+            C(7)
+
+    def test_no_init_still_takes_its_default(self) -> None:
+        class C(Magic):
+            x: int = 1
+            y: NoInit[int] = 2
+
+        assert (C().x, C().y) == (1, 2)
+        with pytest.raises(TypeError):
+            C(1, 2)
+
+
+class TestFieldInit:
+    """`init` is what the pair adds up to, and a way to write it."""
+
+    def test_setting_init_reaches_the_signature(self) -> None:
+        # The slots are the mechanism; the signature is what a user
+        # sees, so the setter is worth checking through one.
+        kept, dropped = Field(), Field()
+        kept.init = True
+        dropped.init = False
+
+        class C(Magic, kw_only=True):
+            a: Annotated[int, kept] = 1
+            b: Annotated[int, dropped] = 2
+
+        parameters = signature(C.__init__).parameters
+        assert list(parameters) == ["self", "a"]
+        # `kept` said both ways, which beats the class's kw_only.
+        assert parameters["a"].kind is Parameter.POSITIONAL_OR_KEYWORD
+        assert C().b == 2
+
+    # (kw, positional, is it a parameter)
+    CASES = [
+        (True, True, True),
+        (True, False, True),
+        (False, True, True),
+        (False, False, False),
+    ]
+
+    @pytest.mark.parametrize("kw,positional,expected", CASES)
+    def test_init_reads_the_pair(
+        self, kw: bool, positional: bool, expected: bool
+    ) -> None:
+        assert Field(kw=kw, positional=positional).init is expected
+
+    @pytest.mark.parametrize("value", [True, False])
+    @pytest.mark.parametrize(
+        "kw,positional", [case[:2] for case in CASES]
+    )
+    def test_init_writes_the_pair(
+        self, kw: bool, positional: bool, value: bool
+    ) -> None:
+        field = Field(kw=kw, positional=positional)
+        field.init = value
+        assert (field.kw, field.positional, field.init) == (
+            value, value, value
+        )
+
+    def test_assignment_replaces_a_half_that_was_spelled_out(self) -> None:
+        # Assignment is not a default: whatever the pair held, saying
+        # `init` afterwards decides both halves.
+        field = Field(kw=False, positional=True)
+        field.init = True
+        assert (field.kw, field.positional) == (True, True)
+
+    def test_init_false_forbids_both(self) -> None:
+        field = Field(init=False)
+        assert (field.kw, field.positional, field.init) == (
+            False, False, False
+        )
+
+    def test_init_true_says_nothing(self) -> None:
+        # The pair is left for the class options to resolve, exactly as
+        # if `init` had not been given.
+        field = Field(init=True)
+        assert (field.kw, field.positional) == (MISSING, MISSING)
+
+    def test_a_half_given_on_its_own_wins(self) -> None:
+        # In the constructor the two are declarations resolved
+        # together, so the half that was spelled out stands. Which of
+        # them is written first makes no difference.
+        for field in (
+            Field(init=False, kw=True), Field(kw=True, init=False)
+        ):
+            assert (field.kw, field.positional, field.init) == (
+                True, False, True
+            )
+
+    def test_init_false_keeps_the_field_out_of_the_constructor(self) -> None:
+        class C(Magic):
+            x: Annotated[int, Field(init=False)] = 3
+
+        assert C().x == 3
+        with pytest.raises(TypeError):
+            C(3)
 
 
 # ======================================================================
@@ -1079,9 +1306,9 @@ class TestField:
         assert f.frozen is True
 
     def test_field_repr(self) -> None:
-        f = Field(init=True, repr=False)
+        f = Field(kw=True, repr=False)
         r = repr(f)
-        assert "init=True" in r
+        assert "kw=True" in r
         assert "repr=False" in r
 
     def test_field_compare_alias(self) -> None:
@@ -2853,16 +3080,18 @@ class TestAnnotationPolarity:
 
     # (annotation, expected {slot: value})
     CASES = [
-        ("Init", {"init": True}),
-        ("NoInit", {"init": False}),
+        # `Init` sets neither half: a field is an argument unless
+        # something says otherwise.
+        ("Init", {"kw": MISSING, "positional": MISSING}),
+        ("NoInit", {"kw": False, "positional": False}),
         ("Kw", {"kw": True}),
         ("NotKw", {"kw": False}),
         ("Positional", {"positional": True}),
         ("NotPositional", {"positional": False}),
         ("KwOnly", {"kw": True, "positional": False}),
         ("PositionalOnly", {"kw": False, "positional": True}),
-        ("NotKwOnly", {"kw": True, "positional": True}),
-        ("NotPositionalOnly", {"kw": True, "positional": True}),
+        ("NotKwOnly", {"positional": True}),
+        ("NotPositionalOnly", {"kw": True}),
         ("Frozen", {"frozen": True}),
         ("NotFrozen", {"frozen": False}),
         ("Repr", {"repr": True}),
@@ -2878,8 +3107,8 @@ class TestAnnotationPolarity:
         ("Key", {"key": True}),
         ("NotKey", {"key": False}),
         ("Var", {"var": True}),
-        ("InitVar", {"init": True, "var": True}),
-        ("ClassVar", {"init": False, "var": True}),
+        ("InitVar", {"var": True}),
+        ("ClassVar", {"kw": False, "positional": False, "var": True}),
     ]
 
     @pytest.mark.parametrize("name,expected", CASES, ids=[c[0] for c in CASES])
