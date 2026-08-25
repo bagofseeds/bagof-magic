@@ -320,7 +320,11 @@ _TYPE_NODES = tuple(
     for node in (
         ast.Name, ast.Attribute, ast.Subscript, ast.Tuple, ast.List,
         ast.Constant, ast.BinOp, ast.BitOr, ast.UnaryOp, ast.USub,
-        ast.Load, ast.Slice, ast.Ellipsis,
+        ast.Load, ast.Slice,
+        # `Index` wrapped every subscript before Python 3.9 and is gone
+        # again from 3.14, so it is asked for rather than named. A
+        # literal `...` needs nothing of its own: it has parsed as a
+        # `Constant` since 3.8.
         getattr(ast, "Index", None),
     )
     if node is not None
