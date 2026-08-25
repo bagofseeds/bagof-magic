@@ -366,11 +366,10 @@ def _check_public_keys(clsname: str, fields: dict[str, Field]) -> None:
     # that asks for one, and refusing it there would name two fields
     # the reader did not write there.
     #
-    # A pseudo-field is left out. It is not stored on the instance, so
-    # it is never part of the view, and on a dict-like class it takes
-    # its key from its own name by default -- counting it would refuse
-    # a class whose `ClassVar` merely happens to be named after another
-    # field's key, whose view is perfectly well-formed.
+    # A pseudo-field is left out: it is not stored on the instance, so
+    # it is never part of the view and has no key to clash with. A
+    # `ClassVar` named after another field's key is a class whose view
+    # is perfectly well-formed.
     seen = {}
     for name, field in fields.items():
         if field.var:

@@ -3229,6 +3229,38 @@ class TestPublicName:
 
 
 class TestMappingKey:
+
+    def test_a_subclass_turning_mapping_on_sees_inherited_fields(self) -> None:
+        # The class option says whether there is a view at all; every
+        # real field belongs in one, whichever class declared it.
+        class Base(Magic):
+            x: int = 1
+
+        class Sub(Base, mapping=True):
+            z: int = 3
+
+        assert dict(Sub()) == {"x": 1, "z": 3}
+        assert len(Sub()) == 2
+
+    def test_a_class_turning_mapping_on_below_two_levels(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Middle(Base):
+            y: int = 2
+
+        class Sub(Middle, mapping=True):
+            z: int = 3
+
+        assert dict(Sub()) == {"x": 1, "y": 2, "z": 3}
+
+    def test_a_pseudo_field_still_has_no_key(self) -> None:
+        class C(Magic, mapping=True):
+            a: int = 1
+            tag: ClassVar[str] = "x"
+
+        assert dict(C()) == {"a": 1}
+        assert C.__magic_fields__["tag"].public_key is None
     """Two fields cannot share one key of the dict-like view."""
 
     def test_two_explicit_keys_that_are_the_same_are_rejected(self) -> None:
