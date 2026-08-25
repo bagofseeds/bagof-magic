@@ -2560,10 +2560,48 @@ class TestPublicName:
         assert C(1, seed=7).x == 8
 
     def test_two_fields_mapping_to_one_parameter_is_rejected(self) -> None:
-        with pytest.raises(TypeError, match="both map to"):
+        with pytest.raises(TypeError, match="known as 'y'"):
             class Bad(Magic):
                 _y: int
                 y: int
+
+    def test_a_field_out_of_the_constructor_still_collides(self) -> None:
+        # `x` is not a parameter, so the two never meet in the
+        # signature -- but they do meet in the repr, which showed two
+        # keys called `x`.
+        with pytest.raises(TypeError, match="known as 'x'"):
+            class Clash(Magic):
+                x: NoInit[int] = 1
+                _x: int = 2
+
+    def test_an_alias_colliding_with_a_plain_field_is_rejected(self) -> None:
+        # No underscore in sight: an alias lands on the name another
+        # field already has.
+        with pytest.raises(TypeError, match="known as 'b'"):
+            class Coll(Magic):
+                a: Annotated[int, Field(alias="b")] = 1
+                b: NoInit[int] = 2
+
+    def test_a_pseudo_field_collides_too(self) -> None:
+        with pytest.raises(TypeError, match="known as 'unit'"):
+            class Shifted(Magic):
+                _unit: ClassVar[str] = "m"
+                unit: str = "m"
+
+    def test_a_collision_inherited_from_a_base_is_rejected(self) -> None:
+        class Base(Magic):
+            _x: int = 0
+
+        with pytest.raises(TypeError, match="known as 'x'"):
+            class Sub(Base):
+                x: NoInit[int] = 1
+
+    def test_an_alias_of_its_own_settles_the_collision(self) -> None:
+        class Fixed(Magic):
+            x: NoInit[int] = 1
+            _x: Annotated[int, Field(alias="ex")] = 2
+
+        assert repr(Fixed(5)) == "Fixed(x=1, ex=5)"
 
     def test_a_field_named_self_still_works(self) -> None:
         class C(Magic):
@@ -2886,21 +2924,17 @@ class TestInitFalseIsAnEscapeHatch:
 
         assert D(5).y == 5
 
-    def test_two_fields_sharing_a_public_name(self) -> None:
-        class X(Magic, init=False):
-            a: Annotated[int, Field(alias="v")]
-            b: Annotated[int, Field(alias="v")]
-
-        assert X.__name__ == "X"
-
-    def test_the_same_layouts_still_raise_when_init_is_on(self) -> None:
+    def test_the_same_layout_still_raises_when_init_is_on(self) -> None:
         with pytest.raises(SyntaxError, match="without a default"):
             class D(Magic):
                 x: int = 0
                 y: int
 
-        with pytest.raises(TypeError, match="both map to"):
-            class X(Magic):
+    def test_a_name_collision_is_refused_even_without_an_init(self) -> None:
+        # Two fields under one name are a problem wherever that name is
+        # used, so turning `__init__` off does not excuse it.
+        with pytest.raises(TypeError, match="known as 'v'"):
+            class X(Magic, init=False):
                 a: Annotated[int, Field(alias="v")]
                 b: Annotated[int, Field(alias="v")]
 
@@ -4260,40 +4294,6 @@ class TestParityHelpers:
             x: int
 
         assert _api.fields_dict(Plain) == {}
-
-    def test_two_fields_under_one_public_name_are_rejected(self) -> None:
-        # At most one of the two can be a constructor parameter -- here
-        # `_x` is, under the name `x` -- because the constructor refuses
-        # to be built with two parameters of one name. It says nothing
-        # about `x` itself, which is not a parameter at all.
-        class Clash(Magic):
-            x: NoInit[int] = 1
-            _x: int = 2
-
-        for call in (
-            lambda: _api.fields_dict(Clash),
-            lambda: _api.asdict(Clash(5)),
-            lambda: _api.astuple(Clash(5)),
-            lambda: _api.replace(Clash(5), x=6),
-        ):
-            with pytest.raises(TypeError, match="both known as 'x'"):
-                call()
-
-    def test_an_alias_can_collide_with_a_plain_field(self) -> None:
-        # No underscore in sight: an alias lands on the name another
-        # field already has.
-        class Coll(Magic):
-            a: Annotated[int, Field(alias="b")] = 1
-            b: NoInit[int] = 2
-
-        for call in (
-            lambda: _api.fields_dict(Coll),
-            lambda: _api.asdict(Coll(1)),
-            lambda: _api.astuple(Coll(1)),
-            lambda: _api.replace(Coll(1), b=9),
-        ):
-            with pytest.raises(TypeError, match="both known as 'b'"):
-                call()
 
     # -- is_magic ------------------------------------------------------
 
