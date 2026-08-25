@@ -323,6 +323,14 @@ def _metadata() -> str:
 class TestAnnotationsAreNotRun:
 
     def test_an_annotation_that_is_a_call_is_never_called(self) -> None:
+        # Both helpers really do what they claim when something calls
+        # them, so the class below staying quiet means something.
+        assert _record() is int
+        assert _side_effects == ["ran"]
+        _side_effects.clear()
+        with pytest.raises(KeyboardInterrupt):
+            _explode()
+
         class Reckless(Magic):
             x: _record() = 1
             y: _explode() = 2
@@ -341,6 +349,10 @@ class TestAnnotationsAreNotRun:
         assert parameters["port"].kind is not inspect.Parameter.KEYWORD_ONLY
 
     def test_metadata_that_cannot_be_read_back_is_reported(self) -> None:
+        # Not a member of the annotation family, so there is nothing to
+        # rebuild the metadata from -- and it is never called to find out.
+        assert _metadata() == "not a field"
+
         with pytest.warns(UserWarning, match="could not be read back"):
 
             class Tagged(Magic):
