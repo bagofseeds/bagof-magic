@@ -275,6 +275,21 @@ one:
 {'title': 'Ada', 'slug': 'ada'}
 ```
 
+On a frozen class, `__post_init__` cannot set such a field by assignment —
+refusing one after construction is what `frozen` is for. Reach past it with
+`object.__setattr__`, the same thing `dataclasses` and `attrs` ask for here:
+
+```pycon
+>>> class Slug(Magic, frozen=True):
+...     title: str
+...     slug: NoInit[str]
+...
+...     def __post_init__(self, arguments):
+...         object.__setattr__(self, "slug", self.title.lower())
+>>> Slug("Hello World")
+Slug(title='Hello World', slug='hello world')
+```
+
 **A handful of functions** that work on any Magic class, or on one of its
 instances — `Point` from the top of this page, say:
 
