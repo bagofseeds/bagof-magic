@@ -1563,6 +1563,202 @@ class TestMapping:
         with pytest.raises(KeyError):
             meta["unit"]
 
+    # -- a key is there only while its field has a value ---------------
+
+    def test_mapping_skips_a_field_with_no_value(self) -> None:
+        class Note(Magic, mapping=True):
+            text: str
+            pinned: NoInit[bool]
+
+        note = Note("hello")
+        assert dict(note) == {"text": "hello"}
+        assert list(note) == ["text"]
+        assert len(note) == 1
+
+    def test_a_field_filled_in_by_post_init_is_there_from_the_start(
+        self
+    ) -> None:
+        class Draft(Magic, mapping=True):
+            title: str
+            slug: NoInit[str]
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                self.slug = self.title.lower()
+
+        draft = Draft("Ada")
+        assert dict(draft) == {"title": "Ada", "slug": "ada"}
+        assert len(draft) == 2
+
+    def test_a_key_arrives_when_its_field_is_given_a_value(self) -> None:
+        class Note(Magic, mapping=True):
+            text: str
+            pinned: NoInit[bool]
+
+        note = Note("hello")
+        assert "pinned" not in note
+        assert len(note) == 1
+
+        note["pinned"] = True
+
+        assert "pinned" in note
+        assert note["pinned"] is True
+        assert len(note) == 2
+        assert dict(note) == {"text": "hello", "pinned": True}
+        assert list(note) == ["text", "pinned"]
+
+    def test_two_instances_of_one_class_can_be_of_different_lengths(
+        self
+    ) -> None:
+        class Note(Magic, mapping=True):
+            text: str
+            pinned: NoInit[bool]
+
+        filled = Note("a")
+        filled["pinned"] = False
+        assert len(filled) == 2
+        assert len(Note("b")) == 1
+
+    def test_a_mapping_of_nothing_but_unset_fields_is_empty(self) -> None:
+        class Blank(Magic, mapping=True):
+            here: NoInit[int]
+            there: NoInit[int]
+
+        blank = Blank()
+        assert dict(blank) == {}
+        assert list(blank) == []
+        assert len(blank) == 0
+        assert not blank
+
+    def test_getitem_says_which_field_has_no_value(self) -> None:
+        class Note(Magic, mapping=True):
+            pinned: NoInit[bool]
+
+        with pytest.raises(KeyError, match="Note.pinned has no value"):
+            Note()["pinned"]
+
+    def test_the_dict_like_helpers_agree_about_a_field_with_no_value(
+        self
+    ) -> None:
+        # `in`, `get`, `keys`, `values` and `items` come from
+        # `Mapping`, and each is built on `__getitem__` and `__iter__`.
+        class Note(Magic, mapping=True):
+            text: str
+            pinned: NoInit[bool]
+
+        note = Note("hello")
+        assert "pinned" not in note
+        assert note.get("pinned") is None
+        assert note.get("pinned", "no") == "no"
+        assert list(note.keys()) == ["text"]
+        assert list(note.values()) == ["hello"]
+        assert list(note.items()) == [("text", "hello")]
+
+        note["pinned"] = True
+
+        assert "pinned" in note
+        assert note.get("pinned") is True
+        assert list(note.keys()) == ["text", "pinned"]
+        assert list(note.values()) == ["hello", True]
+        assert list(note.items()) == [("text", "hello"), ("pinned", True)]
+
+    def test_the_mutable_helpers_work_over_a_field_with_no_value(
+        self
+    ) -> None:
+        # `pop`, `setdefault` and `clear` come from `MutableMapping`,
+        # and each of them expects a key that is not there to answer
+        # with a `KeyError`.
+        class Note(Magic, mapping=True):
+            text: str
+            pinned: NoInit[bool]
+
+        note = Note("hello")
+        assert note.pop("pinned", "none") == "none"
+        assert note.setdefault("pinned", True) is True
+        assert note.pop("pinned") is True
+        assert dict(note) == {"text": "hello"}
+
+        note.clear()
+        assert dict(note) == {}
+
+    def test_delitem_takes_the_key_away_with_the_value(self) -> None:
+        class Note(Magic, mapping=True):
+            text: str
+            pinned: NoInit[bool]
+
+        note = Note("hello")
+        note["pinned"] = True
+
+        del note["pinned"]
+
+        assert "pinned" not in note
+        assert len(note) == 1
+        assert list(note) == ["text"]
+        assert dict(note) == {"text": "hello"}
+
+        note["pinned"] = False
+        assert dict(note) == {"text": "hello", "pinned": False}
+
+    def test_delitem_of_a_field_with_no_value_says_so(self) -> None:
+        class Note(Magic, mapping=True):
+            pinned: NoInit[bool]
+
+        with pytest.raises(KeyError, match="Note.pinned has no value"):
+            del Note()["pinned"]
+
+    def test_delitem_is_refused_when_a_default_stands_behind_the_key(
+        self
+    ) -> None:
+        class Note(Magic, mapping=True):
+            pinned: bool = False
+
+        note = Note(True)
+        with pytest.raises(TypeError, match="Note.pinned has a default"):
+            del note["pinned"]
+        # Refused, so nothing moved.
+        assert dict(note) == {"pinned": True}
+        assert len(note) == 1
+
+    def test_delitem_empties_a_defaulted_field_under_slots(self) -> None:
+        # With `slots` the default is written into the instance rather
+        # than left on the class, so there is nothing behind it.
+        class Note(Magic, mapping=True, slots=True):
+            pinned: bool = False
+
+        note = Note(True)
+        del note["pinned"]
+        assert dict(note) == {}
+        assert len(note) == 0
+
+    def test_a_frozen_mapping_refuses_to_fill_a_field_in(self) -> None:
+        class Note(Magic, mapping=True, frozen=True):
+            text: str
+            pinned: NoInit[bool]
+
+        note = Note("hello")
+        assert dict(note) == {"text": "hello"}
+        with pytest.raises(AttributeError, match="frozen field 'pinned'"):
+            note["pinned"] = True
+        with pytest.raises(AttributeError, match="frozen field 'text'"):
+            del note["text"]
+        assert dict(note) == {"text": "hello"}
+
+    def test_a_dict_is_what_compares_equal_to_a_dict(self) -> None:
+        # An instance compares as an instance of its class, whether or
+        # not it is dict-like, so the plain dict to compare with a
+        # plain dict is the one `dict()` builds.
+        class Note(Magic, mapping=True):
+            text: str
+            pinned: NoInit[bool]
+
+        note = Note("hello")
+        assert dict(note) == {"text": "hello"}
+        assert note != {"text": "hello"}
+
+        note["pinned"] = True
+        same = Note("hello")
+        same["pinned"] = True
+        assert note == same
+
     def test_mapping_default_off(self) -> None:
         class Point(Magic):
             x: int
@@ -4688,18 +4884,42 @@ class TestParityHelpers:
         assert _api.replace(post).x == 500
         assert _api.replace(post, scale=1).x == 50
 
-    def test_an_unset_field_is_reported_not_leaked(self) -> None:
+    def test_an_unset_field_is_left_out_of_asdict(self) -> None:
         class Lazy(Magic):
             a: int = 1
             b: Annotated[int, Field(init=False, repr=False)]
 
         lazy = Lazy()
         assert lazy.a == 1
-        for call in (lambda: _api.asdict(lazy), lambda: _api.astuple(lazy)):
-            with pytest.raises(
-                AttributeError, match="Lazy.b has never been given a value"
-            ):
-                call()
+        assert _api.asdict(lazy) == {"a": 1}
+        lazy.b = 2
+        assert _api.asdict(lazy) == {"a": 1, "b": 2}
+
+    def test_an_unset_field_is_reported_not_leaked_by_astuple(self) -> None:
+        class Lazy(Magic):
+            a: int = 1
+            b: Annotated[int, Field(init=False, repr=False)]
+
+        with pytest.raises(
+            AttributeError, match="Lazy.b has never been given a value"
+        ):
+            _api.astuple(Lazy())
+
+    def test_the_three_views_of_one_unset_field(self) -> None:
+        # A key names the field it belongs to and a position does not,
+        # so the two dict-shaped answers can leave a field out where
+        # the tuple cannot.
+        class Draft(Magic, mapping=True):
+            title: str
+            slug: NoInit[str]
+
+        draft = Draft("Ada")
+        assert _api.asdict(draft) == {"title": "Ada"}
+        assert dict(draft) == _api.asdict(draft)
+        with pytest.raises(
+            AttributeError, match="Draft.slug has never been given a value"
+        ):
+            _api.astuple(draft)
 
     def test_an_unset_field_is_reported_by_replace_too(self) -> None:
         # Reachable through a hand-written `__init__` that leaves a

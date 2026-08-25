@@ -181,6 +181,23 @@ class Row(Magic, mapping=True):
 {'name': 'ada', 'age': 36}
 ```
 
+A key is there while its field is holding a value. A field the constructor
+does not take, and that has no default, holds none until something sets it —
+so it stays out of the view until then, and joins it the moment it is given
+one:
+
+```pycon
+>>> class Draft(Magic, mapping=True):
+...     title: str
+...     slug: NoInit[str]
+>>> draft = Draft("Ada")
+>>> dict(draft)
+{'title': 'Ada'}
+>>> draft["slug"] = "ada"
+>>> dict(draft)
+{'title': 'Ada', 'slug': 'ada'}
+```
+
 **A handful of functions** that work on any Magic class, or on one of its
 instances — `Point` from the top of this page, say:
 
@@ -201,7 +218,9 @@ one field out from another works it out again, starting from the value it
 already worked out, so `replace` with no changes at all can come back
 different. `asdict` hands the values back exactly as they are stored: it does
 not copy them, and a field holding another object gives you that object rather
-than a dict of its fields.
+than a dict of its fields. Like the dict-like view, it leaves out a field that
+is holding no value; `astuple` says so instead, because a position only means
+anything while every field is in the tuple.
 
 There is also `fields` and `fields_dict` for the fields themselves, and
 `is_magic` to ask whether a class was built by `Magic` at all.
