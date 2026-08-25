@@ -16,3 +16,6 @@ icon: fontawesome/brands/python
         - replace
         - is_magic
         - HIDE_IF_NONE
+        - PolymorphError
+        - NoPolymorphError
+        - AmbiguousPolymorphError
