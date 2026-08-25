@@ -47,7 +47,7 @@ question of what you want the type hints to *do*.
 | Copy with changes | `replace` | `evolve` | `model_copy` | **`replace`** |
 | Convert to a plain `dict` | `asdict` | `asdict` | `model_dump` | **`asdict`**, *without recursing* |
 | JSON schema | no | no | yes | no |
-| Generic classes | yes | yes | yes | **yes**, *[without substitution][generics]* |
+| Generic classes | yes | yes | yes | **yes**, *[named subclass only][generics]* |
 | Runtime dependency | none | `attrs` | `pydantic-core` (compiled) | the `bagof` packages |
 
 ## The same class, four ways
@@ -241,11 +241,13 @@ Being honest about the gaps, with links to where they are being worked on:
   stored, so a field holding another object gives you that object rather
   than a dict of its fields. The others walk the whole tree, copying
   lists and dicts as they go.
-- **Type parameters in a generic class.** `class Box(Magic, Generic[T])`
-  works, but a subclass that fills the parameter in — `class IntBox(Box[int])`
-  — leaves the field's type as `T`, so conversion and validation have nothing
-  to work from and let any value through. [Tracked here][generics]. Pydantic
-  substitutes the parameter; `dataclasses` and `attrs` do not either.
+- **A type parameter filled in where the object is built.** A subclass
+  fills one in — `class IntBox(Box[int])` gives `item` the type `int`, and
+  converts and validates against it — but the same thing written at the
+  point of use, `Box[int]("1")`, does not: that is a `typing` alias rather
+  than a class, so it builds a plain `Box` whose `item` is still `T`.
+  [Tracked here][generics]. Pydantic fills that one in too; `dataclasses`
+  and `attrs` fill in neither.
 - **Editor and type-checker support.** The others are understood by mypy and
   pyright today, so your editor completes the constructor and catches a wrong
   argument type. `magic` is not, yet — [tracked here][typing]. The route is

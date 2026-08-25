@@ -94,6 +94,9 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
     'converter',
     # A function that validates the input value for this field.
     'validator',
+    # Which of `converter`, `validator` and `factory` were worked out
+    # from `type` rather than given.
+    'derived',
     # Whether this field is a pseudo-field (InitVar or ClassVar).
     'var',
     'doc',              # Docstring for this field.
@@ -164,6 +167,12 @@ class Field(SlotsBase):
             If should be pass-through when the value is valid, and raise
             an exception when it is not.
             If `True`, a validator will be generated based on the field type.
+        derived : tuple of str, optional
+            Which of `converter`, `validator` and `factory` were worked
+            out from the field's type rather than handed over ready
+            made. A subclass that fills in a type variable builds those
+            again from the type it filled in, and leaves the ones you
+            passed alone.
         var : bool, default=False
             Whether this field is a pseudo-field (InitVar or ClassVar).
             Pseudo-fields are not set by the generated `__init__` method,
@@ -444,18 +453,36 @@ class Field(SlotsBase):
             self.frozen = options.frozen
         if self.converter is MISSING:
             self.converter = options.convert
-        if self.converter is True:
-            self.converter = _make_converter(self.type, hints, self.name)
         if self.validator is MISSING:
             self.validator = options.validate
-        if self.validator is True:
-            self.validator = _make_validator(self.type, hints, self.name)
         if self.factory is MISSING:
             self.factory = options.factory
-        if self.factory is True:
-            # Resolve the default factory from the field's type hint, the
-            # same way converters/validators are resolved from their bag.
-            self.factory = _make_factory(self.type, hints, self.name)
+        # `True` means "work it out from the type" -- for the factory as
+        # much as for the other two, which is why all three go through
+        # the same step. Which ones were worked out that way is worth
+        # remembering: a subclass that fills in a type variable has to
+        # build those again from the type it filled in, and must leave
+        # a converter, validator or factory that was handed over ready
+        # made exactly as it is.
+        self.derived = tuple(
+            attr for attr in _FROM_TYPE if getattr(self, attr) is True
+        )
+        self._rebuild(hints)
+
+    def _rebuild(self, hints: tx.Optional[Hints] = None) -> None:
+        # Work out again, from the field's type, whatever was worked out
+        # from it the first time round.
+        for attr in self.derived or ():
+            setattr(self, attr, _FROM_TYPE[attr](self.type, hints, self.name))
+
+
+#: How each of the three is built, for a field that asked for it to be
+#: worked out from its type.
+_FROM_TYPE = {
+    "converter": _make_converter,
+    "validator": _make_validator,
+    "factory": _make_factory,
+}
 
 
 def _stored(obj: tx.Any, field: Field) -> tx.Tuple[bool, tx.Any]:

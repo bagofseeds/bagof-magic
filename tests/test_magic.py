@@ -5148,6 +5148,265 @@ class TestGenericClasses:
 
 
 # ======================================================================
+# Filling a type parameter in
+# ======================================================================
+
+
+_S = tx.TypeVar("_S")
+
+
+class ConvertingBox(Magic, tx.Generic[_T], convert=True):
+    item: _T
+
+
+class ValidatingBox(Magic, tx.Generic[_T], validate=True):
+    item: _T
+
+
+class GenericPair(Magic, tx.Generic[_T, _S], convert=True):
+    left: _T
+    right: _S
+
+
+class ConvertingPlain(Magic, convert=True):
+    a: int
+
+
+class PlainChild(ConvertingPlain):
+    b: str
+
+
+class TestFillingATypeParameterIn:
+
+    def test_a_subclass_can_ask_for_conversion_of_a_filled_in_field(
+        self,
+    ) -> None:
+        # Filling the parameter in and deciding a setting again are two
+        # separate things, and a class can want both: the type comes
+        # from the base it parameterises, the setting from itself.
+        class Box(Magic, tx.Generic[_T]):
+            item: _T
+
+        class Loose(Box[int], convert=True):
+            pass
+
+        class Strict(Box[int], convert=True, override=True):
+            pass
+
+        # `Loose` inherits a field already settled without a converter.
+        assert Loose("1").item == "1"
+        # `Strict` decides `convert` again, against the filled-in type.
+        assert Strict("1").item == 1
+    """A subclass that says what a base's type parameter stands for."""
+
+    def test_the_field_takes_the_type_that_was_filled_in(self) -> None:
+        class IntBox(GenericBox[int]):
+            pass
+
+        assert _api.fields_dict(IntBox)["item"].type is int
+
+    def test_the_value_is_converted_to_it(self) -> None:
+        class IntBox(ConvertingBox[int]):
+            pass
+
+        assert IntBox("1").item == 1
+
+    def test_the_value_is_validated_against_it(self) -> None:
+        class IntBox(ValidatingBox[int]):
+            pass
+
+        assert IntBox(1).item == 1
+        with pytest.raises(ValidationError):
+            IntBox("one")
+
+    def test_the_base_is_left_as_it_was(self) -> None:
+        # The subclass fills the parameter in for itself only.
+        class IntBox(ConvertingBox[int]):
+            pass
+
+        assert _api.fields_dict(ConvertingBox)["item"].type is _T
+        assert ConvertingBox("1").item == "1"
+
+    def test_a_default_factory_is_built_from_it(self) -> None:
+        class Box(Magic, tx.Generic[_T]):
+            item: Factory[_T]
+
+        class IntBox(Box[int]):
+            pass
+
+        assert IntBox().item == 0
+
+    # -- hints the parameter is buried in ------------------------------
+
+    def test_a_parameter_inside_a_list(self) -> None:
+        class Box(Magic, tx.Generic[_T], convert=True):
+            items: tx.List[_T]
+
+        class IntBox(Box[int]):
+            pass
+
+        assert _api.fields_dict(IntBox)["items"].type == tx.List[int]
+        assert IntBox(["1", "2"]).items == [1, 2]
+
+    def test_a_parameter_inside_an_optional(self) -> None:
+        class Box(Magic, tx.Generic[_T], convert=True):
+            item: Optional[_T] = None
+
+        class IntBox(Box[int]):
+            pass
+
+        assert _api.fields_dict(IntBox)["item"].type == Optional[int]
+        assert (IntBox("1").item, IntBox().item) == (1, None)
+
+    def test_a_parameter_inside_a_dict(self) -> None:
+        class Box(Magic, tx.Generic[_T], convert=True):
+            items: tx.Dict[str, _T]
+
+        class IntBox(Box[int]):
+            pass
+
+        assert IntBox({"a": "1"}).items == {"a": 1}
+
+    def test_an_annotated_parameter_keeps_its_metadata(self) -> None:
+        class Box(Magic, tx.Generic[_T], convert=True):
+            item: Annotated[_T, Field(alias="why")]
+
+        class IntBox(Box[int]):
+            pass
+
+        assert _api.fields_dict(IntBox)["why"].type is int
+        assert IntBox(why="1").item == 1
+
+    # -- more than one parameter ---------------------------------------
+
+    def test_both_parameters_are_filled_in(self) -> None:
+        class Pair(GenericPair[int, str]):
+            pass
+
+        assert Pair("1", "two") == Pair(1, "two")
+
+    def test_one_parameter_filled_in_and_one_left_standing(self) -> None:
+        class HalfPair(GenericPair[int, _S], tx.Generic[_S]):
+            pass
+
+        fields = _api.fields_dict(HalfPair)
+        assert (fields["left"].type, fields["right"].type) == (int, _S)
+        # The one left standing behaves as it did: no type to work from,
+        # so the value goes through as it is.
+        assert HalfPair("1", "two") == HalfPair(1, "two")
+
+    def test_a_hint_with_no_parameter_of_its_own_is_left_alone(
+        self
+    ) -> None:
+        class Pair(Magic, tx.Generic[_T, _S]):
+            left: _T
+            rights: tx.List[_S]
+            label: str = "?"
+
+        class HalfPair(Pair[int, _S], tx.Generic[_S]):
+            pass
+
+        fields = _api.fields_dict(HalfPair)
+        assert fields["left"].type is int
+        assert fields["label"].type is str
+        # Not merely equal to the hint it started as: the very same one.
+        assert fields["rights"].type is _api.fields_dict(Pair)["rights"].type
+
+    def test_a_parameter_passed_straight_through_fills_nothing_in(
+        self
+    ) -> None:
+        class Relabelled(ConvertingBox[_T], tx.Generic[_T]):
+            pass
+
+        assert _api.fields_dict(Relabelled)["item"].type is _T
+
+    # -- along a chain of classes --------------------------------------
+
+    def test_a_chain_of_three_classes(self) -> None:
+        class Middle(ConvertingBox[int]):
+            pass
+
+        class Leaf(Middle):
+            pass
+
+        assert _api.fields_dict(Leaf)["item"].type is int
+        assert Leaf("1").item == 1
+
+    def test_a_generic_class_in_the_middle_of_the_chain(self) -> None:
+        class Middle(ConvertingBox[_T], tx.Generic[_T]):
+            pass
+
+        class Leaf(Middle[int]):
+            pass
+
+        assert Leaf("1").item == 1
+
+    # -- what must not change ------------------------------------------
+
+    def test_a_field_the_subclass_declares_again_keeps_its_own_type(
+        self
+    ) -> None:
+        class Redeclared(ConvertingBox[int]):
+            item: str
+
+        assert _api.fields_dict(Redeclared)["item"].type is str
+        assert Redeclared("one").item == "one"
+
+    def test_a_converter_that_was_given_rather_than_worked_out(
+        self
+    ) -> None:
+        class Box(Magic, tx.Generic[_T], convert=True):
+            item: ConvertTo[_T, str.upper]
+
+        class IntBox(Box[int]):
+            pass
+
+        assert _api.fields_dict(IntBox)["item"].type is int
+        assert IntBox("hi").item == "HI"
+
+    def test_a_plain_subclass_of_a_plain_class_is_untouched(self) -> None:
+        # Not merely equivalent: the very same converter, so nothing was
+        # built again behind the scenes.
+        inherited = _api.fields_dict(PlainChild)["a"]
+        declared = _api.fields_dict(ConvertingPlain)["a"]
+        assert inherited.type is declared.type
+        assert inherited.converter is declared.converter
+
+    def test_a_filled_in_field_really_does_get_a_new_converter(self) -> None:
+        # The other half of the test above: an identity check only says
+        # something if it can fail.
+        class IntBox(ConvertingBox[int]):
+            pass
+
+        assert (
+            _api.fields_dict(IntBox)["item"].converter
+            is not _api.fields_dict(ConvertingBox)["item"].converter
+        )
+
+    def test_which_of_the_three_came_from_the_type(self) -> None:
+        class Box(Magic, tx.Generic[_T], convert=True):
+            given: ConvertTo[_T, str.upper]
+            worked_out: _T
+
+        fields = _api.fields_dict(Box)
+        assert fields["given"].derived == ()
+        assert fields["worked_out"].derived == ("converter",)
+
+    def test_a_type_still_written_as_a_name_is_filled_in_too(self) -> None:
+        class Box(Magic, tx.Generic[_T], convert=True):
+            item: _T
+
+        class LaterBox(Box["_Later"]):
+            pass
+
+        assert LaterBox(3).item == _Later(3)
+
+
+class _Later(Magic):
+    value: int
+
+
+# ======================================================================
 # replace / asdict / astuple / fields_dict / is_magic
 # ======================================================================
 
