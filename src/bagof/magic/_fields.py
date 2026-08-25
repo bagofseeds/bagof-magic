@@ -92,7 +92,7 @@ class Field(SlotsBase):
             The default value for the field.
         factory : Callable[[], any], default=`Options().factory`
             A factory function that generates a default value for the field.
-        init : bool
+        init : bool, optional
             Whether this field is a parameter of the generated `__init__`.
             It is not stored but worked out from `kw` and `positional`:
             reading it gives `kw or positional`, so a field that can be
@@ -174,9 +174,10 @@ class Field(SlotsBase):
         if compare is not MISSING:
             kwargs.setdefault("eq", compare)
             kwargs.setdefault("order", compare)
-        # `init` is not stored either: a field is an argument of the
-        # generated `__init__` when it can be passed by name, by
-        # position, or both, so `init` sets that pair.
+        # `init` has no slot of its own, for the same reason `compare`
+        # has none: a field is an argument of the generated `__init__`
+        # when it can be passed by name, by position, or both, so `init`
+        # sets that pair.
         init = kwargs.pop("init", MISSING)
         if init is not MISSING:
             kwargs.setdefault("kw", init)
@@ -200,8 +201,9 @@ class Field(SlotsBase):
         argument.
 
         A field is an argument when it can be passed by keyword, by
-        position, or both, and is none when it can be passed neither
-        way. Reading this works that out from `kw` and `positional`;
+        position, or both, and is no argument at all when it can be
+        passed neither way. Reading this works that out from `kw` and
+        `positional`;
         assigning to it writes the pair, so `field.init = False` forbids
         both ways and `field.init = True` allows both -- the same thing
         `NoInit` and `Init` say.

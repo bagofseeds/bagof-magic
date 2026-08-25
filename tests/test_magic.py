@@ -541,6 +541,23 @@ class TestParameterAnnotations:
 class TestFieldInit:
     """`init` is what the pair adds up to, and a way to set both."""
 
+    def test_setting_init_reaches_the_signature(self) -> None:
+        # The slots are the mechanism; the signature is what a user
+        # sees, so the setter is worth checking through one.
+        kept, dropped = Field(), Field()
+        kept.init = True
+        dropped.init = False
+
+        class C(Magic, kw_only=True):
+            a: Annotated[int, kept] = 1
+            b: Annotated[int, dropped] = 2
+
+        parameters = signature(C.__init__).parameters
+        assert list(parameters) == ["self", "a"]
+        # `kept` said both ways, which beats the class's kw_only.
+        assert parameters["a"].kind is Parameter.POSITIONAL_OR_KEYWORD
+        assert C().b == 2
+
     # (kw, positional, is it a parameter)
     CASES = [
         (True, True, True),

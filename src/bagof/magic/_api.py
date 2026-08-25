@@ -337,9 +337,9 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
     keyed = _keyed(_field_table(obj, "replace").values())
     given, arguments = dict(changes), []
     for name, field in keyed.items():
-        # A field the constructor does not take -- `NoInit`, or one
-        # that can be passed neither by position nor by name -- has no
-        # way in.
+        # A field the constructor does not take -- one that can be
+        # passed neither by position nor by name, which is what `NoInit`
+        # says -- has no way in.
         if not field.init:
             if name in given:
                 raise TypeError(

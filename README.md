@@ -327,10 +327,32 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 Each one sets exactly what its name mentions, and what it sets wins over
 the class setting: on a `kw_only=True` class, `x: Positional[int]` can be
 passed by position anyway, and `x: Init[int]` either way. What an
-annotation says nothing about follows the class as usual. Since a field that can be passed neither by name nor
-by position is no argument at all — which is what `NoInit` says —
-`NotKwOnly` reads as "by position as well", the same as `Positional`, and
-`NotPositionalOnly` as "by name as well", the same as `Kw`.
+annotation says nothing about follows the class as usual.
+
+A field that can be passed neither by name nor by position is no argument
+at all, which is what `NoInit` says. So `NotKwOnly` means "by position as
+well" and `NotPositionalOnly` means "by name as well" — they are aliases
+for `Positional` and `Kw`, not opposites of `KwOnly` and
+`PositionalOnly`.
+
+One thing to know before reaching for `Positional`, `NotKwOnly` or
+`Init` on a `kw_only=True` class: a field that can be passed by position
+moves to the front of the signature, ahead of the keyword-only ones,
+whatever order it was declared in.
+
+```python
+class Point(Magic, kw_only=True):
+    a: int
+    x: Init[int]
+```
+
+```pycon
+>>> Point(1, a=2)
+Point(a=2, x=1)
+```
+
+`x` is declared second and is the first positional argument. That is true
+of `Positional` today as well; `Init` joins it.
 
 Anything you cannot say with one of these, say with `Field(...)` inside an
 `Annotated`: `x: Annotated[int, Field(alias="ex", metadata={"unit": "m"})]`.
