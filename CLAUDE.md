@@ -287,6 +287,22 @@ ruff check src tests
 codespell src tests
 ```
 
+**Run the tests on more than one Python before pushing** if you touched
+anything version-sensitive — the `ast` module, `typing` internals,
+`inspect`, or how annotations are read. CI covers 3.8 and current, and
+those are the two ends where things differ; a change that passes on one
+interpreter can fail to *import* on another. `ast.Ellipsis` disappearing
+in 3.14 took out every test in the suite at collection time, and no
+amount of local testing on a single version would have shown it.
+
+Whatever interpreters are to hand will do, pointed at the sources
+directly rather than at an install:
+
+```sh
+cd /tmp && PYTHONPATH=<repo>/src:<each sibling>/src:<site-packages> \
+    python3.13 -m pytest <repo>/tests -q
+```
+
 ## Known follow-ups (see the tracking issues)
 
 - **Correctness**: unresolved string/forward annotations breaking
