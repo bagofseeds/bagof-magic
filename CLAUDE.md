@@ -41,6 +41,8 @@ src/bagof/magic/
   _resolve.py   # adapters to bagof-converters / -validators / -factories,
                 #   and the deferred resolution of a hint that is still
                 #   a name when the class is built
+  _generics.py  # what a base's type parameters stand for, and filling
+                #   them in on the hints that mention them
   _errors.py    # field_error -- names the class and the field when a
                 #   converter, a validator or a factory raises
 tests/
@@ -197,6 +199,52 @@ Evaluating the text later does not reopen the "an annotation is never
 called" rule. `_readable` refuses text with a call in it, so `x:
 _record()` is reported rather than run at first use, exactly as it is at
 class creation.
+
+### Filling in a base's type parameters
+
+`class IntBox(Box[int])` says that `Box`'s `T` stands for `int` here, so
+the inherited field `item: T` has to become `item: int` -- otherwise both
+resolvers get a bare `TypeVar` to work from, let every value through, and
+a class that asked for `validate=True` checks nothing.
+
+Two things make that work, and neither takes a hint apart by hand:
+
+- **What each base fills in is read off `__orig_bases__`**, the bases as
+  they were written, which is the same attribute `_mro` needs and the only
+  place `Box[int]` survives -- by the time the metaclass runs, the bases
+  themselves are plain `Box`. `type_arguments` zips a base's
+  `__parameters__` against `tx.get_args` of the alias, and keys the answer
+  by the base, so two parameterised bases fill in their own variables and
+  not each other's.
+- **The substitution itself is `typing`'s.** A hint that mentions a type
+  variable lists it in `__parameters__` and can be subscripted to fill it
+  in -- `List[T][int]` is `List[int]` -- which is exactly what writing
+  `Box[int]` does. Going through that rather than walking the hint and
+  rebuilding it keeps every shape working the same way on 3.8 through
+  3.13: nested (`Dict[str, T]`), carrying metadata (`Annotated[T,
+  Field(alias="why")]`, whose metadata survives), a callable signature,
+  and a base that fills one parameter of two. The two spellings a walk
+  would need -- `copy_with` and `__args__` -- disagree with `get_args`
+  about `Callable` and about `Annotated`, and differ by version; this one
+  does not exist in two forms.
+
+A generic class named on its own (a bare `Box` as a field's type) lists
+its parameters too, and is deliberately **not** filled in: it stands for
+`Box` with anything in it. That is why `substitute` also asks for an
+origin before doing anything.
+
+Which of a field's converter, validator and factory came from its type is
+recorded on the field as `derived` when `setdefault` resolves them, and
+`Field._rebuild` builds those again from the new type. One that was handed
+over ready made (`ConvertTo(some_callable)`) is not in `derived` and is
+left exactly as it is: filling in a type variable says nothing about it.
+The snapshot holds the *names* of the three, not the type they came from,
+so there is no second copy of the type to keep in step with the first.
+
+Out of scope, and said so in `README.md` and `docs/comparison.md`:
+`Box[int]("1")`. That is a `typing` alias rather than a class, so there is
+no class being built and nowhere to hang a filled-in field table;
+catching it means intercepting `__call__` on the alias.
 
 ## Conventions specific to this repo (do not regress)
 
