@@ -66,6 +66,9 @@ convert : bool, default=False
     Use field type as converter if none is provided
 validate : bool, default=False
     Use field type as validator if none is provided
+unresolved_hints : str, default="warn"
+    What to do when a type hint still names something undefined the
+    first time a field needs it: "warn", "raise" or "ignore"
 mapping : bool, default=False
     Implement the `Mapping` protocol; a subclass cannot turn it off.
     Only a field that is holding a value is a key
@@ -163,6 +166,7 @@ from ._constants import (
     _FIELD_ERROR,
     _FIELDS,
     _GENERATED,
+    _HINTS,
     _MAGIC,
     _OPTIONS,
     _POST_INIT_NAME,
@@ -184,6 +188,8 @@ from ._fields import __all__ as __all_fields__
 from ._options import *  # noqa: F401, F403
 from ._options import Options
 from ._options import __all__ as __all_options__
+from ._resolve import POLICIES as _HINT_POLICIES
+from ._resolve import Hints
 from ._utils import _get_origin, rebuild_cls
 
 __all__ += __all_arguments__
@@ -203,6 +209,14 @@ __all__ += __all_options__
 def __post_new__(cls: type) -> type:
     # These methods have to be assigned post-new, because they
     # use super and therefore need to reference the class.
+
+    # A class that names itself in an annotation -- `parent: Node` in
+    # `class Node` -- cannot be looked up by name until now, and a class
+    # written inside a function is never in its module at all. Put it
+    # where its own fields will look for it.
+    hints = cls.__dict__.get(_HINTS)
+    if hints is not None:
+        hints.namespace[cls.__name__] = cls
 
     fields = getattr(cls, _FIELDS, {})
     fields = {name: field for name, field in fields.items() if not field.var}
@@ -338,6 +352,48 @@ def _check_public_names(clsname: str, fields: dict[str, Field]) -> None:
                 f"or give one of them an alias of its own."
             )
         seen[public] = name
+
+
+def _check_public_keys(clsname: str, fields: dict[str, Field]) -> None:
+    # Two fields cannot answer to one key of the dict-like view.
+    #
+    # A field's key is the one `Key("...")` gives it, or its public
+    # name. The view has room for only one field under a key, so when
+    # two share one, the second silently wins the key and the first is
+    # unreachable through the view -- and `len()` counts one field
+    # fewer than the class has.
+    #
+    # The class is refused whether or not it is dict-like. A key is a
+    # property of the field, so it is inherited, and `mapping` can be
+    # turned on further down the chain: a pair of keys written on a
+    # class with no view is a collision waiting for the first subclass
+    # that asks for one, and refusing it there would name two fields
+    # the reader did not write there.
+    #
+    # A pseudo-field is left out: it is not stored on the instance, so
+    # it is never part of the view and has no key to clash with. A
+    # `ClassVar` named after another field's key is a class whose view
+    # is perfectly well-formed.
+    seen = {}
+    for name, field in fields.items():
+        if field.var:
+            continue
+        key = field.public_key
+        if key is None:
+            continue
+        if key in seen:
+            raise TypeError(
+                f"{clsname} has two fields, {seen[key]!r} and {name!r}, "
+                f"and both take {key!r} as their key: only one of them "
+                f"can be reached under {key!r} in the dict-like view, and "
+                f"len() would count one field fewer than the class has. A "
+                f"field's key is the one Key() gives it, or its public "
+                f"name -- and a key stays with the field, so a subclass "
+                f"built with mapping=True inherits both. Give one of the "
+                f"two a key of its own, or leave it out of the view with "
+                f"NotKey."
+            )
+        seen[key] = name
 
 
 #: Names that mark the *structure* of an annotation: the family declared
@@ -1242,6 +1298,18 @@ def __pre_new__(
             f"not {options.mutable_default!r}"
         )
 
+    if options.unresolved_hints not in _HINT_POLICIES:
+        raise ValueError(
+            f"unresolved_hints must be 'warn', 'raise' or 'ignore', "
+            f"not {options.unresolved_hints!r}"
+        )
+
+    # Where a type this class was annotated with by name is looked up
+    # when a field first needs it. The class itself is added to the
+    # namespace once it exists, by `__post_new__`.
+    hints = Hints(globals, {}, clsname, options.unresolved_hints)
+    namespace[_HINTS] = hints
+
     # Annotations that are defined in this class (not in base
     # classes).  If __annotations__ isn't present, then this class
     # adds no new   We use this to compute fields that are
@@ -1291,7 +1359,7 @@ def __pre_new__(
             field.default = namespace[field.name]
 
         # Set unset field options from class options
-        field.setdefault(options)
+        field.setdefault(options, hints)
 
         # A mutable default is promoted to a factory (or rejected),
         # so that instances do not end up sharing one object.
@@ -1337,6 +1405,7 @@ def __pre_new__(
             )
 
     _check_public_names(clsname, fields)
+    _check_public_keys(clsname, fields)
 
     # Remember all of the fields on our class (including bases).
     namespace[_FIELDS] = fields
@@ -2437,6 +2506,13 @@ class MetaMagic(ABCMeta):
         Use field type as converter if none is provided.
     validate : bool, default=False
         Use field type as validator if none is provided.
+    unresolved_hints : str, default="warn"
+        What to do when a field is annotated with a type that is still
+        not defined the first time the field needs it. "warn" says so
+        once and carries on without converting or validating, "raise"
+        turns it into an error, and "ignore" says nothing. A default
+        value that cannot be built raises whichever is chosen, since
+        there is no value to hand back.
     mapping : bool, default=False
         Implement the `Mapping` protocol. A subclass cannot turn it off
         again. Only a field that is holding a value is a key, so which
@@ -2529,6 +2605,13 @@ class Magic(metaclass=MetaMagic):
         Use field type as converter if none is provided.
     validate : bool, default=False
         Use field type as validator if none is provided.
+    unresolved_hints : str, default="warn"
+        What to do when a field is annotated with a type that is still
+        not defined the first time the field needs it. "warn" says so
+        once and carries on without converting or validating, "raise"
+        turns it into an error, and "ignore" says nothing. A default
+        value that cannot be built raises whichever is chosen, since
+        there is no value to hand back.
     mapping : bool, default=False
         Implement the `Mapping` protocol. A subclass cannot turn it off
         again. Only a field that is holding a value is a key, so which

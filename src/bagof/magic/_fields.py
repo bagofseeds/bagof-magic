@@ -39,6 +39,7 @@ import typing_extensions as tx
 
 from ._constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
 from ._options import Options
+from ._resolve import Hints
 from ._resolve import make_converter as _make_converter
 from ._resolve import make_factory as _make_factory
 from ._resolve import make_validator as _make_validator
@@ -276,9 +277,16 @@ class Field(SlotsBase):
         field.update(Field(name=name, type=type, default=default))
         return field
 
-    def setdefault(self, options: Options) -> None:
+    def setdefault(
+        self, options: Options, hints: tx.Optional[Hints] = None
+    ) -> None:
         # When field options are not explicitly set (MISSING), they are
         # inherited from the class options.
+        #
+        # `hints` says where to look up a type this field was annotated
+        # with by name -- a class that names itself, a type imported for
+        # type checking only -- when the converter, validator or factory
+        # built here is first used.
         if options.kw_only and options.positional_only:
             raise ValueError(
                 "Cannot set both kw_only and positional_only to True"
@@ -312,7 +320,13 @@ class Field(SlotsBase):
             # a set kept both.
             self.hash = None
         if self.key is MISSING:
-            self.key = options.mapping
+            # Like `repr`, and for the same reason: the class option
+            # says whether there is a dict-like view at all, which is
+            # not this field's business. What is the field's business is
+            # whether it belongs in one -- and a real field does, so
+            # that a class turning `mapping` on later, or a subclass
+            # turning it on, finds every field already in the view.
+            self.key = not self.var
         if self.eq is MISSING:
             self.eq = True
         if self.order is MISSING:
@@ -340,17 +354,17 @@ class Field(SlotsBase):
         if self.converter is MISSING:
             self.converter = options.convert
         if self.converter is True:
-            self.converter = _make_converter(self.type)
+            self.converter = _make_converter(self.type, hints, self.name)
         if self.validator is MISSING:
             self.validator = options.validate
         if self.validator is True:
-            self.validator = _make_validator(self.type)
+            self.validator = _make_validator(self.type, hints, self.name)
         if self.factory is MISSING:
             self.factory = options.factory
         if self.factory is True:
             # Resolve the default factory from the field's type hint, the
             # same way converters/validators are resolved from their bag.
-            self.factory = _make_factory(self.type)
+            self.factory = _make_factory(self.type, hints, self.name)
 
 
 def _stored(obj: tx.Any, field: Field) -> tx.Tuple[bool, tx.Any]:

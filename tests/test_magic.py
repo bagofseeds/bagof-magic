@@ -3232,6 +3232,110 @@ class TestPublicName:
         assert C(1).self == 1
 
 
+class TestMappingKey:
+
+    def test_a_subclass_turning_mapping_on_sees_inherited_fields(self) -> None:
+        # The class option says whether there is a view at all; every
+        # real field belongs in one, whichever class declared it.
+        class Base(Magic):
+            x: int = 1
+
+        class Sub(Base, mapping=True):
+            z: int = 3
+
+        assert dict(Sub()) == {"x": 1, "z": 3}
+        assert len(Sub()) == 2
+
+    def test_a_class_turning_mapping_on_below_two_levels(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Middle(Base):
+            y: int = 2
+
+        class Sub(Middle, mapping=True):
+            z: int = 3
+
+        assert dict(Sub()) == {"x": 1, "y": 2, "z": 3}
+
+    def test_a_pseudo_field_still_has_no_key(self) -> None:
+        class C(Magic, mapping=True):
+            a: int = 1
+            tag: ClassVar[str] = "x"
+
+        assert dict(C()) == {"a": 1}
+        assert C.__magic_fields__["tag"].public_key is None
+    """Two fields cannot share one key of the dict-like view."""
+
+    def test_two_explicit_keys_that_are_the_same_are_rejected(self) -> None:
+        # Both fields answered to `k`, so `a` was unreachable through
+        # the view and `len()` came out one short of the field count.
+        with pytest.raises(TypeError, match="both take 'k' as their key"):
+            class Row(Magic, mapping=True):
+                a: Annotated[int, Key("k")] = 1
+                b: Annotated[int, Key("k")] = 2
+
+    def test_the_same_pair_is_rejected_without_a_view(self) -> None:
+        # A key is carried by the field, and `mapping` can be turned on
+        # by any subclass, so the pair is refused where it is written
+        # rather than on the first subclass that asks for a view.
+        with pytest.raises(TypeError, match="both take 'k' as their key"):
+            class Row(Magic):
+                a: Annotated[int, Key("k")] = 1
+                b: Annotated[int, Key("k")] = 2
+
+    def test_an_explicit_key_landing_on_a_field_name_is_rejected(self) -> None:
+        # `k` takes its key from its own name, `b` asks for the same one.
+        with pytest.raises(TypeError, match="'k' and 'b'"):
+            class Row(Magic, mapping=True):
+                k: int = 1
+                b: Annotated[int, Key("k")] = 2
+
+    def test_a_collision_inherited_from_a_base_is_rejected(self) -> None:
+        class Base(Magic, mapping=True):
+            a: Annotated[int, Key("k")] = 1
+
+        with pytest.raises(TypeError, match="'a' and 'b'"):
+            class Sub(Base):
+                b: Annotated[int, Key("k")] = 2
+
+    def test_keys_of_their_own_are_fine(self) -> None:
+        class Row(Magic, mapping=True):
+            a: Annotated[int, Key("first")] = 1
+            b: Annotated[int, Key("second")] = 2
+
+        assert dict(Row()) == {"first": 1, "second": 2}
+        assert len(Row()) == 2
+
+    def test_a_field_out_of_the_view_cannot_collide(self) -> None:
+        # `b` has no key at all, so `a` may have the one it gave up.
+        class Row(Magic, mapping=True):
+            a: Annotated[int, Key("b")] = 1
+            b: NotKey[int] = 2
+
+        assert dict(Row()) == {"b": 1}
+
+    def test_a_pseudo_field_named_after_a_key_is_fine(self) -> None:
+        # `unit` is a class attribute, never part of the view, so it
+        # leaves the key of that name free for a field that is.
+        class Row(Magic, mapping=True):
+            unit: ClassVar[str] = "m"
+            by: InitVar[int] = 0
+            length: Annotated[int, Key("unit")] = 1
+
+        row = Row()
+        assert dict(row) == {"unit": 1}
+        assert row.unit == "m"
+
+    def test_the_public_name_check_still_comes_first(self) -> None:
+        # Two fields sharing a public name share a key as well; the
+        # name is what the reader has to fix, so that is what is said.
+        with pytest.raises(TypeError, match="known as 'y'"):
+            class Row(Magic, mapping=True):
+                _y: int = 1
+                y: int = 2
+
+
 class TestAnnotationPolarity:
     """Every annotation sets its own slots to its own value."""
 
