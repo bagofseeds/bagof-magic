@@ -361,6 +361,19 @@ class Field(SlotsBase):
             self.factory = _make_factory(self.type, hints, self.name)
 
 
+def _stored(obj: tx.Any, field: Field) -> tx.Tuple[bool, tx.Any]:
+    """The value a field holds on an object, and whether it holds one.
+
+    A field that is not a constructor argument and has no default is
+    only ever set by hand, so an object can be perfectly usable and
+    still have nothing under this name.
+    """
+    try:
+        return True, getattr(obj, field.name)
+    except AttributeError:
+        return False, None
+
+
 # ----------------------------------------------------------------------
 # Annotations
 # ----------------------------------------------------------------------
