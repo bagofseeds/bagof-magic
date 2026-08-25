@@ -3048,6 +3048,23 @@ def _dispatching(metacls: type) -> type:
     return made
 
 
+# What a type checker is told about the classes this metaclass builds.
+# PEP 681 is how `dataclasses` and `attrs` describe themselves, and mypy,
+# pyright and PyCharm all read it -- so the generated `__init__` shows up
+# in completion and its arguments are checked, without anyone installing
+# a plugin.
+#
+# The four defaults have to say what `Options._DEFAULTS` says, or a
+# checker infers a signature the class does not have. They are written
+# out as literals because that is the only form a checker reads;
+# `tests/test_dataclass_transform.py` compares them with the real ones.
+@tx.dataclass_transform(
+    field_specifiers=(Field,),
+    eq_default=True,
+    order_default=False,
+    kw_only_default=False,
+    frozen_default=False,
+)
 class MetaMagic(ABCMeta):
     """
     Examples
@@ -3420,14 +3437,35 @@ class Magic(metaclass=MetaMagic):
 # ----------------------------------------------------------------------
 
 
+@tx.dataclass_transform(
+    field_specifiers=(Field,),
+    eq_default=True,
+    order_default=False,
+    kw_only_default=False,
+    frozen_default=False,
+)
 @tx.overload
 def magic(**kwargs) -> tx.Callable[[type], type]: ...
 
 
+@tx.dataclass_transform(
+    field_specifiers=(Field,),
+    eq_default=True,
+    order_default=False,
+    kw_only_default=False,
+    frozen_default=False,
+)
 @tx.overload
 def magic(cls: type, **kwargs) -> type: ...
 
 
+@tx.dataclass_transform(
+    field_specifiers=(Field,),
+    eq_default=True,
+    order_default=False,
+    kw_only_default=False,
+    frozen_default=False,
+)
 def magic(cls: tx.Optional[type] = None, **kwargs):
     """
     Decorator for defining a Magic class.
