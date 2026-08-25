@@ -1457,6 +1457,48 @@ class TestMapping:
         d = Derived(1, 2)
         assert dict(d) == {"x": 1, "y": 2}
 
+    def test_mapping_skips_pseudo_fields(self) -> None:
+        class Row(Magic, mapping=True):
+            name: str
+            unit: ClassVar[str] = "m"
+            by: InitVar[int] = 0
+
+        row = Row("ada")
+        assert dict(row) == {"name": "ada"}
+        assert list(row) == ["name"]
+        assert len(row) == 1
+        # Still a perfectly ordinary class attribute, just not a key.
+        assert row.unit == "m"
+        for key in ("unit", "by"):
+            with pytest.raises(KeyError):
+                row[key]
+            with pytest.raises(KeyError):
+                row[key] = 1
+            with pytest.raises(KeyError):
+                del row[key]
+
+    def test_mapping_skips_an_init_var_with_no_default(self) -> None:
+        class Shift(Magic, mapping=True):
+            x: int
+            by: InitVar[int]
+
+        shift = Shift(1, 2)
+        assert dict(shift) == {"x": 1}
+        assert list(shift) == ["x"]
+        assert len(shift) == 1
+
+    def test_mapping_of_nothing_but_pseudo_fields(self) -> None:
+        class Meta(Magic, mapping=True):
+            unit: ClassVar[str] = "m"
+            by: InitVar[int] = 0
+
+        meta = Meta()
+        assert dict(meta) == {}
+        assert list(meta) == []
+        assert len(meta) == 0
+        with pytest.raises(KeyError):
+            meta["unit"]
+
     def test_mapping_default_off(self) -> None:
         class Point(Magic):
             x: int
@@ -2723,10 +2765,48 @@ class TestPublicName:
         assert C(1, seed=7).x == 8
 
     def test_two_fields_mapping_to_one_parameter_is_rejected(self) -> None:
-        with pytest.raises(TypeError, match="both map to"):
+        with pytest.raises(TypeError, match="known as 'y'"):
             class Bad(Magic):
                 _y: int
                 y: int
+
+    def test_a_field_out_of_the_constructor_still_collides(self) -> None:
+        # `x` is not a parameter, so the two never meet in the
+        # signature -- but they do meet in the repr, which showed two
+        # keys called `x`.
+        with pytest.raises(TypeError, match="known as 'x'"):
+            class Clash(Magic):
+                x: NoInit[int] = 1
+                _x: int = 2
+
+    def test_an_alias_colliding_with_a_plain_field_is_rejected(self) -> None:
+        # No underscore in sight: an alias lands on the name another
+        # field already has.
+        with pytest.raises(TypeError, match="known as 'b'"):
+            class Coll(Magic):
+                a: Annotated[int, Field(alias="b")] = 1
+                b: NoInit[int] = 2
+
+    def test_a_pseudo_field_collides_too(self) -> None:
+        with pytest.raises(TypeError, match="known as 'unit'"):
+            class Shifted(Magic):
+                _unit: ClassVar[str] = "m"
+                unit: str = "m"
+
+    def test_a_collision_inherited_from_a_base_is_rejected(self) -> None:
+        class Base(Magic):
+            _x: int = 0
+
+        with pytest.raises(TypeError, match="known as 'x'"):
+            class Sub(Base):
+                x: NoInit[int] = 1
+
+    def test_an_alias_of_its_own_settles_the_collision(self) -> None:
+        class Fixed(Magic):
+            x: NoInit[int] = 1
+            _x: Annotated[int, Field(alias="ex")] = 2
+
+        assert repr(Fixed(5)) == "Fixed(x=1, ex=5)"
 
     def test_a_field_named_self_still_works(self) -> None:
         class C(Magic):
@@ -3049,21 +3129,17 @@ class TestInitFalseIsAnEscapeHatch:
 
         assert D(5).y == 5
 
-    def test_two_fields_sharing_a_public_name(self) -> None:
-        class X(Magic, init=False):
-            a: Annotated[int, Field(alias="v")]
-            b: Annotated[int, Field(alias="v")]
-
-        assert X.__name__ == "X"
-
-    def test_the_same_layouts_still_raise_when_init_is_on(self) -> None:
+    def test_the_same_layout_still_raises_when_init_is_on(self) -> None:
         with pytest.raises(SyntaxError, match="without a default"):
             class D(Magic):
                 x: int = 0
                 y: int
 
-        with pytest.raises(TypeError, match="both map to"):
-            class X(Magic):
+    def test_a_name_collision_is_refused_even_without_an_init(self) -> None:
+        # Two fields under one name are a problem wherever that name is
+        # used, so turning `__init__` off does not excuse it.
+        with pytest.raises(TypeError, match="known as 'v'"):
+            class X(Magic, init=False):
                 a: Annotated[int, Field(alias="v")]
                 b: Annotated[int, Field(alias="v")]
 
@@ -4423,40 +4499,6 @@ class TestParityHelpers:
             x: int
 
         assert _api.fields_dict(Plain) == {}
-
-    def test_two_fields_under_one_public_name_are_rejected(self) -> None:
-        # At most one of the two can be a constructor parameter -- here
-        # `_x` is, under the name `x` -- because the constructor refuses
-        # to be built with two parameters of one name. It says nothing
-        # about `x` itself, which is not a parameter at all.
-        class Clash(Magic):
-            x: NoInit[int] = 1
-            _x: int = 2
-
-        for call in (
-            lambda: _api.fields_dict(Clash),
-            lambda: _api.asdict(Clash(5)),
-            lambda: _api.astuple(Clash(5)),
-            lambda: _api.replace(Clash(5), x=6),
-        ):
-            with pytest.raises(TypeError, match="both known as 'x'"):
-                call()
-
-    def test_an_alias_can_collide_with_a_plain_field(self) -> None:
-        # No underscore in sight: an alias lands on the name another
-        # field already has.
-        class Coll(Magic):
-            a: Annotated[int, Field(alias="b")] = 1
-            b: NoInit[int] = 2
-
-        for call in (
-            lambda: _api.fields_dict(Coll),
-            lambda: _api.asdict(Coll(1)),
-            lambda: _api.astuple(Coll(1)),
-            lambda: _api.replace(Coll(1), b=9),
-        ):
-            with pytest.raises(TypeError, match="both known as 'b'"):
-                call()
 
     # -- is_magic ------------------------------------------------------
 

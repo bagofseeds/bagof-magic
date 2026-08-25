@@ -45,22 +45,11 @@ def _field_table(obj: tx.Any, caller: str) -> tx.Dict[str, Field]:
 def _keyed(found: tx.Iterable[Field]) -> tx.Dict[str, Field]:
     """Key fields by the name they are known by outside the class.
 
-    At most one of a colliding pair can be a constructor parameter: the
-    constructor refuses to be built with two parameters of one name. It
-    says nothing about a field that is not a parameter, though, so a
-    pair with one of each still reaches here.
+    One name reaches one field: a class with two fields under a single
+    outside name is refused when it is built, so the keys here never
+    collide.
     """
-    keyed = {}
-    for field in found:
-        name = field.public_name
-        if name in keyed:
-            raise TypeError(
-                f"fields {keyed[name].name!r} and {field.name!r} are both "
-                f"known as {name!r} outside the class, so they cannot both "
-                f"appear under that name. Give one of them its own alias."
-            )
-        keyed[name] = field
-    return keyed
+    return {field.public_name: field for field in found}
 
 
 def _value(obj: tx.Any, field: Field, caller: str) -> tx.Any:
