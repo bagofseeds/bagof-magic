@@ -200,6 +200,9 @@ class Header(Magic, mapping=True):
 {'content_type': 'text/plain', 'length': 12}
 ```
 
+A key is there while its field is holding a value, so a field that is only
+filled in later stays out of the view until it is.
+
 ### The docstring writes itself
 
 ```python
