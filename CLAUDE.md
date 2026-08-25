@@ -45,6 +45,8 @@ src/bagof/magic/
                 #   them in on the hints that mention them
   _errors.py    # field_error -- names the class and the field when a
                 #   converter, a validator or a factory raises
+  _polymorph.py # the registry, the constraint shapes and the dispatch
+                #   behind the `polymorphic` option
 tests/
   test_magic.py                 # the builder, option by option
   test_docstrings.py            # every `pycon` block in a docstring or page
@@ -430,6 +432,13 @@ those are the two ends where things differ; a change that passes on one
 interpreter can fail to *import* on another. `ast.Ellipsis` disappearing
 in 3.14 took out every test in the suite at collection time, and no
 amount of local testing on a single version would have shown it.
+
+**Clear `__pycache__` between mutation-testing runs.** Editing a file in
+place to check that a test catches the change is a good habit, but
+Python validates a `.pyc` by size and mtime — so an edit that leaves the
+file the same size, made and reverted inside one second, is invisible
+and the stale bytecode runs instead. A swap of two adjacent lines is
+exactly that shape, and it makes a caught mutation look uncaught.
 
 Whatever interpreters are to hand will do, pointed at the sources
 directly rather than at an install:
