@@ -458,7 +458,7 @@ class TestParameterAnnotations:
     # (annotation, on a plain class, on kw_only=True, on
     #  positional_only=True)
     CASES = [
-        (Init, BOTH, BOTH, BOTH),
+        (Init, BOTH, BY_NAME, BY_POSITION),
         (NoInit, NEITHER, NEITHER, NEITHER),
         (Kw, BOTH, BY_NAME, BOTH),
         (NotKw, BY_POSITION, NEITHER, BY_POSITION),
@@ -489,19 +489,39 @@ class TestParameterAnnotations:
             is positional_only
         )
 
-    def test_init_on_a_kw_only_class_also_takes_a_position(self) -> None:
-        # `Init` says both ways, which is not what the class asks for --
-        # and an annotation written on one field beats the class.
-        class C(Magic, kw_only=True):
+    @pytest.mark.parametrize(
+        "options",
+        [{}, {"kw_only": True}, {"positional_only": True}],
+        ids=["plain", "kw_only", "positional_only"],
+    )
+    def test_init_leaves_the_signature_alone(
+        self, options: tx.Dict[str, bool]
+    ) -> None:
+        # `Init` only says a field is an argument, which it already
+        # was, so the signature must come out as if it were not there.
+        class Bare(Magic, **options):
+            a: int
+            b: int = 0
+
+        class Spelled(Magic, **options):
+            a: Init[int]
+            b: Init[int] = 0
+
+        assert str(signature(Spelled)) == str(signature(Bare))
+
+    def test_init_does_not_move_a_field_up_the_signature(self) -> None:
+        # A field that can be passed by position is bound before the
+        # keyword-only ones whatever order it was declared in, so an
+        # annotation that only means "yes, an argument" must not make
+        # one passable by position.
+        class E(Magic, kw_only=True):
+            a: int
             x: Init[int]
 
-        assert (C(1).x, C(x=1).x) == (1, 1)
-
-    def test_init_on_a_positional_only_class_also_takes_a_name(self) -> None:
-        class C(Magic, positional_only=True):
-            x: Init[int]
-
-        assert (C(1).x, C(x=1).x) == (1, 1)
+        assert list(signature(E).parameters) == ["a", "x"]
+        assert E(a=2, x=1) == E(x=1, a=2)
+        with pytest.raises(TypeError):
+            E(1, a=2)
 
     def test_the_two_inverses_differ(self) -> None:
         # Each is the negation of its own name: not keyword-only leaves
@@ -539,7 +559,7 @@ class TestParameterAnnotations:
 
 
 class TestFieldInit:
-    """`init` is what the pair adds up to, and a way to set both."""
+    """`init` is what the pair adds up to, and a way to write it."""
 
     def test_setting_init_reaches_the_signature(self) -> None:
         # The slots are the mechanism; the signature is what a user
@@ -598,19 +618,21 @@ class TestFieldInit:
             False, False, False
         )
 
-    def test_init_true_allows_both(self) -> None:
+    def test_init_true_says_nothing(self) -> None:
+        # The pair is left for the class options to resolve, exactly as
+        # if `init` had not been given.
         field = Field(init=True)
-        assert (field.kw, field.positional, field.init) == (True, True, True)
+        assert (field.kw, field.positional) == (MISSING, MISSING)
 
     def test_a_half_given_on_its_own_wins(self) -> None:
         # In the constructor the two are declarations resolved
         # together, so the half that was spelled out stands. Which of
         # them is written first makes no difference.
         for field in (
-            Field(init=True, kw=False), Field(kw=False, init=True)
+            Field(init=False, kw=True), Field(kw=True, init=False)
         ):
             assert (field.kw, field.positional, field.init) == (
-                False, True, True
+                True, False, True
             )
 
     def test_init_false_keeps_the_field_out_of_the_constructor(self) -> None:
@@ -2862,7 +2884,9 @@ class TestAnnotationPolarity:
 
     # (annotation, expected {slot: value})
     CASES = [
-        ("Init", {"kw": True, "positional": True}),
+        # `Init` sets neither half: a field is an argument unless
+        # something says otherwise.
+        ("Init", {"kw": MISSING, "positional": MISSING}),
         ("NoInit", {"kw": False, "positional": False}),
         ("Kw", {"kw": True}),
         ("NotKw", {"kw": False}),

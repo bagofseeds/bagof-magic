@@ -308,7 +308,7 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | `Factory[T]` | build the default by calling something | — |
 | `ConvertTo[T]` | convert whatever comes in | — |
 | `Validate[T]` | reject anything that does not fit | — |
-| `Init[T]` | may be passed by name or by position | `NoInit` |
+| `Init[T]` | say it is an argument, which it is anyway | `NoInit` |
 | `Kw[T]` | may be passed by name | `NotKw` |
 | `Positional[T]` | may be passed by position | `NotPositional` |
 | `KwOnly[T]` | by name only | `NotKwOnly` |
@@ -326,24 +326,30 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 
 Each one sets exactly what its name mentions, and what it sets wins over
 the class setting: on a `kw_only=True` class, `x: Positional[int]` can be
-passed by position anyway, and `x: Init[int]` either way. What an
-annotation says nothing about follows the class as usual.
+passed by position anyway. What an annotation says nothing about follows
+the class as usual.
 
-A field that can be passed neither by name nor by position is no argument
-at all, which is what `NoInit` says. So `NotKwOnly` means "by position as
-well" and `NotPositionalOnly` means "by name as well" — they are aliases
-for `Positional` and `Kw`, not opposites of `KwOnly` and
+`Init` and `NoInit` say *whether* a field is an argument at all; `Kw`,
+`Positional` and the two `...Only` pairs say *how* it may be passed. A
+field is an argument unless something says otherwise, so `Init[T]` is
+there to say that out loud and changes nothing — it is `NoInit` that
+does the work, by forbidding both ways at once.
+
+That is also why `NotKwOnly` means "by position as well" and
+`NotPositionalOnly` means "by name as well": each negates its own name
+and leaves the other half alone, which makes them aliases for
+`Positional` and `Kw` rather than opposites of `KwOnly` and
 `PositionalOnly`.
 
-One thing to know before reaching for `Positional`, `NotKwOnly` or
-`Init` on a `kw_only=True` class: a field that can be passed by position
-moves to the front of the signature, ahead of the keyword-only ones,
-whatever order it was declared in.
+One thing to know before reaching for `Positional` or `NotKwOnly` on a
+`kw_only=True` class: a field that can be passed by position moves to the
+front of the signature, ahead of the keyword-only ones, whatever order it
+was declared in.
 
 ```python
 class Point(Magic, kw_only=True):
     a: int
-    x: Init[int]
+    x: Positional[int]
 ```
 
 ```pycon
@@ -351,8 +357,7 @@ class Point(Magic, kw_only=True):
 Point(a=2, x=1)
 ```
 
-`x` is declared second and is the first positional argument. That is true
-of `Positional` today as well; `Init` joins it.
+`x` is declared second and is the first positional argument.
 
 Anything you cannot say with one of these, say with `Field(...)` inside an
 `Annotated`: `x: Annotated[int, Field(alias="ex", metadata={"unit": "m"})]`.

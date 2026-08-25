@@ -97,9 +97,10 @@ class Field(SlotsBase):
             It is not stored but worked out from `kw` and `positional`:
             reading it gives `kw or positional`, so a field that can be
             passed neither by name nor by position is no parameter at
-            all, and assigning to it sets both of them. Passing `init=`
-            here sets both of them too, except for a half spelled out
-            beside it, which stands.
+            all. Passing `init=False` here forbids both ways; passing
+            `init=True` says nothing, since a field is a parameter
+            unless something says otherwise. Assigning to `field.init`
+            afterwards always sets both.
             Whether that method is generated at all is the class-level
             `init` option, which is a separate question.
         repr : bool, default=True (False for a pseudo-field)
@@ -177,8 +178,12 @@ class Field(SlotsBase):
         # `init` has no slot of its own, for the same reason `compare`
         # has none: a field is an argument of the generated `__init__`
         # when it can be passed by name, by position, or both, so `init`
-        # sets that pair.
+        # sets that pair. Only `init=False` says anything, though -- a
+        # field is an argument unless something says otherwise, so
+        # `init=True` is what it already would have been.
         init = kwargs.pop("init", MISSING)
+        if init is True:
+            init = MISSING
         if init is not MISSING:
             kwargs.setdefault("kw", init)
             kwargs.setdefault("positional", init)
@@ -203,16 +208,19 @@ class Field(SlotsBase):
         A field is an argument when it can be passed by keyword, by
         position, or both, and is no argument at all when it can be
         passed neither way. Reading this works that out from `kw` and
-        `positional`;
-        assigning to it writes the pair, so `field.init = False` forbids
-        both ways and `field.init = True` allows both -- the same thing
-        `NoInit` and `Init` say.
+        `positional`.
 
-        Assignment replaces whatever the pair held, including a half
-        that was set on purpose: it says "this is a parameter now".
-        Writing `init=` when the field is built behaves a little
-        differently -- there, a `kw` or `positional` spelled out beside
-        it is a declaration of its own, and stands.
+        There are three ways to say it, and they do not all say the
+        same thing:
+
+        - `field.init = True` or `field.init = False` sets both `kw`
+          and `positional` to that, replacing whatever they held.
+          Assignment comes after the declarations have been read, so
+          there is nothing left for it to defer to.
+        - `Field(init=False)`, like `NoInit`, forbids both ways.
+        - `Field(init=True)`, like `Init`, says nothing at all: a field
+          is an argument unless something says otherwise, so how it may
+          be passed is left to `kw`, `positional` and the class.
         """
         return bool(self.kw or self.positional)
 
@@ -559,33 +567,27 @@ class Init(BoolAnnotatedField):
     """
     Include a field in the generated `__init__`, or leave it out.
 
-    `Init` lets the field be passed either way, by name or by position,
-    even on a class that asks for one of them only. `NoInit` lets it be
-    passed neither way: the field still exists and takes its default or
-    factory value, it just cannot be passed in.
+    `NoInit` lets a field be passed neither by name nor by position: it
+    still exists and takes its default or factory value, it just cannot
+    be passed in.
+
+    `Init` is the other way round and says nothing new -- a field is a
+    parameter unless something says otherwise -- so it changes nothing
+    and is there to say so out loud. How the field may be passed stays
+    with the class, or with `Kw` and `Positional` if you want to say.
 
     !!! example "How it lowers"
         ```pycon
         >>> Init()
-        Init(kw=True, positional=True)
+        Init()
         >>> NoInit()
         NoInit(kw=False, positional=False)
         >>> NoInit[int]
         typing.Annotated[int, NoInit(kw=False, positional=False)]
         ```
-
-    !!! example "In a class"
-        ```pycon
-        >>> class Point(Magic, kw_only=True):
-        ...     x: Init[int]
-        ...     y: int
-        ...
-        >>> Point(1, y=2)
-        Point(x=1, y=2)
-        ```
     """
 
-    __set_slots__ = ('kw', 'positional')
+    __set_slots__ = ()
 
 
 @slots
