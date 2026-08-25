@@ -1696,6 +1696,7 @@ class _FuncBuilder:
         self.methods = {}  # name -> function
         self.globals = globals
         self.locals = {}
+        self.docs = {}  # name -> docstring
         self.overwrite_errors = {}
         self.unconditional_adds = {}
 
@@ -1724,12 +1725,32 @@ class _FuncBuilder:
             return_annotation = ''
 
         args = ','.join(args or [])
-        body = '\n'.join(body or ['pass'])
-        doc = '\n'.join(['"""'] + (doc or []) + ['"""'])
+        body = '\n'.join(body or [])
+        # A function whose every statement is empty -- one for a class
+        # with nothing to assign -- still needs a body of its own now
+        # that the documentation is no longer standing in for one.
+        if not body.strip():
+            body = 'pass'
+
+        # The documentation is attached to the finished function rather
+        # than written into the source: a field's documentation, or the
+        # `repr()` of a default, is arbitrary text, and text holding a
+        # quote or a backslash would end or escape its way out of a
+        # literal in the generated source.
+        #
+        # It is laid out as a docstring written there would have been --
+        # opening newline, every line indented to the body of a function
+        # nested one level inside the builder's own -- so that `help()`
+        # and the API reference render exactly what they rendered when it
+        # was a literal.
+        if doc:
+            margin = " " * 8
+            self.docs[name] = "\n{}\n{}".format(
+                indent("\n".join(doc), margin), margin
+            )
 
         src = "\n".join([
             f"def {name}({args}){return_annotation}:",
-            indent(doc, " " * 4),
             indent(body, " " * 4),
         ])
         if decorator:
@@ -1775,6 +1796,10 @@ class _FuncBuilder:
         qualname = namespace.get("__qualname__", None)
         for name, fn in zip(self.methods, fns):
             fn.__qualname__ = f"{qualname}.{fn.__name__}"
+            # `python -OO` asks for docstrings to be dropped, and one
+            # written by hand would be gone already.
+            if name in self.docs and sys.flags.optimize < 2:
+                fn.__doc__ = self.docs[name]
             if self.unconditional_adds.get(name, False):
                 namespace[name] = fn
             elif name not in namespace:

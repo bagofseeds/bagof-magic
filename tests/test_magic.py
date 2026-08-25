@@ -3298,6 +3298,52 @@ class TestDocGeneration:
         assert "hi" in doc
 
 
+class TestGeneratedDocstring:
+    """The constructor's documentation is arbitrary text."""
+
+    def test_doc_holding_triple_quotes(self) -> None:
+        ends_a_docstring = 'ends a docstring: """ and then some'
+
+        class C(Magic):
+            x: Annotated[int, Doc(ends_a_docstring)]
+
+        assert ends_a_docstring in C.__magic_init__.__doc__
+        assert C(1).x == 1
+
+    def test_default_whose_repr_holds_triple_quotes(self) -> None:
+        class C(Magic):
+            x: str = 'holds """ inside'
+
+        assert 'holds """ inside' in C.__magic_init__.__doc__
+        assert C().x == 'holds """ inside'
+
+    def test_default_whose_repr_holds_a_backslash(self) -> None:
+        class C(Magic):
+            x: str = "a\\b\nc"
+
+        # What the documentation shows is the `repr()`, so the escapes are
+        # spelled out rather than acted on.
+        assert r"default='a\\b\nc'" in C.__magic_init__.__doc__
+        assert C().x == "a\\b\nc"
+
+    def test_an_ordinary_docstring_is_unchanged(self) -> None:
+        class C(Magic):
+            x: int
+            y: Annotated[str, Doc("why not")] = "hi"
+            z: Optional[float] = None
+
+        assert C.__magic_init__.__doc__ == (
+            "\n"
+            "        Parameters\n"
+            "        ----------\n"
+            "        x : int\n"
+            "        y : str, default='hi'\n"
+            "            why not\n"
+            "        z : float, optional\n"
+            "        "
+        )
+
+
 # ======================================================================
 # Slots inheritance corner cases
 # ======================================================================
