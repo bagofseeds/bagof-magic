@@ -63,15 +63,6 @@ def _keyed(found: tx.Iterable[Field]) -> tx.Dict[str, Field]:
     return keyed
 
 
-def _is_parameter(field: Field) -> bool:
-    """Whether the constructor takes this field as an argument.
-
-    A field is left out of the signature when it opts out of `__init__`,
-    and also when it can be passed neither by position nor by name.
-    """
-    return bool(field.init and (field.positional or field.kw))
-
-
 def _value(obj: tx.Any, field: Field, caller: str) -> tx.Any:
     """The value a field holds, or a written error if it holds none."""
     try:
@@ -357,7 +348,10 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
     keyed = _keyed(_field_table(obj, "replace").values())
     given, arguments = dict(changes), []
     for name, field in keyed.items():
-        if not _is_parameter(field):
+        # A field the constructor does not take -- `NoInit`, or one
+        # that can be passed neither by position nor by name -- has no
+        # way in.
+        if not field.init:
             if name in given:
                 raise TypeError(
                     f"{cls.__name__} does not take {name!r} when it is "

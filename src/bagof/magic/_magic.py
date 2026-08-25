@@ -1398,9 +1398,10 @@ def __pre_new__(
             if isinstance(options.match_args, str)
             else "__match_args__"
         ),
-        tuple(
-            f.public_name for f in fields.values() if f.init and f.positional
-        ),
+        # Only the fields that can be matched by position: a
+        # keyword-only field, or one the constructor does not take at
+        # all, has no place to be matched from.
+        tuple(f.public_name for f in fields.values() if f.positional),
         bool(options.match_args),
     )
 
@@ -1747,13 +1748,14 @@ def _make_init(
     # is where such a field gets its value.
     own_defaults = {}
     for name, field in fields.items():
-        if field.init and field.positional and not field.kw:
+        if field.positional and not field.kw:
             positional_onlys[name] = field
-        elif field.init and field.positional and field.kw:
+        elif field.positional and field.kw:
             args[name] = field
-        elif field.init and not field.positional and field.kw:
+        elif field.kw:
             kw_onlys[name] = field
         else:
+            # Neither by position nor by name: no parameter at all.
             if not field.var and (
                 field.default is not MISSING or field.factory
             ):

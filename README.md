@@ -308,7 +308,7 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | `Factory[T]` | build the default by calling something | — |
 | `ConvertTo[T]` | convert whatever comes in | — |
 | `Validate[T]` | reject anything that does not fit | — |
-| `Init[T]` | include in `__init__` | `NoInit` |
+| `Init[T]` | may be passed by name or by position | `NoInit` |
 | `Kw[T]` | may be passed by name | `NotKw` |
 | `Positional[T]` | may be passed by position | `NotPositional` |
 | `KwOnly[T]` | by name only | `NotKwOnly` |
@@ -323,6 +323,14 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | `ClassVar[T]` | shared by every instance | — |
 | `InitVar[T]` | passed in, used, not kept | — |
 | `Doc[T, "..."]` | describe the field | — |
+
+Each one sets exactly what its name mentions, and what it sets wins over
+the class setting: on a `kw_only=True` class, `x: Positional[int]` can be
+passed by position anyway, and `x: Init[int]` either way. What an
+annotation says nothing about follows the class as usual. Since a field that can be passed neither by name nor
+by position is no argument at all — which is what `NoInit` says —
+`NotKwOnly` reads as "by position as well", the same as `Positional`, and
+`NotPositionalOnly` as "by name as well", the same as `Kw`.
 
 Anything you cannot say with one of these, say with `Field(...)` inside an
 `Annotated`: `x: Annotated[int, Field(alias="ex", metadata={"unit": "m"})]`.
