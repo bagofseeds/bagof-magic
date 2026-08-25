@@ -13,6 +13,6 @@ def test_public_api_is_exported() -> None:
     """The headline names are exported."""
     import bagof.magic as magic
 
-    for name in ("Magic", "magic", "Field"):
+    for name in ("Magic", "magic", "Field", "field"):
         assert name in magic.__all__
         assert hasattr(magic, name)

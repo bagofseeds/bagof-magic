@@ -109,7 +109,7 @@ Task(name='build', tags=['ci'], priority=2)
 ```
 
 If you are coming from `dataclasses` or `attrs`, the spelling you already
-know works too — `Field(...)` as the default value. Both produce the same
+know works too — `field(...)` as the default value. Both produce the same
 field, so use whichever reads better:
 
 === "In the annotation"
@@ -126,17 +126,24 @@ field, so use whichever reads better:
 === "As the default"
 
     ```python
-    from bagof.magic import Magic, Field
+    from bagof.magic import Magic, field
 
     class Task(Magic):
         name: str
-        tags: list = Field(factory=list)
-        token: str = Field(default="", repr=False)
+        tags: list = field(factory=list)
+        token: str = field(default="", repr=False)
     ```
 
 The annotation form composes better — several of them stack on one field
-without nesting — and the `Field(...)` form takes anything the annotations
+without nesting — and the `field(...)` form takes anything the annotations
 cannot say.
+
+`Field(...)` is the same thing spelled with a capital letter, and still
+works. Prefer the lowercase one where you have the choice: mypy reads
+`tags: list = Field(factory=list)` as assigning a `Field` to a `list` and
+objects, while `field(...)` says it produces whatever the field is
+annotated as. Inside an `Annotated`, where there is no assignment for a
+checker to object to, either reads the same.
 
 ### Conversion and validation come from the type
 
