@@ -355,6 +355,34 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
 
         A hook that only checks its arguments, or that fills in a field
         the constructor does not take, is unaffected.
+
+    !!! warning "A converter runs again too"
+        The same applies to conversion: the values going back in have
+        already been converted once, so a converter that does not give
+        the same answer for its own output changes the value each time.
+
+        ```pycon
+        >>> def double(value):
+        ...     return value * 2
+        ...
+        >>> class Doubled(Magic):
+        ...     x: ConvertTo[int, double] = 3
+        ...
+        >>> Doubled()
+        Doubled(x=6)
+        >>> replace(Doubled())
+        Doubled(x=12)
+        ```
+
+        A converter that comes from a type hint is almost always safe
+        here -- `int("7")` and `int(7)` are both `7` -- so this is a
+        question for one you wrote yourself. `dataclasses.replace` and
+        `attrs.evolve` behave the same way, for the same reason: the
+        copy is a construction, not a copy of the bytes.
+
+        Where that matters, turn conversion off for the fields it
+        affects, or write the converter so that running it twice is the
+        same as running it once.
     """
     cls = type(obj)
     # Every field, pseudo-fields included: a change has to be turned
