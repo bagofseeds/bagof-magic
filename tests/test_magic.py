@@ -6061,3 +6061,107 @@ class TestTheFailingFieldIsNamed:
         assert server.spare == 8080
         server.port = "443"
         assert server.port == 443
+
+
+class TestFieldNamesThatShadowGeneratedLocals:
+    """
+    A field may be called anything at all, including the names the
+    generated `__init__` is itself written in terms of.
+    """
+
+    def test_a_field_named_object(self) -> None:
+        class Box(Magic):
+            object: int
+
+        box = Box(3)
+        assert box.object == 3
+        assert repr(box) == "Box(object=3)"
+
+    def test_a_field_named_object_is_stored_on_assignment_too(self) -> None:
+        class Box(Magic, convert=True):
+            object: int
+
+        box = Box(3)
+        box.object = "4"
+        assert box.object == 4
+
+    def test_a_field_named_isinstance(self) -> None:
+        class Box(Magic):
+            isinstance: Factory[list]
+
+        assert Box().isinstance == []
+        assert Box([1, 2]).isinstance == [1, 2]
+
+    def test_a_field_named_exception(self) -> None:
+        def refuse(value: tx.Any) -> int:
+            raise ValueError("I would rather not")
+
+        class Box(Magic):
+            Exception: ConvertTo[int, refuse]
+
+        with pytest.raises(ValueError) as caught:
+            Box(1)
+        assert "Box.Exception" in str(caught.value)
+        assert "I would rather not" in str(caught.value)
+
+    def test_a_field_named_after_the_factory_marker(self) -> None:
+        class Box(Magic):
+            # `alias=False` keeps the leading underscore on the
+            # parameter, which is what puts the name in the way.
+            _HasFactory: Annotated[list, Field(alias=False, factory=list)]
+
+        box = Box()
+        assert box._HasFactory == []
+        assert Box([1])._HasFactory == [1]
+
+    def test_all_of_them_at_once(self) -> None:
+        class Box(Magic):
+            self: int
+            object: int
+            isinstance: Factory[list]
+            Exception: str = "fine"
+
+        box = Box(1, 2)
+        assert box.self == 1
+        assert box.object == 2
+        assert box.isinstance == []
+        assert box.Exception == "fine"
+
+    def test_every_generated_statement_under_a_shadowing_name(self) -> None:
+        def double(value: int) -> int:
+            return value * 2
+
+        def five() -> int:
+            return 5
+
+        def three() -> int:
+            return 3
+
+        def positive(value: int) -> int:
+            if value <= 0:
+                raise ValueError("must be positive")
+            return value
+
+        # A parameter that is built, converted and validated, and a
+        # field that is not a parameter and goes through all three from
+        # its own default -- every statement the builder writes, with
+        # `object` shadowing the builtin the stores are written with.
+        class Box(Magic):
+            object: Annotated[
+                int,
+                Field(factory=five, converter=double, validator=positive),
+            ]
+            spare: NoInit[
+                Annotated[
+                    int,
+                    Field(factory=three, converter=double,
+                          validator=positive),
+                ]
+            ]
+
+        assert repr(Box()) == "Box(object=10, spare=6)"
+        assert repr(Box(4)) == "Box(object=8, spare=6)"
+        with pytest.raises(ValueError) as caught:
+            Box(-1)
+        assert "Box.object" in str(caught.value)
+        assert "must be positive" in str(caught.value)
