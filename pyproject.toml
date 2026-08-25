@@ -60,6 +60,9 @@ package-dir = {"" = "src"}
 # subdirectory pattern here is silently ignored before setuptools 77.
 license-files = ["LICENSE", "LICENSE-PSF-2.0.txt", "NOTICE.md"]
 
+[tool.setuptools.package-data]
+"bagof.magic" = ["py.typed"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["bagof*"]
