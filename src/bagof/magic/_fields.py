@@ -2,6 +2,7 @@ from __future__ import annotations
 
 __all__ = [
     "Field",
+    "field",
     "Default",
     "Factory",
     "ConvertTo",
@@ -561,6 +562,29 @@ def _stored(obj: tx.Any, field: Field) -> tx.Tuple[bool, tx.Any]:
 
 # ----------------------------------------------------------------------
 # Annotations
+def field(**kwargs: tx.Any) -> tx.Any:
+    """
+    Describe one field, for use as its default.
+
+    ```python
+    class Task(Magic):
+        name: str
+        tags: list = field(factory=list)
+        token: str = field(default="", repr=False)
+    ```
+
+    Takes exactly what `Field` takes, and does the same thing. The
+    difference is what a type checker makes of it: this says it produces
+    whatever the field is annotated as, so `tags: list = field(...)`
+    reads as a `list` with a default rather than as a `Field` assigned to
+    a `list`.
+
+    Writing `Field(...)` in that position still works, and still builds
+    the same object.
+    """
+    return Field(**kwargs)
+
+
 # ----------------------------------------------------------------------
 
 

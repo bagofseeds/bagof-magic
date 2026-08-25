@@ -217,6 +217,7 @@ from ._errors import field_error
 from ._fields import *  # noqa: F401, F403
 from ._fields import _OVERRIDABLE, Field, _stored
 from ._fields import __all__ as __all_fields__
+from ._fields import field as _field
 from ._generics import substitute as _substitute
 from ._generics import type_arguments as _type_arguments
 from ._options import *  # noqa: F401, F403
@@ -3069,7 +3070,7 @@ def _dispatching(metacls: type) -> type:
 # out as literals because that is the only form a checker reads;
 # `tests/test_dataclass_transform.py` compares them with the real ones.
 @tx.dataclass_transform(
-    field_specifiers=(Field,),
+    field_specifiers=(Field, _field),
     eq_default=True,
     order_default=False,
     kw_only_default=False,
@@ -3448,7 +3449,7 @@ class Magic(metaclass=MetaMagic):
 
 
 @tx.dataclass_transform(
-    field_specifiers=(Field,),
+    field_specifiers=(Field, _field),
     eq_default=True,
     order_default=False,
     kw_only_default=False,
@@ -3459,7 +3460,7 @@ def magic(**kwargs) -> tx.Callable[[type], type]: ...
 
 
 @tx.dataclass_transform(
-    field_specifiers=(Field,),
+    field_specifiers=(Field, _field),
     eq_default=True,
     order_default=False,
     kw_only_default=False,
@@ -3470,7 +3471,7 @@ def magic(cls: type, **kwargs) -> type: ...
 
 
 @tx.dataclass_transform(
-    field_specifiers=(Field,),
+    field_specifiers=(Field, _field),
     eq_default=True,
     order_default=False,
     kw_only_default=False,

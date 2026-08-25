@@ -48,19 +48,20 @@ class TestTheDefaultsAgree:
         recorded = magic.__dataclass_transform__
         assert recorded[declared] == Options._DEFAULTS[option]
 
-    def test_field_is_the_field_specifier(self) -> None:
-        # `x: int = Field(default=3)` is only understood as a field
-        # rather than as a plain assignment because `Field` is named
-        # here.
-        from bagof.magic._fields import Field
+    def test_both_spellings_are_field_specifiers(self) -> None:
+        # `x: int = field(default=3)` is only understood as a field
+        # rather than as a plain assignment because the thing on the
+        # right is named here. Both spellings are, so either works.
+        from bagof.magic._fields import Field, field
 
         assert MetaMagic.__dataclass_transform__["field_specifiers"] == (
             Field,
+            field,
         )
 
 
 FIXTURE = '''
-from bagof.magic import Magic, Field
+from bagof.magic import Magic, Field, field
 
 
 class Point(Magic):
@@ -70,10 +71,12 @@ class Point(Magic):
 
 class Task(Magic):
     name: str
+    tags: list = field(factory=list)
     token: str = Field(default="", repr=False)
 
 
 reveal_type(Point.__init__)
+reveal_type(Task.__init__)
 Point("nope", 2.0)
 '''
 
@@ -115,19 +118,26 @@ class TestACheckerSeesTheConstructor:
         said = _run_mypy(tmp_path)
         assert 'has incompatible type "str"; expected "float"' in said
 
-    def test_mypy_still_objects_to_a_field_written_as_a_default(
+    def test_a_default_written_with_field_is_understood(
         self, tmp_path: Path
     ) -> None:
-        # A known limitation rather than a goal. PEP 681 lets a field
-        # specifier be a class, and pyright reads `token: str =
-        # Field(default="")` as a field with a default. mypy reads it as
-        # assigning a `Field` to a `str` and says so. Every other
-        # library in this space spells its specifier as a function
-        # returning `Any`, which is what sidesteps it; ours is a class,
-        # and changing that is a bigger question than this file.
+        # `field(...)` says it produces whatever the field is annotated
+        # as, so the default is read as a default rather than as a
+        # `Field` being assigned to the wrong type.
+        said = _run_mypy(tmp_path)
+        assert "tags: builtins.list[Any] =" in said
+        assert 'variable has type "list[Any]"' not in said
+
+    def test_mypy_still_objects_to_the_class_written_as_a_default(
+        self, tmp_path: Path
+    ) -> None:
+        # `Field(...)` in a default is the older spelling and still
+        # builds the same object. pyright reads it as a field with a
+        # default; mypy reads it as assigning a `Field` to a `str` and
+        # says so, which is why `field(...)` exists.
         #
-        # Pinned so that a future mypy quietly fixing it does not go
-        # unnoticed: if this starts failing, delete it and the note in
-        # the docs with it.
+        # Pinned so that a future mypy quietly accepting it does not go
+        # unnoticed: if this starts failing, the two spellings have
+        # become equivalent and the docs can stop distinguishing them.
         said = _run_mypy(tmp_path)
         assert 'expression has type "Field"' in said
