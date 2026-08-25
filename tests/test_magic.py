@@ -3289,6 +3289,30 @@ class TestDocGeneration:
         assert "Class Attributes" in doc
         assert "a classvar" in doc
 
+    def test_doc_a_pseudo_field_with_no_parameter_is_not_a_class_attribute(
+        self,
+    ) -> None:
+        # `NotKw` on a class that takes keywords only leaves the field
+        # with no parameter, which does not turn an `InitVar` into a
+        # class attribute -- nothing is stored on the class for it.
+        class C(Magic, kw_only=True):
+            x: InitVar[NotKw[int]] = 0
+            y: int = 1
+
+        doc = C.__doc__
+        assert "Class Attributes" not in doc
+        assert "x :" not in doc
+        assert "y : int, default=1" in doc
+
+    def test_doc_a_pseudo_field_that_is_never_an_argument_is_one(self) -> None:
+        # A pseudo-field that forbids both ways of passing it is what
+        # `ClassVar` is, however it is spelled.
+        class C(Magic):
+            x: InitVar[NoInit[int]] = 0
+
+        assert "Class Attributes" in C.__doc__
+        assert "x : int, default=0" in C.__doc__
+
     def test_make_doc_elem_annotated_type(self) -> None:
         # `field.type` being a bare Annotated is only reachable by building
         # a Field directly (the public API always strips Annotated).

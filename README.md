@@ -426,6 +426,22 @@ the class setting: on a `kw_only=True` class, `x: Positional[int]` can be
 passed by position anyway. What an annotation says nothing about follows
 the class as usual.
 
+Several of them go on one field by nesting, and when two disagree the outer
+one has the last word.
+
+```pycon
+>>> class ByName(Magic):
+...     x: Kw[NotKw[int]] = 0
+...
+>>> ByName(x=1)
+ByName(x=1)
+>>> class ByPosition(Magic):
+...     x: NotKw[Kw[int]] = 0
+...
+>>> ByPosition(1)
+ByPosition(x=1)
+```
+
 `Init` and `NoInit` say *whether* a field is an argument at all; `Kw`,
 `Positional` and the two `...Only` pairs say *how* it may be passed. A
 field is an argument unless something says otherwise, so `Init[T]` is

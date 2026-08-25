@@ -1871,12 +1871,23 @@ _hash_action = {(False, False, False, False): None,
                 }
 
 
+def _is_class_attribute(field: Field) -> bool:
+    # A `ClassVar` is a pseudo-field that asked not to be passed either
+    # way -- that is what the annotation lowers to. A pseudo-field that
+    # merely *ends up* with no parameter is not one: an `InitVar` that
+    # may not be passed by name, on a class where nothing may be passed
+    # by position, is an `InitVar` whose two settings cancelled out, and
+    # nothing is ever stored on the class for it.
+    declared = field.declared if field.declared is not MISSING else {}
+    return declared.get("kw") is False and declared.get("positional") is False
+
+
 def _make_doc_class(fields: dict[str, Field]) -> str:
     attrdocs, classattrdocs = [], []
     for name, field in fields.items():
         if not field.var:
             attrdocs.append(_make_doc_elem(field, name))
-        elif not field.init:
+        elif not field.init and _is_class_attribute(field):
             classattrdocs.append(_make_doc_elem(field, name))
     attrdocs = "\n".join(attrdocs)
     classattrdocs = "\n".join(classattrdocs)
