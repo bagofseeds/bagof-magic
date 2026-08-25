@@ -66,6 +66,10 @@ convert : bool, default=False
     Use field type as converter if none is provided
 validate : bool, default=False
     Use field type as validator if none is provided
+convert_defaults : bool, default=True
+    Convert a value that came from a field's own default
+validate_defaults : bool, default=True
+    Validate a value that came from a field's own default
 unresolved_hints : str, default="warn"
     What to do when a type hint still names something undefined the
     first time a field needs it: "warn", "raise" or "ignore"
@@ -173,6 +177,7 @@ from ._constants import (
     _GENERATED,
     _HAS_FACTORY,
     _HINTS,
+    _IS_DEFAULT,
     _ISINSTANCE,
     _MAGIC,
     _OBJECT,
@@ -187,6 +192,7 @@ from ._constants import (
     HIDE_IF_NONE,
     MISSING,
     SHOW_ATTR,
+    _HasDefault,
     _HasFactory,
 )
 from ._errors import field_error
@@ -1570,7 +1576,7 @@ def __pre_new__(
     # Build __init__. The builder writes source, so binding the public
     # name has to wait until `insert_fns` has compiled it (below).
     try:
-        init_kwargs = _make_init(fields, prepost, clsname)
+        init_kwargs = _make_init(fields, prepost, clsname, options)
     except _BadSignature as error:
         if init_name:
             raise
@@ -1716,6 +1722,7 @@ def __pre_new__(
         magic_init.__code__ = magic_init.__code__.replace(
             co_name=magic_init.__name__
         )
+        _show_real_defaults(magic_init)
         if init_name and init_name not in namespace:
             namespace[init_name] = magic_init
             generated[init_name] = "init"
@@ -1733,6 +1740,27 @@ def __pre_new__(
         namespace[docname] = doc
 
     return clsname, bases, namespace
+
+
+def _show_real_defaults(func: tx.Callable) -> None:
+    """Give back the signature a marked default stands in for.
+
+    A field whose default skips conversion or validation carries that
+    default behind a marker, which is what the compiled function ends up
+    with. Anyone reading the signature -- `help`, an editor, a caller
+    -- should see the value the class was written with, so the marked
+    parameters are put back before the function goes anywhere.
+    """
+    marked = list(func.__defaults__ or ())
+    marked += list((func.__kwdefaults__ or {}).values())
+    if not any(isinstance(default, _HasDefault) for default in marked):
+        return
+    known = signature(func)
+    func.__signature__ = known.replace(parameters=[
+        parameter.replace(default=parameter.default.value)
+        if isinstance(parameter.default, _HasDefault) else parameter
+        for parameter in known.parameters.values()
+    ])
 
 
 class _FuncBuilder:
@@ -2004,6 +2032,7 @@ def _make_init(
     fields: dict[str, Field],
     prepost: tx.Mapping[str, bool],
     clsname: str,
+    options: Options,
 ) -> dict:
 
     # The body below is written in terms of these; each is carried
@@ -2047,11 +2076,35 @@ def _make_init(
         if field.public_name == "self":
             SELF = _SELF
 
+    def _skipped(field: Field) -> tx.Tuple[bool, bool]:
+        # Which of the field's two steps a value coming from its own
+        # default does not go through. A class converts and validates
+        # its defaults unless it says otherwise, so both are usually
+        # False and nothing below changes.
+        return (
+            bool(field.converter) and not options.convert_defaults,
+            bool(field.validator) and not options.validate_defaults,
+        )
+
+    def _splits(field: Field) -> bool:
+        # Whether this field has to tell a default apart from a value
+        # the caller passed. It only does when it has a default to
+        # arrive holding and a step for that default to skip.
+        if field.default is MISSING and not field.factory:
+            return False
+        return any(_skipped(field))
+
     def _make_signature_elem(field: Field) -> tx.Tuple[str, str]:
         name = field.public_name
         default = field.default
         if field.factory:
             default = _HasFactory(field.factory)
+        elif _splits(field):
+            # The parameter carries a marker instead of the value, so
+            # that the body can tell "not passed" from a caller who
+            # passed the same thing. The marker never leaves the top of
+            # `__init__`, and the signature people read shows the value.
+            default = _HasDefault(default)
         locals[_TYPE(name)] = field.type
         if default is MISSING:
             signature = f"{name}: {_TYPE(name)}"
@@ -2140,35 +2193,71 @@ def _make_init(
             {_FIELD_ERROR}({blamed})
         """)
 
-    def _make_factory_elem(field: Field) -> str:
-        # A defaulted-by-factory parameter arrives holding the factory
-        # rather than a value. Every one of them is resolved before the
-        # first hook runs, so that `__pre_init__` sees real values.
-        if not field.factory:
-            return ""
+    def _make_unpack_elem(field: Field) -> str:
+        # A parameter that was not passed arrives holding its own
+        # default: the factory to call, or -- for a field whose default
+        # skips a step -- the value behind a marker. Both are unpacked
+        # before the first hook runs, so that `__pre_init__` sees real
+        # values, and a field that has to tell the two apart remembers
+        # which one arrived for the body below.
         name = field.public_name
+        splits = _splits(field)
+        if not field.factory:
+            if not splits:
+                return ""
+            # `is` against the one marker this parameter defaults to: a
+            # caller has no way to hold that object, so nothing they
+            # pass can be mistaken for the default.
+            return dedent(f"""
+            {_IS_DEFAULT(name)} = {name} is {_DEFAULT(name)}
+            if {_IS_DEFAULT(name)}:
+                {name} = {_DEFAULT(name)}.value
+            """)
         call = _guarded(f"{name} = {name}()", field, "build")
+        test = f"{_ISINSTANCE}({name}, {_HAS_FACTORY})"
+        if splits:
+            return dedent(f"""
+            {_IS_DEFAULT(name)} = {test}
+            if {_IS_DEFAULT(name)}:
+            """) + indent(call, " " * 4)
         return dedent(f"""
-        if {_ISINSTANCE}({name}, {_HAS_FACTORY}):
+        if {test}:
         """) + indent(call, " " * 4)
+
+    def _only_when_passed(step: str, field: Field) -> str:
+        # A step the class asked to skip for its defaults still runs for
+        # a value the caller passed.
+        return dedent(f"""
+        if not {_IS_DEFAULT(field.public_name)}:
+        """) + indent(step, " " * 4)
 
     def _make_body_elem(field: Field) -> str:
         # The body reads the *parameter*, which is named after the
         # field's public name, and writes the *field*, which keeps its
         # own name.
         name = field.public_name
+        skip_convert, skip_validate = _skipped(field)
+        splits = _splits(field)
         body = ""
         if field.converter:
             locals[_CONVERTER(name)] = field.converter
-            body += _guarded(
+            step = _guarded(
                 f"{name} = {_CONVERTER(name)}({name})",
                 field, "convert", name
             )
+            body += (
+                _only_when_passed(step, field)
+                if splits and skip_convert else step
+            )
         if field.validator:
             locals[_VALIDATOR(name)] = field.validator
-            body += _guarded(
+            step = _guarded(
                 f"{name} = {_VALIDATOR(name)}({name})",
                 field, "validate", name
+            )
+            body += (
+                _only_when_passed(step, field)
+                if splits and skip_validate else step
             )
         if not field.var:
             # NOTE: we by pass the object's __setattr__ to avoid running
@@ -2180,13 +2269,17 @@ def _make_init(
 
     def _make_own_default_elem(field: Field) -> str:
         # The value comes from the field itself rather than from a
-        # parameter, and goes through the same converter and validator a
-        # parameter would. The locals are keyed by the field name, which
-        # no parameter uses: a parameter is named after the field's
-        # public name.
+        # parameter, so it is a default whatever else happens: whichever
+        # of converting and validating the class skips for its defaults
+        # is skipped here outright. The locals are keyed by the field
+        # name, which no parameter uses: a parameter is named after the
+        # field's public name.
+        skip_convert, skip_validate = _skipped(field)
+        converter = None if skip_convert else field.converter
+        validator = None if skip_validate else field.validator
         default = _DEFAULT(field.name)
         locals[default] = field.factory if field.factory else field.default
-        if not (field.factory or field.converter or field.validator):
+        if not (field.factory or converter or validator):
             return dedent(f"""
             {_OBJECT}.__setattr__({SELF}, {field.name!r}, {default})
             """)
@@ -2199,14 +2292,14 @@ def _make_init(
             body = dedent(f"""
             {value} = {default}
             """)
-        if field.converter:
-            locals[_CONVERTER(field.name)] = field.converter
+        if converter:
+            locals[_CONVERTER(field.name)] = converter
             body += _guarded(
                 f"{value} = {_CONVERTER(field.name)}({value})",
                 field, "convert", value
             )
-        if field.validator:
-            locals[_VALIDATOR(field.name)] = field.validator
+        if validator:
+            locals[_VALIDATOR(field.name)] = validator
             body += _guarded(
                 f"{value} = {_VALIDATOR(field.name)}({value})",
                 field, "validate", value
@@ -2215,7 +2308,7 @@ def _make_init(
         {_OBJECT}.__setattr__({SELF}, {field.name!r}, {value})
         """)
 
-    body = [_make_factory_elem(field) for field in parameters]
+    body = [_make_unpack_elem(field) for field in parameters]
     if _PRE_INIT_NAME in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
     body += [_make_body_elem(field) for field in parameters]
@@ -2671,6 +2764,16 @@ class MetaMagic(ABCMeta):
         Use field type as converter if none is provided.
     validate : bool, default=False
         Use field type as validator if none is provided.
+    convert_defaults : bool, default=True
+        Convert a value that came from a field's own default, the same
+        way a value passed to the constructor is converted. Set it to
+        False to leave the defaults written in the class alone and
+        convert only what a caller passes.
+    validate_defaults : bool, default=True
+        Validate a value that came from a field's own default, the same
+        way a value passed to the constructor is validated. Set it to
+        False to leave the defaults written in the class alone and
+        check only what a caller passes.
     unresolved_hints : str, default="warn"
         What to do when a field is annotated with a type that is still
         not defined the first time the field needs it. "warn" says so
@@ -2783,6 +2886,16 @@ class Magic(metaclass=MetaMagic):
         Use field type as converter if none is provided.
     validate : bool, default=False
         Use field type as validator if none is provided.
+    convert_defaults : bool, default=True
+        Convert a value that came from a field's own default, the same
+        way a value passed to the constructor is converted. Set it to
+        False to leave the defaults written in the class alone and
+        convert only what a caller passes.
+    validate_defaults : bool, default=True
+        Validate a value that came from a field's own default, the same
+        way a value passed to the constructor is validated. Set it to
+        False to leave the defaults written in the class alone and
+        check only what a caller passes.
     unresolved_hints : str, default="warn"
         What to do when a field is annotated with a type that is still
         not defined the first time the field needs it. "warn" says so

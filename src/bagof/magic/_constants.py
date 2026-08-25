@@ -79,6 +79,12 @@ _ERROR = "__magic_error__"
 # parameter, while it is being built, converted and validated
 def _VALUE(x: str) -> str: return f"__magic_{x}_value__"
 
+# Name given to the local that remembers whether a parameter arrived
+# holding its own default rather than a value the caller passed. Only
+# generated for a field whose class asked for defaults to skip
+# conversion or validation.
+def _IS_DEFAULT(x: str) -> str: return f"__magic_{x}_is_default__"
+
 # Names given, when generating __init__, to the locals holding the
 # builtins and the factory marker its body is written in terms of. The
 # generated function's parameters are named after the fields, so a field
@@ -139,6 +145,26 @@ class _HasFactory:
 
     def __call__(self) -> tx.Any:
         return self.factory()
+
+
+class _HasDefault:
+    """A parameter default that can be told apart from a value.
+
+    A class that asks for its defaults not to be converted or validated
+    needs to know which of the two arrived. The value a field defaults
+    to is wrapped in one of these and unwrapped again at the top of
+    `__init__`, so the test is `is` against a marker no caller can hold
+    rather than a guess about the value.
+
+    It reads as the value it stands for, so a signature built from it
+    shows the default the class was written with.
+    """
+
+    def __init__(self, value: tx.Any) -> None:
+        self.value = value
+
+    def __repr__(self) -> str:
+        return repr(self.value)
 
 
 class SHOW_ATTR:

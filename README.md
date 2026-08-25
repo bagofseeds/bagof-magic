@@ -218,6 +218,29 @@ class Service(Magic, convert=True, unresolved_hints="raise"):
 The third choice, `"ignore"`, says nothing at all — for a hint you know
 will not resolve and do not want to hear about again.
 
+### Leaving the defaults alone
+
+A default is converted and validated like anything else, so a class is as
+strict about the values it was written with as about the ones it is handed.
+Sometimes only the incoming values need the attention:
+
+```python
+class Node(Magic, convert=True, convert_defaults=False):
+    name: str
+    parent: "Node" = None
+```
+
+```pycon
+>>> Node("root")
+Node(name='root', parent=None)
+```
+
+`parent: Optional["Node"]` is the precise spelling and needs nothing turned
+off. But when the defaults in a class are already exactly what you meant,
+`convert_defaults=False` and `validate_defaults=False` say to take them as
+written. Anything a caller passes is still converted and validated, as is
+anything assigned afterwards.
+
 ---
 
 ## Also included
@@ -513,6 +536,8 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `weakref_slot` | `False` | allow weak references under `slots` |
 | `convert` | `False` | convert every field from its type |
 | `validate` | `False` | check every field against its type |
+| `convert_defaults` | `True` | convert a value that came from a default, too |
+| `validate_defaults` | `True` | check a value that came from a default, too |
 | `unresolved_hints` | `"warn"` | what to do when a type hint still names something undefined the first time a field needs it; or `"raise"`, or `"ignore"` |
 | `factory` | `False` | build every missing default from its type |
 | `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
