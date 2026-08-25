@@ -554,6 +554,8 @@ class TestParameterAnnotations:
         assert C().x == 7
         with pytest.raises(TypeError):
             C(7)
+        with pytest.raises(TypeError):
+            C(x=7)
 
     def test_no_init_still_takes_its_default(self) -> None:
         class C(Magic):

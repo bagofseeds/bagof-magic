@@ -423,7 +423,9 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 
 Each one sets exactly what its name mentions, and what it sets wins over
 the class setting: on a `kw_only=True` class, `x: Positional[int]` can be
-passed by position anyway. What an annotation says nothing about follows
+passed by position anyway, while `x: NotKw[int]` forbids the one way in
+that was left and so has no parameter at all — it takes its default,
+exactly like `NoInit[int]`. What an annotation says nothing about follows
 the class as usual.
 
 Several of them go on one field by nesting, and when two disagree the outer
