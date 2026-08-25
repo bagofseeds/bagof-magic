@@ -166,11 +166,15 @@ from ._constants import (
     _DEFAULT,
     _DISCARD,
     _ERROR,
+    _EXCEPTION,
     _FIELD_ERROR,
     _FIELDS,
     _GENERATED,
+    _HAS_FACTORY,
     _HINTS,
+    _ISINSTANCE,
     _MAGIC,
+    _OBJECT,
     _OPTIONS,
     _POST_INIT_NAME,
     _PRE_INIT_NAME,
@@ -1919,7 +1923,16 @@ def _make_init(
     clsname: str,
 ) -> dict:
 
-    locals = {"object": object, "_HasFactory": _HasFactory}
+    # The body below is written in terms of these; each is carried
+    # under a namespaced name because the parameters of the function
+    # being generated are named after the fields, and a field is free to
+    # be called `object`, `isinstance` or anything else.
+    locals = {
+        _OBJECT: object,
+        _ISINSTANCE: isinstance,
+        _EXCEPTION: Exception,
+        _HAS_FACTORY: _HasFactory,
+    }
     positional_onlys, args, kw_onlys = {}, {}, {}
 
     SELF = "self"
@@ -2040,7 +2053,7 @@ def _make_init(
         return dedent(f"""
         try:
             {call}
-        except Exception as {_ERROR}:
+        except {_EXCEPTION} as {_ERROR}:
             {_FIELD_ERROR}({blamed})
         """)
 
@@ -2053,7 +2066,7 @@ def _make_init(
         name = field.public_name
         call = _guarded(f"{name} = {name}()", field, "build")
         return dedent(f"""
-        if isinstance({name}, _HasFactory):
+        if {_ISINSTANCE}({name}, {_HAS_FACTORY}):
         """) + indent(call, " " * 4)
 
     def _make_body_elem(field: Field) -> str:
@@ -2078,7 +2091,7 @@ def _make_init(
             # NOTE: we by pass the object's __setattr__ to avoid running
             # through conversion and validation multiple times.
             body += dedent(f"""
-            object.__setattr__({SELF}, {field.name!r}, {name})
+            {_OBJECT}.__setattr__({SELF}, {field.name!r}, {name})
             """)
         return body
 
@@ -2092,7 +2105,7 @@ def _make_init(
         locals[default] = field.factory if field.factory else field.default
         if not (field.factory or field.converter or field.validator):
             return dedent(f"""
-            object.__setattr__({SELF}, {field.name!r}, {default})
+            {_OBJECT}.__setattr__({SELF}, {field.name!r}, {default})
             """)
         # Building, converting and validating are taken one at a time,
         # so that whichever of them fails can say what it was doing.
@@ -2116,7 +2129,7 @@ def _make_init(
                 field, "validate", value
             )
         return body + dedent(f"""
-        object.__setattr__({SELF}, {field.name!r}, {value})
+        {_OBJECT}.__setattr__({SELF}, {field.name!r}, {value})
         """)
 
     body = [_make_factory_elem(field) for field in parameters]
