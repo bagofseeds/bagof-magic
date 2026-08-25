@@ -15,3 +15,6 @@ jobs:
     uses: ./.github/workflows/docs.yaml
     with:
       tag: ${{ github.ref }}
+      # docs/griffe_ext.py imports the package to read what a Magic
+      # class writes at run time, so the build needs it installed.
+      pip-install: "-e ."
