@@ -2,6 +2,7 @@
 import copy
 import operator
 import pickle
+from inspect import Parameter, signature
 from typing import ClassVar as TypingClassVar
 from typing import Optional, Union
 
@@ -4453,3 +4454,29 @@ class TestParityHelpers:
                      "replace", "is_magic"):
             assert name in package.__all__
             assert getattr(package, name) is getattr(_api, name)
+
+# Quoted annotations
+# ======================================================================
+# This module has no `from __future__ import annotations`, so an
+# annotation is only text when it is written in quotes -- which is what
+# these two tests are about. The whole-module case has its own file,
+# `test_annotations_as_strings.py`.
+
+
+class TestQuotedAnnotations:
+
+    def test_a_quoted_type_stays_text(self) -> None:
+        class Node(Magic):
+            value: int = 0
+            parent: "Node" = None
+
+        assert Node.__magic_fields__["parent"].type == "Node"
+        assert Node(1, Node(2)).parent.value == 2
+
+    def test_a_quoted_family_annotation_still_applies(self) -> None:
+        class Server(Magic):
+            port: int = 80
+            debug: "KwOnly[bool]" = False
+
+        parameters = signature(Server.__init__).parameters
+        assert parameters["debug"].kind is Parameter.KEYWORD_ONLY

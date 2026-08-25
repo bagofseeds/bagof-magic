@@ -89,6 +89,64 @@ Tests that exercise internals import them from the module that defines them
 CI runs both, so a change here needs testing on both. Coverage of one branch
 will look "dead" on the other — that is expected, not a gap.
 
+Whichever path they came from, annotations that are **text** are read back
+by `_resolve_string_annotations`. A module with `from __future__ import
+annotations` (and any single quoted annotation elsewhere) hands over strings,
+and a string hides the entire annotation family — `ClassVar`, `KwOnly`,
+`Frozen`, an `alias` inside `Annotated`, all of it — because there is no
+`Annotated` metadata to find.
+
+The text is **parsed, not executed**. `ast` splits an annotation into the
+marker in front of the brackets and what is inside them, and the two are
+recovered independently:
+
+- the **marker** is a plain (possibly dotted) name, looked up by name in the
+  defining module and the builtins — never called, never searched for in the
+  half-built class body. It counts as structural when it is `ClassVar`,
+  `Annotated`, or a member of the family in `_fields.py`.
+- the **type** inside the brackets is evaluated only when it is made of the
+  nodes a type can be made of (`_TYPE_NODES`: names, attributes, subscripts,
+  unions, literals) — so a call in an annotation is never run — and only
+  against the defining module. When it cannot be evaluated, it is carried by
+  name in a `ForwardRef` and the marker still applies.
+- **metadata** (`Annotated[int, Field(alias="n")]`, `Doc[int, "..."]`) may
+  hold a call, but only to a member of the family, and a lambda's body is
+  never looked into because it is not run.
+
+Three rules come out of that, and each of them fixed a real failure:
+
+1. **The structure is recovered separately from the type.** A type imported
+   under `if TYPE_CHECKING:` is the single commonest reason to write the
+   future import; `KwOnly[registry.Port]` must stay keyword-only even though
+   `registry` is not there at runtime. An earlier version evaluated the whole
+   annotation and dropped all of it when any part failed, which lost the
+   family for exactly the modules that need it most.
+2. **Nothing is looked up in the class body.** Merging the namespace being
+   built into the lookup scope let a method shadow the type it is named
+   after: in a class with `def dict(self)`, the field `payload: dict` took
+   the method as its type.
+3. **A payload is never evaluated unless it is safe to.** `list[str]` and
+   `int | None` raise when evaluated on Python 3.8 and 3.9 — the spellings
+   the future import exists to allow — so they fall back to being carried by
+   name, with the marker intact.
+
+When a marker is recognised by name but cannot be applied, a
+`_UnreadableAnnotation` warning names the class, the field and the part that
+could not be read. A type that is simply unavailable says nothing: there is
+no structure to lose. `_doc_type` renders a type carried by name as that
+name, so generated documentation shows `parent : Node`.
+
+Only the structure is recovered eagerly, because it decides the generated
+`__init__`, which is compiled once. A converter, validator or factory
+resolved from a hint that is still a `ForwardRef` is the other half of the
+problem (#13) and wants deferred resolution instead.
+
+`tests/test_annotations_as_strings.py` is the regression suite, and its
+future import is what makes it one — `tests/test_magic.py` cannot see any of
+this, since annotations there are already objects. The two quoted-annotation
+tests at the end of `test_magic.py` depend on that file *not* having the
+future import.
+
 ## Conventions specific to this repo (do not regress)
 
 1. **Wide Python (3.8+).** Runtime code must stay old-compatible: no walrus in
@@ -227,6 +285,22 @@ pip install .[test]
 cd /tmp && python -m pytest <repo>/tests -q     # run from a neutral cwd
 ruff check src tests
 codespell src tests
+```
+
+**Run the tests on more than one Python before pushing** if you touched
+anything version-sensitive — the `ast` module, `typing` internals,
+`inspect`, or how annotations are read. CI covers 3.8 and current, and
+those are the two ends where things differ; a change that passes on one
+interpreter can fail to *import* on another. `ast.Ellipsis` disappearing
+in 3.14 took out every test in the suite at collection time, and no
+amount of local testing on a single version would have shown it.
+
+Whatever interpreters are to hand will do, pointed at the sources
+directly rather than at an install:
+
+```sh
+cd /tmp && PYTHONPATH=<repo>/src:<each sibling>/src:<site-packages> \
+    python3.13 -m pytest <repo>/tests -q
 ```
 
 ## Known follow-ups (see the tracking issues)
