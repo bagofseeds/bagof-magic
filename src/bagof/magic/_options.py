@@ -25,6 +25,8 @@ from ._utils import SlotsBase, slots
     'validate',         # Use field type as validator if none is provided
     'unresolved_hints',  # What to do about a type hint that never resolves
     'mapping',          # Generate Mapping methods for dict-like behavior
+    # Resolve an inherited field's settings again from this class
+    'override',
     'reverse',          # Use the reverse MRO order when listing fields
     'doc',              # Generate class docstring from field docstrings
 )
@@ -63,6 +65,7 @@ class Options(SlotsBase):
         validate=False,
         unresolved_hints="warn",
         mapping=False,
+        override=False,
         reverse=False,
         doc=True,
     )

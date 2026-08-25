@@ -72,6 +72,9 @@ unresolved_hints : str, default="warn"
 mapping : bool, default=False
     Implement the `Mapping` protocol; a subclass cannot turn it off.
     Only a field that is holding a value is a key
+override : bool | str | list, default=False
+    Decide the settings of an inherited field again from this class;
+    a name, or a list of names, decides only those
 reverse : bool, default=False
     Use the reverse MRO order to determine field order
 doc : bool | str, default=True
@@ -183,7 +186,7 @@ from ._constants import (
 )
 from ._errors import field_error
 from ._fields import *  # noqa: F401, F403
-from ._fields import Field, _stored
+from ._fields import _OVERRIDABLE, Field, _stored
 from ._fields import __all__ as __all_fields__
 from ._options import *  # noqa: F401, F403
 from ._options import Options
@@ -259,6 +262,63 @@ def _inherit_attrs(
         inherited = getattr(other, attr, MISSING)
         if inherited is not MISSING:
             setattr(field, attr, inherited)
+
+
+def _override_attrs(override: tx.Any, clsname: str) -> tx.Tuple[str, ...]:
+    # The field attributes an inherited field works out again from this
+    # class's settings.
+    #
+    # `override` names settings; a field stores their answers under
+    # names of its own, so `_OVERRIDABLE` maps between the two.
+    if override is True:
+        names = tuple(_OVERRIDABLE)
+    elif not override:
+        return ()
+    elif isinstance(override, str):
+        names = (override,)
+    elif isinstance(override, tx.Iterable):
+        names = tuple(override)
+    else:
+        raise ValueError(
+            f"{clsname} passes override={override!r}, which is neither a "
+            f"setting name nor a list of them. Pass override=True for "
+            f"every setting a subclass can decide again, the name of one "
+            f"of them, or a list of names."
+        )
+
+    attrs = []
+    for name in names:
+        if name not in _OVERRIDABLE:
+            raise ValueError(
+                f"{clsname} asks to override {name!r}, which is not one of "
+                f"the settings a field takes from its class: "
+                f"{', '.join(sorted(_OVERRIDABLE))}. Those are the ones "
+                f"decided per field; the rest are about the class as a "
+                f"whole, and a subclass already decides them for itself."
+            )
+        for attr in _OVERRIDABLE[name]:
+            if attr not in attrs:
+                attrs.append(attr)
+    return tuple(attrs)
+
+
+def _wrap_show_attrs(field: Field) -> None:
+    # `repr` and `key` each answer two questions -- whether the field
+    # takes part, and under which name -- so once resolved they are held
+    # as a `SHOW_ATTR` rather than as a plain value.
+    # (This is hacky and ugly -- should be reworked)
+    if field.key is HIDE_IF_NONE:
+        field.key = HIDE_IF_NONE(field.public_name)
+    if not isinstance(field.key, SHOW_ATTR):
+        field.key = SHOW_ATTR(field.key)
+
+    if field.repr is HIDE_IF_NONE:
+        if field.var:
+            field.repr = SHOW_ATTR(False)
+        else:
+            field.repr = HIDE_IF_NONE(field.public_name)
+    if not isinstance(field.repr, SHOW_ATTR):
+        field.repr = SHOW_ATTR(field.repr)
 
 
 def _add_fields(
@@ -1047,7 +1107,9 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     # A shallow copy, so each instance gets its own container while
     # what the container holds stays shared -- the same thing a factory
     # written as `lambda: copy(default)` would give.
-    field.factory = partial(copy.copy, default)
+    # Recorded as the field's own, so that a subclass resolving the
+    # field again against its own settings does not undo it.
+    field._redeclare(factory=partial(copy.copy, default))
     field.default = MISSING
     return True
 
@@ -1310,6 +1372,26 @@ def __pre_new__(
     hints = Hints(globals, {}, clsname, options.unresolved_hints)
     namespace[_HINTS] = hints
 
+    # An inherited field was resolved against the settings of the class
+    # that declared it, and keeps those answers. `override` names the
+    # settings this class decides again for every field it inherits --
+    # only where the field itself said nothing, since what a field asked
+    # for is restored unchanged. A field this class redeclares is built
+    # from its annotation below and replaces the inherited one, so it
+    # never goes through here.
+    #
+    # A converter, validator or factory rebuilt here looks a type named
+    # in text up where *this* class is written, which is where the class
+    # asking for the conversion can be read. A base in another module
+    # that annotated a field by name is the one case that reaches for a
+    # name this module may not have, and `unresolved_hints` says what
+    # happens then.
+    override = _override_attrs(options.override, clsname)
+    if override:
+        for field in fields.values():
+            field._reresolve(options, override, hints)
+            _wrap_show_attrs(field)
+
     # Annotations that are defined in this class (not in base
     # classes).  If __annotations__ isn't present, then this class
     # adds no new   We use this to compute fields that are
@@ -1377,20 +1459,7 @@ def __pre_new__(
         if options.slots and not field.var:
             namespace.pop(field.name, None)
 
-        # Use Key/Repr wrappers
-        # (This is hacky and ugly -- should be reworked)
-        if field.key is HIDE_IF_NONE:
-            field.key = HIDE_IF_NONE(field.public_name)
-        if not isinstance(field.key, SHOW_ATTR):
-            field.key = SHOW_ATTR(field.key)
-
-        if field.repr is HIDE_IF_NONE:
-            if field.var:
-                field.repr = SHOW_ATTR(False)
-            else:
-                field.repr = HIDE_IF_NONE(field.public_name)
-        if not isinstance(field.repr, SHOW_ATTR):
-            field.repr = SHOW_ATTR(field.repr)
+        _wrap_show_attrs(field)
 
         cls_fields.append(field)
 
@@ -2519,6 +2588,18 @@ class MetaMagic(ABCMeta):
         keys an instance has is a question about that instance: the
         length can differ between two instances of one class, and can
         change over an instance's life.
+    override : bool | str | list, default=False
+        Decide the settings of an inherited field again from this
+        class. A field is resolved against the settings of the class
+        that declares it and keeps those answers, so by default
+        `frozen=False` on a subclass only reaches the fields that
+        subclass declares itself; `override=True` applies this class's
+        settings to the fields it inherits as well. What a field asked
+        for in its own annotation always wins, whichever way this is
+        set. Give the name of a setting, or a list of names, to decide
+        only those again: frozen, kw_only, positional_only, convert,
+        validate, factory and repr are the ones a field takes from its
+        class.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
         This only affects the relative order of the fields of one class
@@ -2618,6 +2699,18 @@ class Magic(metaclass=MetaMagic):
         keys an instance has is a question about that instance: the
         length can differ between two instances of one class, and can
         change over an instance's life.
+    override : bool | str | list, default=False
+        Decide the settings of an inherited field again from this
+        class. A field is resolved against the settings of the class
+        that declares it and keeps those answers, so by default
+        `frozen=False` on a subclass only reaches the fields that
+        subclass declares itself; `override=True` applies this class's
+        settings to the fields it inherits as well. What a field asked
+        for in its own annotation always wins, whichever way this is
+        set. Give the name of a setting, or a list of names, to decide
+        only those again: frozen, kw_only, positional_only, convert,
+        validate, factory and repr are the ones a field takes from its
+        class.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
         This only affects the relative order of the fields of one class

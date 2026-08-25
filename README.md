@@ -70,7 +70,23 @@ User(id=1, name='ada')
 ```
 
 A subclass that wants something different just says so — `class Draft(Record,
-frozen=False)`.
+frozen=False)`. That reaches the fields the subclass declares itself; add
+`override=True` for it to reach the inherited ones as well:
+
+```python
+class Draft(Record, frozen=False, override=True):
+    note: str = ""
+```
+
+```pycon
+>>> draft = Draft(id=1)
+>>> draft.id = 2
+>>> draft
+Draft(id=2, note='')
+```
+
+A field that asked for something in its own annotation — `Frozen[int]`,
+`KwOnly[int]` — keeps it either way.
 
 ### Per-field behaviour lives in the annotation
 
@@ -472,6 +488,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `factory` | `False` | build every missing default from its type |
 | `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
 | `mapping` | `False` | behave like a dictionary; a subclass cannot turn it off again |
+| `override` | `False` | apply this class's settings to inherited fields too |
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
 | `doc` | `True` | add the field table to the class docstring |
 
