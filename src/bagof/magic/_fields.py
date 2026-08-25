@@ -92,12 +92,14 @@ class Field(SlotsBase):
             The default value for the field.
         factory : Callable[[], any], default=`Options().factory`
             A factory function that generates a default value for the field.
-        init : bool, read-only
+        init : bool
             Whether this field is a parameter of the generated `__init__`.
-            It is not stored but worked out: `kw or positional`, so a
-            field that can be passed neither by name nor by position is
-            no parameter at all. Passing `init=` here sets both of those
-            at once.
+            It is not stored but worked out from `kw` and `positional`:
+            reading it gives `kw or positional`, so a field that can be
+            passed neither by name nor by position is no parameter at
+            all, and assigning to it sets both of them. Passing `init=`
+            here sets both of them too, except for a half spelled out
+            beside it, which stands.
             Whether that method is generated at all is the class-level
             `init` option, which is a separate question.
         repr : bool, default=True (False for a pseudo-field)
@@ -199,10 +201,22 @@ class Field(SlotsBase):
 
         A field is an argument when it can be passed by keyword, by
         position, or both, and is none when it can be passed neither
-        way. Writing `init=False` is how you say that: it sets `kw` and
-        `positional` together, and `init=True` sets them both back.
+        way. Reading this works that out from `kw` and `positional`;
+        assigning to it writes the pair, so `field.init = False` forbids
+        both ways and `field.init = True` allows both -- the same thing
+        `NoInit` and `Init` say.
+
+        Assignment replaces whatever the pair held, including a half
+        that was set on purpose: it says "this is a parameter now".
+        Writing `init=` when the field is built behaves a little
+        differently -- there, a `kw` or `positional` spelled out beside
+        it is a declaration of its own, and stands.
         """
         return bool(self.kw or self.positional)
+
+    @init.setter
+    def init(self, value: bool) -> None:
+        self.kw = self.positional = value
 
     @property
     def public_name(self) -> str:

@@ -555,6 +555,26 @@ class TestFieldInit:
     ) -> None:
         assert Field(kw=kw, positional=positional).init is expected
 
+    @pytest.mark.parametrize("value", [True, False])
+    @pytest.mark.parametrize(
+        "kw,positional", [case[:2] for case in CASES]
+    )
+    def test_init_writes_the_pair(
+        self, kw: bool, positional: bool, value: bool
+    ) -> None:
+        field = Field(kw=kw, positional=positional)
+        field.init = value
+        assert (field.kw, field.positional, field.init) == (
+            value, value, value
+        )
+
+    def test_assignment_replaces_a_half_that_was_spelled_out(self) -> None:
+        # Assignment is not a default: whatever the pair held, saying
+        # `init` afterwards decides both halves.
+        field = Field(kw=False, positional=True)
+        field.init = True
+        assert (field.kw, field.positional) == (True, True)
+
     def test_init_false_forbids_both(self) -> None:
         field = Field(init=False)
         assert (field.kw, field.positional, field.init) == (
@@ -566,10 +586,15 @@ class TestFieldInit:
         assert (field.kw, field.positional, field.init) == (True, True, True)
 
     def test_a_half_given_on_its_own_wins(self) -> None:
-        field = Field(init=True, kw=False)
-        assert (field.kw, field.positional, field.init) == (
-            False, True, True
-        )
+        # In the constructor the two are declarations resolved
+        # together, so the half that was spelled out stands. Which of
+        # them is written first makes no difference.
+        for field in (
+            Field(init=True, kw=False), Field(kw=False, init=True)
+        ):
+            assert (field.kw, field.positional, field.init) == (
+                False, True, True
+            )
 
     def test_init_false_keeps_the_field_out_of_the_constructor(self) -> None:
         class C(Magic):
