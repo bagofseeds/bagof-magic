@@ -4261,16 +4261,38 @@ class TestParityHelpers:
         assert _api.fields_dict(Plain) == {}
 
     def test_two_fields_under_one_public_name_are_rejected(self) -> None:
-        # Only reachable when neither is a constructor argument: the
-        # constructor refuses to be built with a duplicate parameter.
+        # At most one of the two can be a constructor parameter -- here
+        # `_x` is, under the name `x` -- because the constructor refuses
+        # to be built with two parameters of one name. It says nothing
+        # about `x` itself, which is not a parameter at all.
         class Clash(Magic):
             x: NoInit[int] = 1
             _x: int = 2
 
-        with pytest.raises(TypeError, match="both known as 'x'"):
-            _api.fields_dict(Clash)
-        with pytest.raises(TypeError, match="both known as 'x'"):
-            _api.asdict(Clash(5))
+        for call in (
+            lambda: _api.fields_dict(Clash),
+            lambda: _api.asdict(Clash(5)),
+            lambda: _api.astuple(Clash(5)),
+            lambda: _api.replace(Clash(5), x=6),
+        ):
+            with pytest.raises(TypeError, match="both known as 'x'"):
+                call()
+
+    def test_an_alias_can_collide_with_a_plain_field(self) -> None:
+        # No underscore in sight: an alias lands on the name another
+        # field already has.
+        class Coll(Magic):
+            a: Annotated[int, Field(alias="b")] = 1
+            b: NoInit[int] = 2
+
+        for call in (
+            lambda: _api.fields_dict(Coll),
+            lambda: _api.asdict(Coll(1)),
+            lambda: _api.astuple(Coll(1)),
+            lambda: _api.replace(Coll(1), b=9),
+        ):
+            with pytest.raises(TypeError, match="both known as 'b'"):
+                call()
 
     # -- is_magic ------------------------------------------------------
 
@@ -4306,6 +4328,121 @@ class TestParityHelpers:
 
         assert not issubclass(Decorated, Magic)
         assert _api.is_magic(Decorated)
+
+    # -- how each value is passed back ---------------------------------
+
+    def test_replace_with_a_positional_only_field(self) -> None:
+        # A positional-only parameter cannot be passed by name, so the
+        # copy has to count it off instead.
+        class P(Magic):
+            a: PositionalOnly[int] = 1
+            b: int = 2
+
+        assert _api.replace(P(7, 8), b=9) == P(7, 9)
+        assert _api.replace(P(7, 8), a=0) == P(0, 8)
+
+    def test_replace_on_a_positional_only_class(self) -> None:
+        class PO(Magic, positional_only=True):
+            x: int
+            y: int
+
+        assert _api.replace(PO(1, 2), y=3) == PO(1, 3)
+
+    def test_replace_with_every_kind_of_parameter(self) -> None:
+        class Mix(Magic):
+            a: PositionalOnly[int]
+            b: int
+            c: KwOnly[int] = 3
+
+        mixed = Mix(1, 2, c=4)
+        assert _api.replace(mixed, b=20) == Mix(1, 20, c=4)
+        assert _api.replace(mixed, a=9, c=5) == Mix(9, 2, c=5)
+
+    def test_replace_keeps_positional_only_arguments_lined_up(self) -> None:
+        # A defaulted InitVar sits between two positional-only fields.
+        # Leaving it out would shift every value after it along by one,
+        # so its default is passed in its place.
+        class Mid(Magic, positional_only=True):
+            seed: InitVar[int] = 1
+            value: int = 2
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "value", self.value + arguments.seed)
+
+        assert Mid(7, 8).value == 15
+        assert _api.replace(Mid(7, 8)).value == 16
+
+    def test_replace_hands_an_init_var_factory_back_to_the_class(
+        self
+    ) -> None:
+        class Seeded(Magic):
+            n: int = 0
+            extra: Annotated[list, Field(var=True, init=True, factory=list)]
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "n", self.n + len(arguments.extra))
+
+        assert Seeded(5).n == 5
+        assert _api.replace(Seeded(5), n=7).n == 7
+
+    def test_replace_rejects_a_field_that_is_no_kind_of_argument(
+        self
+    ) -> None:
+        # Neither by position nor by name leaves it out of the
+        # signature altogether, the same as opting out of `__init__`.
+        class Neither(Magic):
+            x: Annotated[int, Field(kw=False, positional=False)] = 5
+
+        assert _api.replace(Neither()) == Neither()
+        with pytest.raises(TypeError, match="does not take 'x'"):
+            _api.replace(Neither(), x=1)
+
+    # -- the sharp edges -----------------------------------------------
+
+    def test_replace_reruns_a_post_init_that_derives_a_field(self) -> None:
+        # The copy starts from the stored value, which the hook has
+        # already worked on, so it works on it again. Documented rather
+        # than papered over: there is no way to tell a derived value
+        # from an original one.
+        class Post(Magic):
+            x: int = 1
+            scale: InitVar[int] = 10
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                object.__setattr__(self, "x", self.x * arguments.scale)
+
+        post = Post(5)
+        assert post.x == 50
+        assert _api.replace(post).x == 500
+        assert _api.replace(post, scale=1).x == 50
+
+    def test_an_unset_field_is_reported_not_leaked(self) -> None:
+        class Lazy(Magic):
+            a: int = 1
+            b: Annotated[int, Field(init=False, repr=False)]
+
+        lazy = Lazy()
+        assert lazy.a == 1
+        for call in (lambda: _api.asdict(lazy), lambda: _api.astuple(lazy)):
+            with pytest.raises(
+                AttributeError, match="Lazy.b has never been given a value"
+            ):
+                call()
+
+    def test_an_unset_field_is_reported_by_replace_too(self) -> None:
+        # Reachable through a hand-written `__init__` that leaves a
+        # constructor argument unassigned.
+        class Half(Magic, init=False):
+            a: int
+            b: int
+
+            def __init__(self, a: int) -> None:
+                object.__setattr__(self, "a", a)
+
+        with pytest.raises(
+            AttributeError, match="Half.b has never been given a value"
+        ):
+            _api.replace(Half(1), a=2)
 
     # -- the public face -----------------------------------------------
 

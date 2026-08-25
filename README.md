@@ -196,9 +196,12 @@ Point(x=1.0, y=20.0)
 
 `replace` builds the copy by calling the class again, so conversion,
 validation and the init hooks all run on the new values — which is also why it
-works on a frozen class. `asdict` hands the values back exactly as they are
-stored: it does not copy them, and a field holding another object gives you
-that object rather than a dict of its fields.
+works on a frozen class. The other side of that: a `__post_init__` which works
+one field out from another works it out again, starting from the value it
+already worked out, so `replace` with no changes at all can come back
+different. `asdict` hands the values back exactly as they are stored: it does
+not copy them, and a field holding another object gives you that object rather
+than a dict of its fields.
 
 There is also `fields` and `fields_dict` for the fields themselves, and
 `is_magic` to ask whether a class was built by `Magic` at all.

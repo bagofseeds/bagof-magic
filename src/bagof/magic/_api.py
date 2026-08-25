@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import typing_extensions as tx
 
-from ._constants import _FIELDS, MISSING
+from ._constants import _FIELDS, MISSING, _HasFactory
 from ._fields import Field
 
 __all__ = [
@@ -42,12 +42,13 @@ def _field_table(obj: tx.Any, caller: str) -> tx.Dict[str, Field]:
     return table
 
 
-def _keyed(found: tx.Sequence[Field]) -> tx.Dict[str, Field]:
+def _keyed(found: tx.Iterable[Field]) -> tx.Dict[str, Field]:
     """Key fields by the name they are known by outside the class.
 
-    Two fields can only collide here when neither is a constructor
-    argument: the constructor refuses to be built with a duplicate
-    parameter, so it has already ruled the common case out.
+    At most one of a colliding pair can be a constructor parameter: the
+    constructor refuses to be built with two parameters of one name. It
+    says nothing about a field that is not a parameter, though, so a
+    pair with one of each still reaches here.
     """
     keyed = {}
     for field in found:
@@ -60,6 +61,36 @@ def _keyed(found: tx.Sequence[Field]) -> tx.Dict[str, Field]:
             )
         keyed[name] = field
     return keyed
+
+
+def _is_parameter(field: Field) -> bool:
+    """Whether the constructor takes this field as an argument.
+
+    A field is left out of the signature when it opts out of `__init__`,
+    and also when it can be passed neither by position nor by name.
+    """
+    return bool(field.init and (field.positional or field.kw))
+
+
+def _value(obj: tx.Any, field: Field, caller: str) -> tx.Any:
+    """The value a field holds, or a written error if it holds none."""
+    try:
+        return getattr(obj, field.name)
+    except AttributeError:
+        # A field that is not a constructor argument and has no default
+        # is only ever set by hand, so an object can be perfectly usable
+        # and still have nothing under this name.
+        raise AttributeError(
+            f"{type(obj).__name__}.{field.name} has never been given a "
+            f"value, so {caller}() has nothing to report for it. Give the "
+            f"field a default, or set it in __post_init__."
+        ) from None
+
+
+def _concrete(obj: tx.Any, caller: str) -> tx.Dict[str, Field]:
+    """An instance's real fields, keyed by their outside name."""
+    table = _field_table(obj, caller)
+    return _keyed(field for field in table.values() if not field.var)
 
 
 def fields(cls: type) -> tx.Tuple[Field]:
@@ -100,6 +131,9 @@ def fields_dict(cls: type) -> tx.Dict[str, Field]:
     -------
     fields : dict[str, Field]
         All concrete fields (that are not `ClassVar` or `InitVar`).
+        A class that `Magic` never built simply has none, so the answer
+        is an empty dict -- the same as `fields` gives. `asdict`,
+        `astuple` and `replace` need a real instance and say so instead.
 
     !!! example
         ```pycon
@@ -141,6 +175,13 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
         Every concrete field (not `ClassVar` or `InitVar`), in field
         order.
 
+    Raises
+    ------
+    AttributeError
+        If a field has never been given a value. A field the
+        constructor does not take, with no default, is only set if
+        something sets it by hand.
+
     !!! example
         ```pycon
         >>> class Point(Magic):
@@ -181,10 +222,9 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
         {'name': 'ada', 'age': 36}
         ```
     """
-    table = _field_table(obj, "asdict")
-    keyed = _keyed([field for field in table.values() if not field.var])
     return {
-        name: getattr(obj, field.name) for name, field in keyed.items()
+        name: _value(obj, field, "asdict")
+        for name, field in _concrete(obj, "asdict").items()
     }
 
 
@@ -206,6 +246,11 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
         The value of every concrete field (not `ClassVar` or `InitVar`),
         in field order.
 
+    Raises
+    ------
+    AttributeError
+        If a field has never been given a value, as for `asdict`.
+
     !!! example
         ```pycon
         >>> class Point(Magic):
@@ -216,10 +261,12 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
         (1, 2)
         ```
     """
-    table = _field_table(obj, "astuple")
+    # The same fields `asdict` reports, worked out the same way: a class
+    # whose fields cannot be told apart by name is refused by both,
+    # rather than answering a tuple here and an error there.
     return tuple(
-        getattr(obj, field.name)
-        for field in table.values() if not field.var
+        _value(obj, field, "astuple")
+        for field in _concrete(obj, "astuple").values()
     )
 
 
@@ -277,36 +324,80 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
         value `obj` holds. An `InitVar` is passed in and not kept, so
         there is nothing to read back off `obj`: give it again, or leave
         it to its default.
+
+    !!! warning "A `__post_init__` that derives a field runs again"
+        The copy starts from the values as they are *stored*, so a hook
+        that works one field out from another works it out a second
+        time -- from the already worked-out value. `replace` with no
+        changes at all can then come back different:
+
+        ```pycon
+        >>> class Priced(Magic):
+        ...     total: float
+        ...     vat: InitVar[float] = 0.2
+        ...
+        ...     def __post_init__(self, arguments):
+        ...         self.total = self.total * (1 + arguments.vat)
+        ...
+        >>> order = Priced(100.0)
+        >>> order
+        Priced(total=120.0)
+        >>> replace(order)
+        Priced(total=144.0)
+        ```
+
+        A hook that only checks its arguments, or that fills in a field
+        the constructor does not take, is unaffected.
     """
-    table = _field_table(obj, "replace")
-    given, values = dict(changes), {}
-    for field in table.values():
-        name = field.public_name
-        if not field.init:
+    cls = type(obj)
+    # Every field, pseudo-fields included: a change has to be turned
+    # down by name whether or not the name belongs to a real field, and
+    # a class that cannot tell two of its fields apart cannot say which
+    # one a change was meant for.
+    keyed = _keyed(_field_table(obj, "replace").values())
+    given, arguments = dict(changes), []
+    for name, field in keyed.items():
+        if not _is_parameter(field):
             if name in given:
                 raise TypeError(
-                    f"{type(obj).__name__} does not take {name!r} when it "
-                    f"is built, so replace() has no way to set it."
+                    f"{cls.__name__} does not take {name!r} when it is "
+                    f"built, so replace() has no way to set it."
                 )
             continue
         if name in given:
-            values[name] = given.pop(name)
+            value = given.pop(name)
         elif not field.var:
-            values[name] = getattr(obj, field.name)
-        elif field.default is MISSING and not field.factory:
+            value = _value(obj, field, "replace")
+        elif field.factory:
             # An InitVar is used during construction and not stored, so
-            # a required one has to be given again every time.
+            # there is nothing to carry over: its default stands in.
+            # The constructor resolves a factory itself, and this is
+            # what it would have been handed.
+            value = _HasFactory(field.factory)
+        elif field.default is not MISSING:
+            value = field.default
+        else:
             raise TypeError(
-                f"{type(obj).__name__} needs {name!r} to be built and does "
-                f"not keep it afterwards, so replace() cannot reuse the "
-                f"one it was built with: pass {name}= as well."
+                f"{cls.__name__} needs {name!r} to be built and does not "
+                f"keep it afterwards, so replace() cannot reuse the one it "
+                f"was built with: pass {name}= as well."
             )
+        arguments.append((field, value))
     if given:
         named = ", ".join(repr(name) for name in given)
-        raise TypeError(
-            f"{type(obj).__name__} has no field named {named}."
-        )
-    return type(obj)(**values)
+        raise TypeError(f"{cls.__name__} has no field named {named}.")
+    # A positional-only field cannot be named and a keyword-only one
+    # cannot be counted off, so each value goes back the way its own
+    # field is allowed to be passed. Positional-only fields come first
+    # in the signature, in field order, which is the order they were
+    # collected in.
+    positional, keyword = [], {}
+    for field, value in arguments:
+        if field.positional and not field.kw:
+            positional.append(value)
+        else:
+            keyword[field.public_name] = value
+    return cls(*positional, **keyword)
 
 
 def is_magic(obj: tx.Any) -> bool:
