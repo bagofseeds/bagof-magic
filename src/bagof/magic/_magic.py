@@ -1403,7 +1403,14 @@ def __pre_new__(
     real_fields = {name: f for name, f in fields.items() if not f.var}
 
     if options.mapping:
-        dict_fields = {f.public_key: f for f in fields.values() if f.key}
+        # Only real fields: a `ClassVar` belongs to the class and an
+        # `InitVar` is a constructor argument, so neither is part of the
+        # data and neither is stored on the instance. Reading one back
+        # off an instance answers with the class attribute, or with
+        # nothing at all.
+        dict_fields = {
+            f.public_key: f for f in real_fields.values() if f.key
+        }
         for name, func in _make_mapping(qualname, dict_fields).items():
             namespace.setdefault(name, func)
         Mapping = _abc.Mapping if options.frozen else _abc.MutableMapping

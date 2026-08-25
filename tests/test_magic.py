@@ -1294,6 +1294,48 @@ class TestMapping:
         d = Derived(1, 2)
         assert dict(d) == {"x": 1, "y": 2}
 
+    def test_mapping_skips_pseudo_fields(self) -> None:
+        class Row(Magic, mapping=True):
+            name: str
+            unit: ClassVar[str] = "m"
+            by: InitVar[int] = 0
+
+        row = Row("ada")
+        assert dict(row) == {"name": "ada"}
+        assert list(row) == ["name"]
+        assert len(row) == 1
+        # Still a perfectly ordinary class attribute, just not a key.
+        assert row.unit == "m"
+        for key in ("unit", "by"):
+            with pytest.raises(KeyError):
+                row[key]
+            with pytest.raises(KeyError):
+                row[key] = 1
+            with pytest.raises(KeyError):
+                del row[key]
+
+    def test_mapping_skips_an_init_var_with_no_default(self) -> None:
+        class Shift(Magic, mapping=True):
+            x: int
+            by: InitVar[int]
+
+        shift = Shift(1, 2)
+        assert dict(shift) == {"x": 1}
+        assert list(shift) == ["x"]
+        assert len(shift) == 1
+
+    def test_mapping_of_nothing_but_pseudo_fields(self) -> None:
+        class Meta(Magic, mapping=True):
+            unit: ClassVar[str] = "m"
+            by: InitVar[int] = 0
+
+        meta = Meta()
+        assert dict(meta) == {}
+        assert list(meta) == []
+        assert len(meta) == 0
+        with pytest.raises(KeyError):
+            meta["unit"]
+
     def test_mapping_default_off(self) -> None:
         class Point(Magic):
             x: int
