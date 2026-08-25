@@ -564,6 +564,9 @@ class TestAbstractBase:
             def area(self) -> int:
                 return 1
 
+        # The registration itself is sound -- "circle" is refused for
+        # matching nothing, not because there was nothing to match.
+        assert base(kind="square").area() == 1
         with pytest.raises(NoPolymorphError, match="is abstract"):
             base(kind="circle")
 
@@ -884,7 +887,7 @@ class TestPinningAndSkippedDefaults:
         # Python reports too few arguments before the body runs at all,
         # so a factory that would fail must not get to speak first.
         def explode() -> int:
-            raise RuntimeError("the factory ran")
+            raise RuntimeError("the factory ran")  # pragma: no cover
 
         class Tune(Magic, polymorphic=True):
             mode: str
@@ -1023,6 +1026,10 @@ class TestIntrospection:
                 return super().__new__(cls)
 
         assert list(signature(Built).parameters) == ["a", "b"]
+        # Through `__new__` rather than `Built(1)`: with no `__init__` of
+        # its own the class inherits one that takes no arguments, so the
+        # ordinary call cannot reach the constructor being described.
+        assert isinstance(Built.__new__(Built, 1), Built)
 
 
 # ======================================================================
