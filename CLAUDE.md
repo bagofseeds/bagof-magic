@@ -279,6 +279,43 @@ catching it means intercepting `__call__` on the alias.
    placeholder: spell an option's accepted values in prose, not in
    numpydoc's `{"a", "b"}` notation.
 
+## When a behaviour is a judgement call, check the neighbours first
+
+`dataclasses`, `attrs` and `pydantic` have all met most of the questions
+this package meets. Before deciding one by argument, **find out what they
+actually do** — by running it, not by remembering:
+
+```sh
+python3 -m venv /tmp/priorart && /tmp/priorart/bin/pip install -q attrs pydantic
+```
+
+If two or more of them agree, follow them, and say in the commit message
+that you checked. A consensus across the three is worth more than a
+better-sounding argument, because it is what a reader arriving from any
+of them already expects — and it means a wart we share is a wart they
+have already taught people about.
+
+Where they disagree, the tie-breaker is usually *why*: `attrs` runs
+converters on defaults because you write the converter beside the
+default, while `pydantic` does not validate defaults because its
+coercion comes from the type. Ours comes from the type too, but is opt
+in — so which of them we resemble depends on the question, and that is
+the thing to work out.
+
+Two worked examples, both of which reversed a decision that had been
+argued the other way:
+
+- **Defaults are converted and validated** (#68) because `convert=True`
+  is an explicit act by the author, the same act as `converter=int`
+  beside `default="7"` in attrs. Pydantic's reason for skipping does not
+  transfer.
+- **`replace()` reconstructs through `__init__`** (#79), so a
+  non-idempotent converter sees its own output and a field derived from
+  itself compounds. `dataclasses.replace` does exactly this — the
+  standard library doubles it too — and `attrs.evolve` re-runs
+  converters the same way. Pydantic's `model_copy` differs, and gives
+  the different behaviour a different name.
+
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 
 Docs are for **humans who are not necessarily experts in arcane Python
