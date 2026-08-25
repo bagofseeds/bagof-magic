@@ -350,6 +350,48 @@ def _check_public_names(clsname: str, fields: dict[str, Field]) -> None:
         seen[public] = name
 
 
+def _check_public_keys(clsname: str, fields: dict[str, Field]) -> None:
+    # Two fields cannot answer to one key of the dict-like view.
+    #
+    # A field's key is the one `Key("...")` gives it, or its public
+    # name. The view has room for only one field under a key, so when
+    # two share one, the second silently wins the key and the first is
+    # unreachable through the view -- and `len()` counts one field
+    # fewer than the class has.
+    #
+    # The class is refused whether or not it is dict-like. A key is a
+    # property of the field, so it is inherited, and `mapping` can be
+    # turned on further down the chain: a pair of keys written on a
+    # class with no view is a collision waiting for the first subclass
+    # that asks for one, and refusing it there would name two fields
+    # the reader did not write there.
+    #
+    # A pseudo-field is left out: it is not stored on the instance, so
+    # it is never part of the view and has no key to clash with. A
+    # `ClassVar` named after another field's key is a class whose view
+    # is perfectly well-formed.
+    seen = {}
+    for name, field in fields.items():
+        if field.var:
+            continue
+        key = field.public_key
+        if key is None:
+            continue
+        if key in seen:
+            raise TypeError(
+                f"{clsname} has two fields, {seen[key]!r} and {name!r}, "
+                f"and both take {key!r} as their key: only one of them "
+                f"can be reached under {key!r} in the dict-like view, and "
+                f"len() would count one field fewer than the class has. A "
+                f"field's key is the one Key() gives it, or its public "
+                f"name -- and a key stays with the field, so a subclass "
+                f"built with mapping=True inherits both. Give one of the "
+                f"two a key of its own, or leave it out of the view with "
+                f"NotKey."
+            )
+        seen[key] = name
+
+
 #: Names that mark the *structure* of an annotation: the family declared
 #: in `_fields.py` (`KwOnly`, `Frozen`, `ClassVar`, ...) plus the typing
 #: spellings the builder reads. Used to recognise a structural marker by
@@ -1359,6 +1401,7 @@ def __pre_new__(
             )
 
     _check_public_names(clsname, fields)
+    _check_public_keys(clsname, fields)
 
     # Remember all of the fields on our class (including bases).
     namespace[_FIELDS] = fields

@@ -320,7 +320,13 @@ class Field(SlotsBase):
             # a set kept both.
             self.hash = None
         if self.key is MISSING:
-            self.key = options.mapping
+            # Like `repr`, and for the same reason: the class option
+            # says whether there is a dict-like view at all, which is
+            # not this field's business. What is the field's business is
+            # whether it belongs in one -- and a real field does, so
+            # that a class turning `mapping` on later, or a subclass
+            # turning it on, finds every field already in the view.
+            self.key = not self.var
         if self.eq is MISSING:
             self.eq = True
         if self.order is MISSING:
