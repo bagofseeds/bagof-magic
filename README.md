@@ -225,6 +225,30 @@ anything while every field is in the tuple.
 There is also `fields` and `fields_dict` for the fields themselves, and
 `is_magic` to ask whether a class was built by `Magic` at all.
 
+**A field with no value** is left out of `repr()` as well, so an object you
+are half-way through filling in still prints. Equality counts it rather than
+skipping it: two objects are equal when the same fields are holding values and
+those values match — one that has been given a value is never equal to one
+that is still without, and `hash` agrees. Ordering is the one that refuses,
+for the same reason `astuple` does: a comparison reads the fields in turn, so
+it needs all of them.
+
+```pycon
+>>> class Draft(Magic):
+...     title: str
+...     slug: NoInit[str]
+>>> Draft("Ada")
+Draft(title='Ada')
+>>> Draft("Ada") == Draft("Ada")
+True
+>>> ada = Draft("Ada")
+>>> ada.slug = "ada"
+>>> ada
+Draft(title='Ada', slug='ada')
+>>> ada == Draft("Ada")
+False
+```
+
 **Mutable defaults that are not shared.** In a plain class, `x: list = []`
 hands every instance the *same* list. Here each one gets its own:
 

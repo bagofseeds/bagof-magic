@@ -13,7 +13,7 @@ from __future__ import annotations
 import typing_extensions as tx
 
 from ._constants import _FIELDS, MISSING, _HasFactory
-from ._fields import Field
+from ._fields import Field, _stored
 
 __all__ = [
     "fields",
@@ -50,19 +50,6 @@ def _keyed(found: tx.Iterable[Field]) -> tx.Dict[str, Field]:
     collide.
     """
     return {field.public_name: field for field in found}
-
-
-def _stored(obj: tx.Any, field: Field) -> tx.Tuple[bool, tx.Any]:
-    """The value a field holds, and whether it holds one at all.
-
-    A field that is not a constructor argument and has no default is
-    only ever set by hand, so an object can be perfectly usable and
-    still have nothing under this name.
-    """
-    try:
-        return True, getattr(obj, field.name)
-    except AttributeError:
-        return False, None
 
 
 def _value(obj: tx.Any, field: Field, caller: str) -> tx.Any:
