@@ -65,6 +65,16 @@ def _VALIDATOR(x: str) -> str: return f"__magic_{x}_validator__"
 # __init__, for the object handed to the init hooks
 _ARGUMENTS = "__magic_arguments__"
 
+# Names given, when generating __init__, to the local holding the helper
+# that names the class and the field when a converter, a validator or a
+# factory raises, and to the exception it is handed
+_FIELD_ERROR = "__magic_field_error__"
+_ERROR = "__magic_error__"
+
+# Name given to the local holding the value of a field that is not a
+# parameter, while it is being built, converted and validated
+def _VALUE(x: str) -> str: return f"__magic_{x}_value__"
+
 # Name given to a method's return type variable when generating it
 def _RETURN_TYPE(x: str) -> str: return f"__magic_{x}_return_type__"
 
