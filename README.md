@@ -325,7 +325,8 @@ Circle(radius=6.0)
 ```
 
 **Generic classes.** A `Magic` class can take a type parameter like any
-other:
+other, and a subclass that says what it stands for gets fields of that
+type:
 
 ```python
 from typing import Generic, TypeVar
@@ -333,21 +334,31 @@ from bagof.magic import Magic
 
 T = TypeVar("T")
 
-class Box(Magic, Generic[T]):
+class Box(Magic, Generic[T], convert=True):
     item: T
+
+class IntBox(Box[int]):
+    pass
 ```
 
 ```pycon
->>> Box(1)
-Box(item=1)
->>> Box[str]("hello")
-Box(item='hello')
+>>> Box("1")
+Box(item='1')
+>>> IntBox("1")
+IntBox(item=1)
 ```
 
-The parameter is not filled in on the fields, though: a subclass written as
-`class IntBox(Box[int])` still sees `item` as `T`, so conversion and
-validation have nothing to go on there. Annotate the field with a real type
-in the subclass if you need those.
+`item` is `T` on `Box`, which is no type to convert to and nothing to
+validate against, and `int` on `IntBox` -- which is why one of them turns
+the string into a number and the other does not. It works the same way
+when the parameter is buried in the annotation (`List[T]`, `Optional[T]`,
+`Dict[str, T]`), and a class that fills in one parameter of two leaves the
+other standing for its own subclasses to fill in.
+
+Writing the parameter where the object is built -- `Box[int]("1")` -- is a
+different thing. That is a `typing` alias rather than a class, so it builds
+a plain `Box` and `item` stays as it was; give the subclass a name when you
+want the fields to follow.
 
 **Documentation that writes itself.** Describe a field and it shows up in the
 class docstring and in the generated `__init__`:

@@ -185,6 +185,8 @@ from ._errors import field_error
 from ._fields import *  # noqa: F401, F403
 from ._fields import Field, _stored
 from ._fields import __all__ as __all_fields__
+from ._generics import substitute as _substitute
+from ._generics import type_arguments as _type_arguments
 from ._options import *  # noqa: F401, F403
 from ._options import Options
 from ._options import __all__ as __all_options__
@@ -259,6 +261,26 @@ def _inherit_attrs(
         inherited = getattr(other, attr, MISSING)
         if inherited is not MISSING:
             setattr(field, attr, inherited)
+
+
+def _fill_in_type(
+    field: Field,
+    arguments: tx.Dict[tx.Any, tx.Any],
+    hints: Hints,
+) -> None:
+    # Replace the type variables in a field's type with what the class
+    # being built says they stand for, and work out again whatever was
+    # worked out from that type. A converter, validator or factory the
+    # field was given rather than asked for is left alone: filling in a
+    # type variable says nothing about it.
+    #
+    # The field is one this class owns -- `_add_fields` copies on the way
+    # in -- so it is changed in place.
+    filled = _substitute(field.type, arguments)
+    if filled is field.type:
+        return
+    field.type = filled
+    field._rebuild(hints)
 
 
 def _add_fields(
@@ -1250,7 +1272,25 @@ def __pre_new__(
     # Find our base classes in reverse MRO order, so that order is
     # obtained from MRO, but value is obtained from most derived class.
     mro = _mro(bases, namespace)
-    for b in reversed(mro):
+
+    # What this class fills in for the type variables its bases were
+    # written with: `class IntBox(Box[int])` says that `Box`'s `T` is
+    # `int` here. Kept per base, so that two parameterised bases fill in
+    # their own variables and not each other's.
+    arguments = _type_arguments(namespace)
+
+    # Which of those applies to each inherited field, once every base has
+    # had its say. A field a later base also declares is that base's, so
+    # the last word on the field is the last word on its type variables
+    # too -- including "none", when that base fills nothing in.
+    inherited_arguments = {}
+
+    # `mro[0]` is the throwaway class built above to work out the
+    # inheritance order. It has no fields of its own -- it only inherits
+    # the most derived base's, which the loop reads off that base
+    # anyway -- and nothing was written as one of *its* type variables,
+    # so reading it would only undo what that base said.
+    for b in reversed(mro[1:]):
         # Only process classes that have been processed by our
         # decorator.  That is, they have a _FIELDS attribute.
         base_fields = getattr(b, _FIELDS, None)
@@ -1263,6 +1303,9 @@ def __pre_new__(
                 replace=True,
                 reverse=options.reverse
             )
+            if arguments:
+                for field_name in base_fields:
+                    inherited_arguments[field_name] = arguments.get(b)
 
     # Save final options for this class.
     options.update(Options(**kwargs))
@@ -1309,6 +1352,14 @@ def __pre_new__(
     # namespace once it exists, by `__post_new__`.
     hints = Hints(globals, {}, clsname, options.unresolved_hints)
     namespace[_HINTS] = hints
+
+    # Fill the type variables in on the fields that came from a base
+    # written with them. A field this class declares again is built from
+    # its own annotation further down and replaces the one filled in
+    # here, so only what really is inherited is touched.
+    for field_name, base_arguments in inherited_arguments.items():
+        if base_arguments:
+            _fill_in_type(fields[field_name], base_arguments, hints)
 
     # Annotations that are defined in this class (not in base
     # classes).  If __annotations__ isn't present, then this class
