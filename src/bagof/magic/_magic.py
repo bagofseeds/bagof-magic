@@ -177,6 +177,7 @@ from ._constants import (
     _CONVERTER,
     _DEFAULT,
     _DISCARD,
+    _DISPATCHING,
     _ERROR,
     _EXCEPTION,
     _FIELD_ERROR,
@@ -216,8 +217,8 @@ from ._options import Options
 from ._options import __all__ as __all_options__
 from ._polymorph import *  # noqa: F401, F403
 from ._polymorph import __all__ as __all_polymorph__
+from ._polymorph import arm as _arm_polymorph
 from ._polymorph import check as _check_invariant
-from ._polymorph import invariant as _keep_invariant
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
 from ._polymorph import specifications as _specifications
@@ -253,15 +254,18 @@ def __post_new__(cls: type) -> type:
         hints.namespace[cls.__name__] = cls
 
     # The class exists now, so it can be registered with the one that
-    # will build it. Under "strict" it also keeps its own registration,
-    # to refuse a direct call that contradicts it.
+    # will build it.
     registration = cls.__dict__.get(_REGISTRATION)
     if registration is not None:
         polymorphic_base, specs, priority = registration
-        strict = getattr(polymorphic_base, _OPTIONS).polymorphic == "strict"
-        _register_polymorph(polymorphic_base, cls, specs, priority, strict)
-        if getattr(cls, _OPTIONS).polymorphic == "strict":
-            _keep_invariant(cls, specs)
+        _register_polymorph(polymorphic_base, cls, specs, priority)
+
+    # A strict class is armed whether or not anything has registered
+    # with it yet, since "nobody has registered" is the case the
+    # setting exists to report. Being armed also means keeping its own
+    # constraints, to refuse a direct call that contradicts them.
+    if getattr(getattr(cls, _OPTIONS, None), "polymorphic", False) == "strict":
+        _arm_polymorph(cls, specs if registration is not None else None)
 
     fields = getattr(cls, _FIELDS, {})
     fields = {name: field for name, field in fields.items() if not field.var}
@@ -1127,12 +1131,41 @@ def _polymorphic_base(mro: tx.Tuple[type, ...]) -> tx.Optional[type]:
     return None
 
 
+def _check_discriminants(
+    clsname: str,
+    polymorphic_base: type,
+    fields: dict,
+    specs: tx.Sequence,
+) -> None:
+    # A field the class it registers with takes, and it does not, is a
+    # field it can never be handed. The base passes the arguments it
+    # was given straight through, so the call the caller wrote would
+    # fail inside the delegation, naming a class they never mentioned.
+    base_fields = getattr(polymorphic_base, _FIELDS)
+    for spec in specs:
+        field = fields[spec.name]
+        if field.init or not base_fields[spec.name].init:
+            continue
+        raise TypeError(
+            f"{clsname} registers on {spec.name!r}, and does not take "
+            f"{spec.name!r} when it is built -- so "
+            f"{polymorphic_base.__name__}({spec.name}=...), which builds "
+            f"{clsname} and passes on what it was given, would fail. To "
+            f"keep {spec.name!r} out of the instances without closing "
+            f"the door on it, write "
+            f"pin_discriminant='classvar' on {clsname} and leave the "
+            f"field to it: the value becomes a class attribute, and the "
+            f"argument is still accepted and dropped."
+        )
+
+
 def _pin_discriminants(
     fields: dict,
     namespace: dict,
     declared: tx.Container[str],
     specs: tx.Sequence,
     action: str,
+    mutable: str,
 ) -> tx.Set[str]:
     # A subclass registered for one exact value already says what that
     # field holds, so it does not have to say it twice: the field is
@@ -1161,7 +1194,15 @@ def _pin_discriminants(
             field.key = SHOW_ATTR(False)
             field.eq = field.order = False
             field.hash = False
+            # A class attribute is meant to be shared, so a mutable one
+            # is not the trap `mutable_default` is about.
             namespace[field.name] = spec.value
+        else:
+            # A pinned default reaches every instance, so it goes
+            # through the same handling a written-out default does:
+            # `on={"cfg": {"a": 1}}` must not hand one dictionary to
+            # every instance of the subclass.
+            _handle_mutable_default(field, mutable)
         pinned.add(field.name)
     return pinned
 
@@ -1667,14 +1708,16 @@ def __pre_new__(
         if options.pin_discriminant != "keep":
             pinned.update(_pin_discriminants(
                 fields, namespace, cls_annotations, specs,
-                options.pin_discriminant,
+                options.pin_discriminant, options.mutable_default,
             ))
+        _check_discriminants(clsname, polymorphic_base, fields, specs)
 
     # A subclass that declares the field again, with no default of its
     # own, has taken the pin away.
     pinned = {
         name for name in pinned
-        if name in fields and fields[name].default is not MISSING
+        if name in fields
+        and (fields[name].default is not MISSING or fields[name].factory)
     }
     if pinned:
         namespace[_PINNED] = frozenset(pinned)
@@ -1732,7 +1775,7 @@ def __pre_new__(
     # Build __init__. The builder writes source, so binding the public
     # name has to wait until `insert_fns` has compiled it (below).
     try:
-        init_kwargs = _make_init(
+        init_kwargs, sentinels = _make_init(
             fields, prepost, clsname,
             {fields[name].public_name for name in pinned},
         )
@@ -1744,7 +1787,7 @@ def __pre_new__(
         # its own `__magic_init__`, one that explains the problem if it
         # is ever called -- without it, `self.__magic_init__(...)` would
         # quietly find a base class's version and set the wrong fields.
-        init_kwargs = None
+        init_kwargs, sentinels = None, ()
         namespace.setdefault(
             _MAGIC("init"), _unbuildable_init(clsname, str(error))
         )
@@ -1881,6 +1924,16 @@ def __pre_new__(
         magic_init.__code__ = magic_init.__code__.replace(
             co_name=magic_init.__name__
         )
+        if sentinels:
+            # A parameter standing behind a pinned one carries a
+            # sentinel where Python's syntax cannot spell "no default",
+            # and every tool that reads a signature -- `help`, an
+            # editor's tooltip, `Signature.bind` -- would take that for
+            # an optional argument. Say what is true instead, and leave
+            # the sentinel to the code.
+            magic_init.__signature__ = _honest_signature(
+                magic_init, sentinels
+            )
         if init_name and init_name not in namespace:
             namespace[init_name] = magic_init
             generated[init_name] = "init"
@@ -2127,6 +2180,26 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
     if field.doc:
         doc += "\n" + indent(dedent(field.doc).strip(), " " * 4)
     return doc
+
+
+def _honest_signature(
+    fn: tx.Callable, sentinels: tx.Container[str]
+) -> Signature:
+    # The signature of `fn` with the sentinel defaults taken off, so
+    # that a required argument reads as one. `Signature` refuses to
+    # build a parameter without a default behind one that has a default
+    # -- the very shape being described -- so it is asked not to check.
+    found = signature(fn)
+    parameters = [
+        parameter.replace(default=Parameter.empty)
+        if parameter.name in sentinels else parameter
+        for parameter in found.parameters.values()
+    ]
+    return Signature(
+        parameters,
+        return_annotation=found.return_annotation,
+        __validate_parameters__=False,
+    )
 
 
 def _make_init(
@@ -2388,7 +2461,7 @@ def _make_init(
         "doc": doc,
         "locals": locals,
         "return_type": None,
-    }
+    }, required
 
 
 def _make_repr(qualname: str, fields: dict[str, Field]) -> tx.Callable:
@@ -2757,6 +2830,77 @@ def _make_mapping(
 # derive from ABCs (e.g. Mapping).
 
 
+# ----------------------------------------------------------------------
+# Dispatch
+# ----------------------------------------------------------------------
+
+#: Metaclasses that already dispatch, by the one they were made from,
+#: so a hierarchy shares one rather than growing a metaclass per class.
+_DISPATCHERS: tx.Dict[type, type] = {}
+
+
+def _dispatching(metacls: type) -> type:
+    """A metaclass like `metacls`, that builds a class's subclasses.
+
+    Choosing which subclass to build has to happen in a metaclass
+    `__call__`, and defining one replaces the interpreter's own C-level
+    path with a Python call -- on every instantiation of every class
+    that metaclass builds. So only the classes that asked for it get
+    one: a class written `polymorphic=...` is created with a subclass
+    of whatever metaclass it would otherwise have had, and every other
+    Magic class keeps the fast path untouched.
+
+    Deriving from the metaclass Python already worked out, rather than
+    from a fixed one, is also what keeps this compatible with a
+    metaclass of your own: the result is a subclass of yours, so it can
+    never conflict with it.
+    """
+    if getattr(metacls, _DISPATCHING, False):
+        return metacls
+    made = _DISPATCHERS.get(metacls)
+    if made is not None:
+        return made
+    made = type(metacls)(
+        metacls.__name__ + "Dispatch",
+        (metacls,),
+        {
+            _DISPATCHING: True,
+            "__doc__": _dispatching.__doc__,
+            "__module__": __name__,
+        },
+    )
+
+    # What building a class normally does, read once. `made` has one
+    # base, so this is what `super(made, cls).__call__` would find --
+    # and for a plain Magic class it is the interpreter's own
+    # `type.__call__`, which is the path a class that turns out not to
+    # dispatch should go straight back to.
+    build = metacls.__call__
+
+    def __call__(cls: type, *args, **kwargs) -> tx.Any:
+        # A class no subclass has registered with, and that does not
+        # itself have to be one, has nothing here. The lookup is a
+        # direct one: a subclass answers for the subclasses registered
+        # with *it*, and never for its parent's.
+        found = cls.__dict__.get(_POLYMORPHS)
+        if found is None:
+            return build(cls, *args, **kwargs)
+        if found.invariant is not None:
+            _check_invariant(cls, found, args, kwargs)
+        if not (found.dispatch[0] or found.required):
+            return build(cls, *args, **kwargs)
+        target = _select_polymorph(cls, found, args, kwargs)
+        if target is None:
+            return build(cls, *args, **kwargs)
+        # The subclass is built the same way it would be if it had been
+        # named directly, so a subclass of *it* gets its turn too.
+        return target(*args, **kwargs)
+
+    made.__call__ = __call__
+    _DISPATCHERS[metacls] = made
+    return made
+
+
 class MetaMagic(ABCMeta):
     """
     Examples
@@ -2890,39 +3034,46 @@ class MetaMagic(ABCMeta):
         name, bases, namespace = __pre_new__(
             metacls, name, bases, namespace, **kwargs
         )
+        options = namespace.get(_OPTIONS)
+        if options is not None and options.polymorphic:
+            metacls = _dispatching(metacls)
         cls = super().__new__(metacls, name, bases, namespace)
         cls = __post_new__(cls)
         return cls
 
     @property
     def __signature__(cls) -> Signature:
-        # `inspect.signature(SomeClass)` reads the metaclass `__call__`
-        # when there is one, and would report `(*args, **kwargs)` for
-        # every Magic class. What a reader is asking for is how the
-        # class is built, so answer with the constructor's own
-        # signature, without the `self` it is written with.
-        found = signature(cls.__init__)
-        parameters = list(found.parameters.values())
-        return found.replace(parameters=parameters[1:])
-
-    def __call__(cls, *args, **kwargs) -> tx.Any:
-        # A class no subclass has registered with has nothing here, so
-        # the ordinary case pays one failed dictionary lookup. The
-        # lookup is a direct one: a subclass answers for the subclasses
-        # registered with *it*, and never for its parent's.
-        found = cls.__dict__.get(_POLYMORPHS)
-        if found is None:
-            return super().__call__(*args, **kwargs)
-        if found.invariant is not None:
-            _check_invariant(cls, found, args, kwargs)
-        if not found.entries:
-            return super().__call__(*args, **kwargs)
-        target = _select_polymorph(cls, found, args, kwargs)
-        if target is None:
-            return super().__call__(*args, **kwargs)
-        # The subclass is built the same way it would be if it had been
-        # named directly, so a subclass of *it* gets its turn too.
-        return target(*args, **kwargs)
+        # `inspect.signature(SomeClass)` reads a metaclass `__call__`
+        # before anything else, and a polymorphic class has one -- so
+        # without this, such a class would report `(*args, **kwargs)`
+        # instead of how it is actually built. Answering here keeps
+        # every Magic class saying the same thing, whether or not it
+        # dispatches.
+        #
+        # A signature written by hand wins, wherever in the chain it
+        # was written: `inspect` would have found it by ordinary
+        # attribute lookup, and a property on the metaclass hides it.
+        for base in cls.__mro__:
+            written = base.__dict__.get("__signature__")
+            if written is not None:
+                return written
+        # Otherwise the constructor's own, without the `self` it is
+        # written with. Which constructor is `inspect`'s rule: whichever
+        # of `__init__` and `__new__` is defined first down the chain,
+        # since a class with no `__init__` of its own may still take its
+        # arguments in `__new__`.
+        for base in cls.__mro__:
+            for name in ("__init__", "__new__"):
+                if name in base.__dict__:
+                    found = signature(base.__dict__[name])
+                    # Not `replace`, which checks the result: a pinned
+                    # discriminant makes a signature Python's own
+                    # syntax cannot write, and it is already true.
+                    return Signature(
+                        list(found.parameters.values())[1:],
+                        return_annotation=found.return_annotation,
+                        __validate_parameters__=False,
+                    )
 
     def register_polymorph(
         cls,
@@ -2972,9 +3123,7 @@ class MetaMagic(ABCMeta):
         wanted.update(constraints)
         specs = _specifications(cls, getattr(target, "__name__", target),
                                 wanted)
-        _register_polymorph(
-            cls, target, specs, priority, options.polymorphic == "strict"
-        )
+        _register_polymorph(cls, target, specs, priority)
         return target
 
 

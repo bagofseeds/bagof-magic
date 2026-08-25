@@ -54,7 +54,9 @@ from bagof.validators import Validator
 from ._constants import (
     _FIELDS,
     _GENERATED,
+    _OPTIONS,
     _POLYMORPHS,
+    _REGISTRATION,
     MISSING,
     MaybeMissing,
 )
@@ -79,8 +81,10 @@ class NoPolymorphError(PolymorphError):
     """
     No registered subclass matches the arguments.
 
-    Only `polymorphic="strict"` raises this: `polymorphic=True` builds
-    the class that was called instead.
+    A class raises this when it cannot stand in for the subclass that
+    was not found: under `polymorphic="strict"`, and whenever the class
+    is abstract. A plain `polymorphic=True` class builds itself
+    instead.
     """
 
 
@@ -140,6 +144,24 @@ def _is_hint(spec: tx.Any) -> bool:
     return isinstance(spec, type) or tx.get_origin(spec) is not None
 
 
+def _guarded(
+    matches: tx.Callable[[tx.Any], tx.Any]
+) -> tx.Callable[[tx.Any], bool]:
+    # A value a constraint cannot even be compared with is not one it
+    # accepts. Anything may turn up here -- a registration is checked
+    # against whatever the caller passed, before conversion has had a
+    # say -- so an `__eq__` that raises, an unhashable value handed to
+    # a set, or a value `str()` refuses must all read as "no match"
+    # rather than coming out of the constructor as themselves.
+    def guard(value: tx.Any) -> bool:
+        try:
+            return bool(matches(value))
+        except Exception:
+            return False
+
+    return guard
+
+
 def _accepts(spec: tx.Any) -> tx.Callable[[tx.Any], bool]:
     validator = Validator.get(spec)
 
@@ -153,31 +175,33 @@ def _accepts(spec: tx.Any) -> tx.Callable[[tx.Any], bool]:
     return accepts
 
 
-def _specification(name: str, spec: tx.Any) -> _Spec:
-    """Read one value of an `on={...}` mapping."""
+def _shape(
+    spec: tx.Any
+) -> tx.Tuple[tx.Callable[[tx.Any], tx.Any], int, MaybeMissing[tx.Any], str]:
+    # What one constraint matches, how narrow a claim that is, the one
+    # value it accepts when it accepts one, and how it reads.
     if spec is Ellipsis:
-        return _Spec(name, lambda value: True, _LOOSE, MISSING, "anything")
+        return (lambda value: True), _LOOSE, MISSING, "anything"
     if isinstance(spec, (set, frozenset)):
-        return _Spec(
-            name, lambda value: value in spec, _MEMBER, MISSING, repr(spec)
-        )
+        return (lambda value: value in spec), _MEMBER, MISSING, repr(spec)
     if hasattr(spec, "fullmatch"):
-        return _Spec(
-            name,
+        return (
             lambda value: spec.fullmatch(str(value)) is not None,
             _PATTERN,
             MISSING,
             f"matching {spec.pattern!r}",
         )
     if _is_hint(spec):
-        return _Spec(name, _accepts(spec), _HINT, MISSING, repr(spec))
+        return _accepts(spec), _HINT, MISSING, repr(spec)
     if callable(spec):
-        return _Spec(
-            name, lambda value: bool(spec(value)), _LOOSE, MISSING, repr(spec)
-        )
-    return _Spec(
-        name, lambda value: bool(value == spec), _EXACT, spec, repr(spec)
-    )
+        return spec, _LOOSE, MISSING, repr(spec)
+    return (lambda value: value == spec), _EXACT, spec, repr(spec)
+
+
+def _specification(name: str, spec: tx.Any) -> _Spec:
+    """Read one value of an `on={...}` mapping."""
+    matches, precision, value, text = _shape(spec)
+    return _Spec(name, _guarded(matches), precision, value, text)
 
 
 def specifications(
@@ -328,7 +352,7 @@ def read(
 class _Polymorph:
     """One subclass, and what it stands for."""
 
-    __slots__ = ("target", "specs", "priority", "depth")
+    __slots__ = ("target", "specs", "rank")
 
     def __init__(
         self,
@@ -339,20 +363,17 @@ class _Polymorph:
     ) -> None:
         self.target = target
         self.specs = specs
-        self.priority = priority
-        self.depth = depth
-
-    @property
-    def rank(self) -> tx.Tuple[int, int, int, int]:
-        # Explicit priority first, then the number of fields the claim
-        # covers, then how precise those constraints are, then how far
-        # down the class hierarchy the subclass sits -- so refining an
-        # existing subclass does not need a narrower `on=`.
-        return (
-            self.priority,
-            len(self.specs),
-            sum(spec.precision for spec in self.specs),
-            self.depth,
+        #: How strong a claim this is, worked out once because none of
+        #: it can change: an explicit priority first, then the number
+        #: of fields the claim covers, then how precise those
+        #: constraints are, then how far down the class hierarchy the
+        #: subclass sits -- so refining an existing subclass does not
+        #: need a narrower `on=`.
+        self.rank = (
+            priority,
+            len(specs),
+            sum(spec.precision for spec in specs),
+            depth,
         )
 
     def matches(self, values: tx.Mapping[str, tx.Any]) -> bool:
@@ -372,19 +393,29 @@ class _Polymorph:
 class _Registry:
     """What a class knows about building something other than itself."""
 
-    __slots__ = ("entries", "discriminants", "invariant", "strict")
+    __slots__ = ("dispatch", "invariant", "strict", "required")
 
-    def __init__(self, strict: bool) -> None:
-        self.entries = ()
-        self.discriminants = ()
+    def __init__(self, strict: bool, required: bool) -> None:
+        #: The registered subclasses, and where each constrained field
+        #: arrives, as one value. Rebuilt whole and stored in a single
+        #: assignment, so a construction on another thread reads either
+        #: the state before a registration or the state after it, never
+        #: entries whose fields the reader has no place to look up.
+        self.dispatch = ((), ())
         #: This class's own registration, read back on the way in, so
         #: that building it directly with a contradicting value can be
         #: refused. Only kept under `polymorphic="strict"`.
         self.invariant = None
+        #: Refuse to build this class when nothing matches.
         self.strict = strict
+        #: Refuse even when nothing has registered yet. A strict class
+        #: that something else builds -- a leaf of the hierarchy -- is
+        #: exempt: it has to stay buildable, since being built is the
+        #: whole point of having been registered.
+        self.required = required
 
 
-def registry(cls: type, strict: bool) -> _Registry:
+def registry(cls: type) -> _Registry:
     """This class's own registry, made if it has none yet.
 
     Never an inherited one: a subclass answers for the subclasses
@@ -392,9 +423,29 @@ def registry(cls: type, strict: bool) -> _Registry:
     """
     found = cls.__dict__.get(_POLYMORPHS)
     if found is None:
-        found = _Registry(strict)
+        strict = getattr(
+            getattr(cls, _OPTIONS, None), "polymorphic", False
+        ) == "strict"
+        found = _Registry(strict, strict and _REGISTRATION not in cls.__dict__)
         setattr(cls, _POLYMORPHS, found)
     return found
+
+
+def arm(cls: type, specs: tx.Optional[tx.Tuple[_Spec, ...]]) -> None:
+    """Give a strict class the registry its own setting calls for.
+
+    It needs one before any subclass has registered, or the setting
+    would do nothing at all until the module holding the first subclass
+    happened to be imported -- which is the very case it exists to
+    report. When the class is itself registered somewhere, its own
+    constraints are kept here too, so that building it directly with a
+    value that contradicts them can be refused.
+    """
+    found = registry(cls)
+    if specs is not None:
+        found.invariant = (
+            specs, discriminants(cls, [spec.name for spec in specs])
+        )
 
 
 def register(
@@ -402,7 +453,6 @@ def register(
     target: type,
     specs: tx.Tuple[_Spec, ...],
     priority: int,
-    strict: bool,
 ) -> None:
     """Have `owner` build `target` for the arguments `specs` describe."""
     if not (isinstance(target, type) and issubclass(target, owner)):
@@ -415,17 +465,24 @@ def register(
             f"{owner.__name__} cannot be registered against itself: it is "
             f"already what a call to it builds when nothing else matches."
         )
+    if not isinstance(priority, int) or isinstance(priority, bool):
+        raise TypeError(
+            f"the priority of {target.__name__} is {priority!r}, and a "
+            f"priority is a whole number: the subclass with the highest "
+            f"one wins when two match equally well."
+        )
     entry = _Polymorph(
         target, specs, priority, target.__mro__.index(owner)
     )
-    found = registry(owner, strict)
+    found = registry(owner)
+    entries, _ = found.dispatch
     # A class registering a second time -- a reloaded module, a
     # decorator applied twice -- replaces its entry rather than adding
     # one that would then tie with itself. Same name in the same module
     # is the same registration, whether or not it is the same object.
     same = (target.__module__, target.__qualname__)
     entries = [
-        kept for kept in found.entries
+        kept for kept in entries
         if (kept.target.__module__, kept.target.__qualname__) != same
     ]
     entries.append(entry)
@@ -434,16 +491,7 @@ def register(
         for spec in kept.specs:
             if spec.name not in names:
                 names.append(spec.name)
-    # Built whole and swapped in, so that anything reading the registry
-    # while a plugin registers reads one state or the other.
-    found.entries = tuple(entries)
-    found.discriminants = discriminants(owner, names)
-
-
-def invariant(cls: type, specs: tx.Tuple[_Spec, ...]) -> None:
-    """Keep `cls`'s own registration, to check calls to it against."""
-    found = registry(cls, True)
-    found.invariant = (specs, discriminants(cls, [s.name for s in specs]))
+    found.dispatch = (tuple(entries), discriminants(owner, names))
 
 
 # ----------------------------------------------------------------------
@@ -470,8 +518,9 @@ def select(
     """
     Which subclass of `cls` to build, or `None` to build `cls` itself.
     """
-    values = read(found.discriminants, args, kwargs)
-    candidates = [entry for entry in found.entries if entry.matches(values)]
+    entries, where = found.dispatch
+    values = read(where, args, kwargs)
+    candidates = [entry for entry in entries if entry.matches(values)]
     if not candidates:
         # An abstract class cannot stand in for the subclass that was
         # not found: falling through would raise Python's own "can't
@@ -479,20 +528,8 @@ def select(
         # being made.
         abstract = getattr(cls, "__abstractmethods__", None)
         if found.strict or abstract:
-            why = (
-                f"{cls.__name__} is abstract, so it can only be built as "
-                f"one of the subclasses registered with it"
-                if abstract else
-                f"{cls.__name__} only builds one of the subclasses "
-                f"registered with it"
-            )
-            considered = "\n".join(f"  - {entry}" for entry in found.entries)
-            raise NoPolymorphError(
-                f"{why}, and none of them matches {_written(values)}. It "
-                f"considered:\n{considered}\nIf the one you expected is "
-                f"not in that list, the module it is written in has not "
-                f"been imported."
-            )
+            raise NoPolymorphError(_nothing_matched(cls, entries, values,
+                                                    bool(abstract)))
         return None
     best = max(candidates, key=lambda entry: entry.rank)
     tied = [
@@ -512,6 +549,34 @@ def select(
             f"priority=1)`."
         )
     return best.target
+
+
+def _nothing_matched(
+    cls: type,
+    entries: tx.Tuple[_Polymorph, ...],
+    values: tx.Mapping[str, tx.Any],
+    abstract: bool,
+) -> str:
+    why = (
+        f"{cls.__name__} is abstract, so it can only be built as one of "
+        f"the subclasses registered with it"
+        if abstract else
+        f"{cls.__name__} only builds one of the subclasses registered "
+        f"with it"
+    )
+    if not entries:
+        # Nothing has registered, so there are no constrained fields
+        # and nothing to say about the arguments.
+        return (
+            f"{why}, and none has yet: the module holding the subclass "
+            f"you expect has not been imported."
+        )
+    considered = "\n".join(f"  - {entry}" for entry in entries)
+    return (
+        f"{why}, and none of them matches {_written(values)}. It "
+        f"considered:\n{considered}\nIf the one you expected is not in "
+        f"that list, the module it is written in has not been imported."
+    )
 
 
 def check(

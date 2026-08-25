@@ -13,7 +13,7 @@ import copy
 import pickle
 import re
 from abc import abstractmethod
-from inspect import signature
+from inspect import Parameter, Signature, signature
 
 # dependencies
 import pytest
@@ -28,6 +28,7 @@ from bagof.magic import (
     Factory,
     KwOnly,
     Magic,
+    MetaMagic,
     NoInit,
     NoPolymorphError,
     PolymorphError,
@@ -231,6 +232,18 @@ class TestRanking:
         assert type(base(a="x")) is Tight
         assert type(base(a="q")) is Loose
 
+    def test_more_fields_beats_more_precision(self, base: type) -> None:
+        # Two constraints worth 3 between them beat one worth 4: how
+        # many fields the claim covers is read before how narrow they
+        # are, and the two must not be weighed together.
+        class Broad(base, on={"a": {"x", "y"}, "b": ...}):
+            pass
+
+        class Sharp(base, on={"a": "x"}):
+            pass
+
+        assert type(base(a="x", b="b")) is Broad
+
     def test_a_deeper_subclass_wins(self, base: type) -> None:
         class Outer(base, on={"a": "x"}):
             pass
@@ -283,6 +296,13 @@ class TestRanking:
             pass
 
         assert type(base(a="x")) is Right
+
+    def test_a_priority_that_is_not_a_number_is_refused(
+        self, base: type
+    ) -> None:
+        with pytest.raises(TypeError, match="a priority is a whole number"):
+            class Wrong(base, on={"a": "x"}, priority="high"):
+                pass
 
     def test_priority_without_on_is_refused(self, base: type) -> None:
         with pytest.raises(TypeError, match="priority= without on="):
@@ -345,6 +365,41 @@ class TestReadingTheArguments:
             pass
 
         assert type(Fixed("x")) is First
+
+    def test_a_positional_only_value_is_not_looked_for_by_name(
+        self
+    ) -> None:
+        # `first` cannot be passed by name at all, so a keyword of that
+        # name is not its value and must not be read as one.
+        class Fixed(Magic, polymorphic="strict", positional_only=True):
+            first: str = ""
+
+        class First(Fixed, on={"first": "x"}):
+            pass
+
+        assert type(Fixed("x")) is First
+        with pytest.raises(NoPolymorphError):
+            Fixed(first="x")
+
+    def test_a_value_that_cannot_be_compared_does_not_match(self) -> None:
+        class Awkward:
+            def __eq__(self, other: tx.Any) -> bool:
+                raise RuntimeError("no")
+
+            __hash__ = None
+
+        class Held(Magic, polymorphic=True):
+            v: tx.Any = None
+
+        class One(Held, on={"v": 1}):
+            pass
+
+        class Some(Held, on={"v": {1, 2}}):
+            pass
+
+        # Neither constraint can look at it, and neither may let its
+        # own failure out of the constructor.
+        assert type(Held(v=Awkward())) is Held
 
     def test_a_hand_written_init_dispatches_by_keyword(self) -> None:
         class Free(Magic, polymorphic=True, init=False):
@@ -443,6 +498,16 @@ class TestStrict:
             pass
 
         assert type(Known(kind="k")) is Known
+
+    def test_a_root_with_nothing_registered_is_refused(self) -> None:
+        # The case the setting exists for: the module holding the
+        # subclass has not been imported. Building a plain one silently
+        # would be exactly the failure it is meant to report.
+        class Alone(Magic, polymorphic="strict"):
+            kind: str = ""
+
+        with pytest.raises(NoPolymorphError, match="has not been imported"):
+            Alone(kind="k")
 
     def test_a_contradicting_value_is_refused(self, base: type) -> None:
         class Known(base, on={"kind": "k"}):
@@ -658,12 +723,48 @@ class TestPinDiscriminant:
         with pytest.raises(TypeError, match="missing"):
             Stricter(root="A")
 
-    def test_a_declared_classvar_is_left_alone(self, base: type) -> None:
-        class Minor(base, on={"mode": "minor"}):
+    def test_a_hand_written_classvar_discriminant_is_refused(
+        self, base: type
+    ) -> None:
+        # The base passes `mode` straight through, so a subclass whose
+        # constructor does not take it could only be reached by a call
+        # that then fails inside the delegation.
+        with pytest.raises(TypeError, match="pin_discriminant='classvar'"):
+            class Minor(base, on={"mode": "minor"}):
+                mode: ClassVar[str] = "minor"
+
+    def test_a_discriminant_the_base_does_not_take_either_is_fine(
+        self
+    ) -> None:
+        # Nothing can pass it on, so nothing can fail on it.
+        class Tune(Magic, polymorphic=True):
+            root: str = ""
+            mode: NoInit[str] = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
             mode: ClassVar[str] = "minor"
 
         assert Minor.mode == "minor"
-        assert asdict(Minor(root="A")) == {"root": "A"}
+
+    def test_a_pinned_mutable_default_is_not_shared(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            cfg: dict = None
+
+        class Tagged(Tune, on={"cfg": {"a": 1}}):
+            pass
+
+        first, second = Tagged(), Tagged()
+        assert first.cfg == {"a": 1} and first.cfg is not second.cfg
+        first.cfg["b"] = 2
+        assert Tagged().cfg == {"a": 1}
+
+    def test_a_pinned_mutable_default_obeys_the_class_setting(self) -> None:
+        class Tune(Magic, polymorphic=True, mutable_default="raise"):
+            cfg: dict = None
+
+        with pytest.raises(ValueError, match="shared by every instance"):
+            class Tagged(Tune, on={"cfg": {"a": 1}}):
+                pass
 
 
 class TestPinnedSignature:
@@ -717,6 +818,71 @@ class TestPinnedSignature:
         with pytest.raises(SyntaxError, match="without a default"):
             class Second(First):
                 b: int
+
+
+# ======================================================================
+# What the outside world sees
+# ======================================================================
+
+
+class TestIntrospection:
+
+    def test_only_a_polymorphic_class_pays_for_dispatch(self) -> None:
+        # Choosing a subclass has to happen in a metaclass `__call__`,
+        # and having one costs every instantiation of every class that
+        # metaclass builds. So a class that never asked for it keeps
+        # the metaclass -- and the interpreter's own fast path -- that
+        # it had before the feature existed.
+        class Plain(Magic):
+            x: int = 0
+
+        class Root(Magic, polymorphic=True):
+            x: int = 0
+
+        class Leaf(Root):
+            pass
+
+        assert type(Plain) is MetaMagic
+        assert type(Root) is not MetaMagic
+        assert issubclass(type(Root), MetaMagic)
+        # One metaclass for the whole hierarchy, not one per class.
+        assert type(Leaf) is type(Root)
+
+    def test_a_pinned_parameter_leaves_the_next_one_required(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            mode: str
+            root: str
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        found = signature(Minor)
+        assert found.parameters["mode"].default == "minor"
+        # It carries a sentinel so that the generated code can tell it
+        # was not passed -- but nothing reading the signature should
+        # ever see one, or `root` would look optional.
+        assert found.parameters["root"].default is Parameter.empty
+        with pytest.raises(TypeError, match="missing a required argument"):
+            found.bind()
+        assert found.bind(root="A").arguments == {"root": "A"}
+
+    def test_a_signature_written_by_hand_still_wins(self) -> None:
+        written = Signature(
+            [Parameter("raw", Parameter.POSITIONAL_OR_KEYWORD)]
+        )
+
+        class Hand(Magic):
+            x: int = 0
+            __signature__ = written
+
+        assert signature(Hand) is written
+
+    def test_a_class_that_takes_its_arguments_in_new(self) -> None:
+        class Built(Magic, init=False):
+            def __new__(cls, a: int, b: int = 2) -> "Built":
+                return super().__new__(cls)
+
+        assert list(signature(Built).parameters) == ["a", "b"]
 
 
 # ======================================================================

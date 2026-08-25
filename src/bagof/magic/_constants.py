@@ -38,9 +38,14 @@ _POST_INIT_NAME = "__post_init__"
 
 # The name of an attribute on the class that stores which of its
 # subclasses it builds, for which arguments (see `_polymorph.py`). Only
-# a class that has some is given one, so a class that has none costs one
-# failed dict lookup per instantiation.
+# a class that dispatches ever looks for it: choosing a subclass happens
+# in a metaclass `__call__`, and only a class written `polymorphic=...`
+# is given a metaclass that has one.
 _POLYMORPHS = '__magic_polymorphs__'
+
+# The name of an attribute on a *metaclass*, marking one that already
+# dispatches, so deriving another from it is recognised as unnecessary.
+_DISPATCHING = '__magic_dispatching__'
 
 # The name of an attribute on the class that stores the registration the
 # class statement asked for -- the class it registers with, what it

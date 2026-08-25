@@ -529,12 +529,14 @@ exist are untouched.
 
 ### The two settings
 
-`polymorphic="strict"` refuses to build the class itself when it has
-subclasses registered and none of them matches, and names the ones it
-considered — which is how a subclass in a module nobody imported shows up as
-the missing import it is, rather than as a dispatch that quietly did nothing.
-A subclass with no registrations of its own is built normally, so the setting
-is safe to inherit down a whole hierarchy.
+`polymorphic="strict"` refuses to build the class itself, and names the
+subclasses it considered — which is how one in a module nobody imported shows
+up as the missing import it is, rather than as a dispatch that quietly did
+nothing. It says so even when *nothing* has registered yet, since that is the
+same mistake one step earlier. A class that is itself registered somewhere is
+exempt: being built is the whole point of having registered, so a leaf with no
+subclasses of its own is built normally and the setting is safe to inherit
+down a whole hierarchy.
 
 `pin_discriminant` decides what the matched field becomes on the subclass.
 `"pin"`, the default, gives it that value as its default — it stays in the
@@ -555,6 +557,18 @@ class SusChord(Chord, on={"mode": "sus"}, pin_discriminant="classvar"):
 >>> SusChord(root="B")
 SusChord(root='B', variant='natural')
 ```
+
+!!! warning "`classvar` and round trips"
+    Under `"classvar"` the discriminant is no longer one of the instance's
+    fields, so `asdict` leaves it out — and a dictionary without it cannot be
+    dispatched back to the same subclass. Use `"pin"` whenever the values
+    have to survive a round trip through a config file or a database.
+
+Writing the class attribute out yourself instead — `mode: ClassVar[str] =
+"minor"` — is refused, and the error says why: the base passes `mode` on to
+whatever it builds, so a subclass whose constructor does not take it could
+only be reached by a call that then fails. `pin_discriminant="classvar"` is
+that spelling, done in a way that keeps both calls working.
 
 Pickling and copying rebuild through the class an instance already has, so
 neither of them goes back through the dispatch.
