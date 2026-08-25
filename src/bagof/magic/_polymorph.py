@@ -242,7 +242,7 @@ class _Discriminant:
     """Where one constrained field's value arrives, on one class."""
 
     __slots__ = ("name", "public", "position", "keyword", "default",
-                 "convert")
+                 "convert", "convert_default")
 
     def __init__(
         self,
@@ -252,13 +252,20 @@ class _Discriminant:
         keyword: bool,
         default: MaybeMissing[tx.Any],
         convert: tx.Optional[tx.Callable[[tx.Any], tx.Any]],
+        convert_default: tx.Optional[tx.Callable[[tx.Any], tx.Any]],
     ) -> None:
         self.name = name
         self.public = public
         self.position = position
         self.keyword = keyword
         self.default = default
+        #: What converts a value the caller passed, and what converts
+        #: the field's own default -- which are not always the same
+        #: thing: a class written `convert_defaults=False` stores its
+        #: defaults unconverted, and choosing a subclass has to go on
+        #: the value the instance will really hold.
         self.convert = convert
+        self.convert_default = convert_default
 
 
 def _generated_init(cls: type) -> bool:
@@ -285,6 +292,9 @@ def discriminants(
     order += [field for field in positional if field.kw]
     places = {field.name: index for index, field in enumerate(order)}
     by_position = _generated_init(cls)
+    converts_defaults = getattr(
+        getattr(cls, _OPTIONS, None), "convert_defaults", True
+    )
 
     found = []
     for name in names:
@@ -295,13 +305,15 @@ def discriminants(
             # it here to read it would build it twice. A field defaulted
             # that way is read as absent when it is not passed.
             default = MISSING
+        convert = field.converter or None
         found.append(_Discriminant(
             name,
             field.public_name,
             places.get(field.name) if by_position else None,
             bool(field.kw),
             default,
-            field.converter or None,
+            convert,
+            convert if converts_defaults else None,
         ))
     return tuple(found)
 
@@ -315,20 +327,22 @@ def _read(
     # positional-only one never out of `kwargs`: reading either the
     # wrong way round would quietly hand back a neighbour's value.
     if discriminant.keyword and discriminant.public in kwargs:
-        value = kwargs[discriminant.public]
+        value, convert = kwargs[discriminant.public], discriminant.convert
     elif (
         discriminant.position is not None
         and discriminant.position < len(args)
     ):
-        value = args[discriminant.position]
+        value, convert = args[discriminant.position], discriminant.convert
     else:
         # A default is as good as a value the caller wrote out: the two
-        # spellings of one call must build the same class.
-        value = discriminant.default
-    if value is MISSING or discriminant.convert is None:
+        # spellings of one call must build the same class. It is
+        # converted the way the class converts its defaults, which is
+        # not always the way it converts what it is passed.
+        value, convert = discriminant.default, discriminant.convert_default
+    if value is MISSING or convert is None:
         return value
     try:
-        return discriminant.convert(value)
+        return convert(value)
     except Exception:
         # The value is not one this field accepts. Matching goes on with
         # what was passed, and `__init__` says what is wrong with it.

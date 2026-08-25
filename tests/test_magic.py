@@ -1329,6 +1329,252 @@ class TestValidate:
 
 
 # ======================================================================
+# convert_defaults / validate_defaults
+# ======================================================================
+
+
+def _double(value: int) -> int:
+    return value * 2
+
+
+def _positive(value: int) -> int:
+    if value <= 0:
+        raise ValueError("must be positive")
+    return value
+
+
+class TestDefaultsAreConvertedAndValidated:
+    """Whether a value that came from a default goes through the field's
+    converter and validator, or is taken as it was written."""
+
+    def test_a_default_is_converted(self) -> None:
+        class Config(Magic, convert=True):
+            port: int = "8080"
+
+        assert Config().port == 8080
+
+    def test_a_default_is_validated(self) -> None:
+        class Config(Magic, validate=True):
+            port: int = "8080"
+
+        with pytest.raises(ValidationError):
+            Config()
+
+    def test_a_class_that_says_nothing_carries_its_default_plainly(
+        self
+    ) -> None:
+        # Nothing is wrapped and no signature is stood in for unless a
+        # class asks for one of the two settings.
+        class Config(Magic, convert=True):
+            port: int = "8080"
+
+        assert Config.__init__.__defaults__ == ("8080",)
+        assert not hasattr(Config.__init__, "__signature__")
+
+    def test_convert_defaults_false_leaves_a_plain_default(self) -> None:
+        class Config(Magic, convert=True, convert_defaults=False):
+            port: int = "8080"
+
+        assert Config().port == "8080"
+        assert Config("9000").port == 9000
+
+    def test_convert_defaults_false_leaves_a_factory_default(self) -> None:
+        class Config(Magic, convert=True, convert_defaults=False):
+            port: Annotated[int, Field(factory=lambda: "8080")]
+
+        assert Config().port == "8080"
+        assert Config("9000").port == 9000
+
+    def test_validate_defaults_false_leaves_a_plain_default(self) -> None:
+        class Config(Magic, validate=True, validate_defaults=False):
+            port: int = "8080"
+
+        assert Config().port == "8080"
+        assert Config(9000).port == 9000
+        with pytest.raises(ValidationError):
+            Config("9000")
+
+    def test_validate_defaults_false_leaves_a_factory_default(self) -> None:
+        class Config(Magic, validate=True, validate_defaults=False):
+            port: Annotated[int, Field(factory=lambda: "8080")]
+
+        assert Config().port == "8080"
+        with pytest.raises(ValidationError):
+            Config("9000")
+
+    def test_the_same_value_is_taken_two_ways(self) -> None:
+        # The one case a guess about the value could not get right: what
+        # the class defaults to is exactly what the caller passes.
+        class Reading(Magic, validate_defaults=False):
+            level: Annotated[int, Field(validator=_positive)] = -1
+
+        assert Reading().level == -1
+        with pytest.raises(ValueError):
+            Reading(-1)
+
+    def test_only_the_skipped_step_is_skipped(self) -> None:
+        class Reading(Magic, validate_defaults=False):
+            level: Annotated[
+                int, Field(converter=_double, validator=_positive)
+            ] = -1
+
+        # Converted, as the class did not turn that off, and then not
+        # handed to the validator that would have refused it.
+        assert Reading().level == -2
+        assert Reading(3).level == 6
+
+    @pytest.mark.parametrize("convert_defaults", [True, False])
+    @pytest.mark.parametrize("validate_defaults", [True, False])
+    def test_a_passed_value_always_goes_through_both(
+        self, convert_defaults: bool, validate_defaults: bool
+    ) -> None:
+        class Reading(
+            Magic,
+            convert_defaults=convert_defaults,
+            validate_defaults=validate_defaults,
+        ):
+            level: Annotated[
+                int, Field(converter=_double, validator=_positive)
+            ] = 1
+
+        assert Reading(3).level == 6
+        with pytest.raises(ValueError):
+            Reading(-1)
+        assert Reading().level == (2 if convert_defaults else 1)
+
+    def test_assignment_afterwards_is_always_converted_and_validated(
+        self
+    ) -> None:
+        class Reading(
+            Magic, convert_defaults=False, validate_defaults=False
+        ):
+            level: Annotated[
+                int, Field(converter=_double, validator=_positive)
+            ] = -1
+
+        reading = Reading()
+        assert reading.level == -1
+        reading.level = 3
+        assert reading.level == 6
+        with pytest.raises(ValueError):
+            reading.level = -1
+
+    def test_a_field_with_no_parameter_follows_the_setting(self) -> None:
+        class Lenient(Magic, convert_defaults=False):
+            origin: NoInit[Annotated[int, Field(converter=_double)]] = 3
+
+        class Strict(Magic):
+            origin: NoInit[Annotated[int, Field(converter=_double)]] = 3
+
+        assert (Lenient().origin, Strict().origin) == (3, 6)
+
+    def test_a_field_with_no_parameter_and_a_factory(self) -> None:
+        class Lenient(Magic, convert_defaults=False):
+            origin: NoInit[
+                Annotated[int, Field(converter=_double, factory=lambda: 3)]
+            ]
+
+        class Strict(Magic):
+            origin: NoInit[
+                Annotated[int, Field(converter=_double, factory=lambda: 3)]
+            ]
+
+        assert (Lenient().origin, Strict().origin) == (3, 6)
+
+    def test_an_init_var_default_follows_the_setting(self) -> None:
+        class Scaled(Magic, convert_defaults=False):
+            x: int = 0
+            scale: InitVar[Annotated[int, Field(converter=_double)]] = 3
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                self.x = arguments.scale
+
+        assert (Scaled().x, Scaled(0, 5).x) == (3, 10)
+
+    def test_a_hook_is_handed_the_default_itself(self) -> None:
+        seen = []
+
+        class Reading(Magic, convert_defaults=False):
+            level: Annotated[int, Field(converter=_double)] = 3
+
+            def __pre_init__(self, arguments: Arguments) -> None:
+                seen.append(arguments.level)
+
+        Reading()
+        Reading(5)
+        assert seen == [3, 5]
+
+    def test_a_class_that_refers_to_itself(self) -> None:
+        # `parent: Optional[Node]` needs nothing turned off; this is for
+        # the class whose defaults are already what its author meant.
+        class Node(Magic, convert=True, convert_defaults=False):
+            name: str
+            parent: "Node" = None
+
+        root = Node("root")
+        assert root.parent is None
+        assert Node("leaf", root).parent is root
+
+    def test_both_settings_are_inherited(self) -> None:
+        class Base(
+            Magic,
+            convert=True,
+            convert_defaults=False,
+            validate_defaults=False,
+        ):
+            port: int = "8080"
+
+        class Child(Base):
+            host: str = 1234
+
+        # The setting reaches the field the subclass declares itself as
+        # well as the one it inherits, and neither stops a caller's
+        # value being converted.
+        child = Child()
+        assert (child.port, child.host) == ("8080", 1234)
+        assert Child("9000", "here").port == 9000
+
+    def test_a_subclass_can_ask_for_its_defaults_back(self) -> None:
+        class Base(Magic, convert=True, convert_defaults=False):
+            port: int = "8080"
+
+        class Strict(Base, convert_defaults=True):
+            pass
+
+        assert (Base().port, Strict().port) == ("8080", 8080)
+
+    def test_the_signature_shows_the_default_it_was_written_with(
+        self
+    ) -> None:
+        class Strict(Magic, convert=True):
+            port: int = "8080"
+            name: KwOnly[str] = 1234
+
+        class Lenient(Magic, convert=True, convert_defaults=False):
+            port: int = "8080"
+            name: KwOnly[str] = 1234
+
+        assert str(signature(Lenient)) == str(signature(Strict))
+        parameters = signature(Lenient).parameters
+        assert parameters["port"].default == "8080"
+        assert parameters["name"].default == 1234
+
+    def test_a_marked_default_reads_as_the_value(self) -> None:
+        class Config(Magic, convert=True, convert_defaults=False):
+            port: int = "8080"
+
+        assert repr(Config.__init__.__defaults__) == "('8080',)"
+
+    def test_they_are_not_settings_a_field_takes(self) -> None:
+        # A field resolves nothing from them: they decide what the
+        # generated `__init__` does with a default, not which converter
+        # or validator the field ends up with. So `override=` has
+        # nothing to resolve again.
+        assert "convert_defaults" not in _fields._OVERRIDABLE
+        assert "validate_defaults" not in _fields._OVERRIDABLE
+
+
+# ======================================================================
 # Var / InitVar / ClassVar
 # ======================================================================
 

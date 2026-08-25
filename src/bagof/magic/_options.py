@@ -23,6 +23,8 @@ from ._utils import SlotsBase, slots
     'mutable_default',  # What to do with a mutable default (x: list = [])
     'convert',          # Use field type as converter if none is provided
     'validate',         # Use field type as validator if none is provided
+    'convert_defaults',   # Convert a value that came from a default
+    'validate_defaults',  # Validate a value that came from a default
     'unresolved_hints',  # What to do about a type hint that never resolves
     'mapping',          # Generate Mapping methods for dict-like behavior
     # Resolve an inherited field's settings again from this class
@@ -65,6 +67,8 @@ class Options(SlotsBase):
         mutable_default="factory",
         convert=False,
         validate=False,
+        convert_defaults=True,
+        validate_defaults=True,
         unresolved_hints="warn",
         mapping=False,
         override=False,

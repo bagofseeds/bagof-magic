@@ -821,6 +821,146 @@ class TestPinnedSignature:
 
 
 # ======================================================================
+# Pinning, beside a default that skips a step
+# ======================================================================
+
+
+class TestPinningAndSkippedDefaults:
+    """Two reasons a parameter carries something else, in one class.
+
+    A pinned discriminant can leave a parameter with no default behind
+    one that has a default, which Python's syntax cannot write, so that
+    parameter carries a sentinel. Separately, a class that does not
+    convert or validate its defaults gives a defaulted parameter a
+    marker, so the body can tell "not passed" from a caller who passed
+    the same value. Both are put right in the signature people read --
+    and the two must be put right together, since either done on its
+    own would undo the other.
+    """
+
+    @pytest.fixture
+    def base(self) -> type:
+        class Tune(Magic, polymorphic=True, convert_defaults=False):
+            mode: str                   # pinned by the subclass
+            root: str                   # required, and behind the pin
+            tag: ConvertTo[str] = 7     # a default that skips its step
+
+        return Tune
+
+    @pytest.fixture
+    def minor(self, base: type) -> type:
+        class Minor(base, on={"mode": "minor"}):
+            pass
+
+        return Minor
+
+    def test_one_signature_says_all_three_things(self, minor: type) -> None:
+        found = signature(minor)
+        # The pin shows the value it pinned...
+        assert found.parameters["mode"].default == "minor"
+        # ...the parameter behind it reads as required...
+        assert found.parameters["root"].default is Parameter.empty
+        # ...and the skipped default shows the value, not the marker.
+        assert found.parameters["tag"].default == 7
+
+    def test_binding_agrees_with_all_three(self, minor: type) -> None:
+        found = signature(minor)
+        with pytest.raises(TypeError, match="missing a required argument"):
+            found.bind()
+        assert found.bind(root="A").arguments == {"root": "A"}
+
+    def test_the_class_still_builds(self, minor: type) -> None:
+        built = minor(root="A")
+        assert (built.mode, built.root, built.tag) == ("minor", "A", 7)
+
+    def test_the_skipped_default_is_still_skipped(self, minor: type) -> None:
+        # The default is left alone; what a caller passes is converted.
+        assert minor(root="A").tag == 7
+        assert minor(root="A", tag=b"x").tag == "x"
+
+    def test_a_missing_argument_is_named_before_a_default_is_built(
+        self
+    ) -> None:
+        # Python reports too few arguments before the body runs at all,
+        # so a factory that would fail must not get to speak first.
+        def explode() -> int:
+            raise RuntimeError("the factory ran")
+
+        class Tune(Magic, polymorphic=True):
+            mode: str
+            root: str
+            built: Factory[int, explode] = None
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        with pytest.raises(
+            TypeError, match="missing a required argument: 'root'"
+        ):
+            Minor()
+
+
+class TestPinnedValuesAsDefaults:
+    """A pinned value is a default the class author wrote.
+
+    It is written on the class statement rather than beside the field,
+    but it is the author's value either way -- so it follows the same
+    settings a default written out in the body would.
+    """
+
+    def test_a_pinned_value_is_converted_by_default(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            n: ConvertTo[int] = 0
+
+        class One(Tune, on={"n": "1"}):
+            pass
+
+        assert One().n == 1
+
+    def test_a_pinned_value_follows_convert_defaults(self) -> None:
+        class Tune(Magic, polymorphic=True, convert_defaults=False):
+            n: ConvertTo[int] = 0
+
+        class One(Tune, on={"n": "1"}):
+            pass
+
+        assert One().n == "1"
+
+    def test_a_pinned_mutable_value_is_still_not_shared(self) -> None:
+        # Promoting it to a factory and skipping its conversion are two
+        # different things happening to the same default.
+        class Tune(Magic, polymorphic=True, convert_defaults=False):
+            cfg: dict = None
+
+        class Tagged(Tune, on={"cfg": {"a": 1}}):
+            pass
+
+        first, second = Tagged(), Tagged()
+        assert first.cfg == {"a": 1} and first.cfg is not second.cfg
+
+    @pytest.mark.parametrize("converts", [True, False])
+    def test_dispatch_reads_a_default_the_way_the_class_stores_it(
+        self, converts: bool
+    ) -> None:
+        # Choosing a subclass runs the converter, so that a registration
+        # is matched against the value the instance will hold. A class
+        # that does not convert its defaults holds the unconverted one,
+        # and dispatch has to go on that.
+        class Tune(Magic, polymorphic=True, convert_defaults=converts):
+            n: ConvertTo[int] = "1"
+
+        class Text(Tune, on={"n": "1"}, pin_discriminant="keep"):
+            pass
+
+        class Number(Tune, on={"n": 1}, pin_discriminant="keep"):
+            pass
+
+        built = Tune()
+        assert type(built) is (Number if converts else Text)
+        assert built.n == (1 if converts else "1")
+
+
+# ======================================================================
 # What the outside world sees
 # ======================================================================
 
