@@ -70,8 +70,9 @@ unresolved_hints : str, default="warn"
     What to do when a type hint still names something undefined the
     first time a field needs it: "warn", "raise" or "ignore"
 mapping : bool, default=False
-    Implement the `Mapping` protocol; a subclass cannot turn it off.
-    Only a field that is holding a value is a key
+    Implement the `Mapping` protocol; a subclass inherits the dict-like
+    methods and cannot turn them off. Only a field that is holding a
+    value is a key
 override : bool | str | list, default=False
     Decide the settings of an inherited field again from this class;
     a name, or a list of names, decides only those
@@ -1538,14 +1539,13 @@ def __pre_new__(
             mapping_base = b
     if mapping_base is not None and not options.mapping:
         raise TypeError(
-            f"{clsname} gets its dict-like behaviour from "
-            f"{mapping_base.__name__}, and a subclass cannot take it "
-            f"away: {clsname} would still answer yes to an isinstance "
-            f"check against Mapping, while the dict-like methods it "
-            f"inherited would report {mapping_base.__name__}'s fields "
-            f"instead of its own. Either leave mapping alone here, or "
-            f"turn it off on {mapping_base.__name__} and ask for it only "
-            f"on the subclasses that want it."
+            f"{clsname} gets its dict-like methods from "
+            f"{mapping_base.__name__}, and turning mapping off here does "
+            f"not take them away: {clsname} would inherit them and answer "
+            f"with {mapping_base.__name__}'s fields instead of its own. "
+            f"Either leave mapping alone here, or turn it off on "
+            f"{mapping_base.__name__} and ask for it only on the "
+            f"subclasses that want it."
         )
 
     if options.mutable_default not in _MUTABLE_DEFAULT_ACTIONS:
@@ -1961,6 +1961,7 @@ class _FuncBuilder:
         self.methods = {}  # name -> function
         self.globals = globals
         self.locals = {}
+        self.docs = {}  # name -> docstring
         self.overwrite_errors = {}
         self.unconditional_adds = {}
 
@@ -1989,12 +1990,32 @@ class _FuncBuilder:
             return_annotation = ''
 
         args = ','.join(args or [])
-        body = '\n'.join(body or ['pass'])
-        doc = '\n'.join(['"""'] + (doc or []) + ['"""'])
+        body = '\n'.join(body or [])
+        # A function whose every statement is empty -- one for a class
+        # with nothing to assign -- still needs a body of its own now
+        # that the documentation is no longer standing in for one.
+        if not body.strip():
+            body = 'pass'
+
+        # The documentation is attached to the finished function rather
+        # than written into the source: a field's documentation, or the
+        # `repr()` of a default, is arbitrary text, and text holding a
+        # quote or a backslash would end or escape its way out of a
+        # literal in the generated source.
+        #
+        # It is laid out as a docstring written there would have been --
+        # opening newline, every line indented to the body of a function
+        # nested one level inside the builder's own -- so that `help()`
+        # and the API reference render exactly what they rendered when it
+        # was a literal.
+        if doc:
+            margin = " " * 8
+            self.docs[name] = "\n{}\n{}".format(
+                indent("\n".join(doc), margin), margin
+            )
 
         src = "\n".join([
             f"def {name}({args}){return_annotation}:",
-            indent(doc, " " * 4),
             indent(body, " " * 4),
         ])
         if decorator:
@@ -2040,6 +2061,10 @@ class _FuncBuilder:
         qualname = namespace.get("__qualname__", None)
         for name, fn in zip(self.methods, fns):
             fn.__qualname__ = f"{qualname}.{fn.__name__}"
+            # `python -OO` asks for docstrings to be dropped, and one
+            # written by hand would be gone already.
+            if name in self.docs and sys.flags.optimize < 2:
+                fn.__doc__ = self.docs[name]
             if self.unconditional_adds.get(name, False):
                 namespace[name] = fn
             elif name not in namespace:
@@ -2111,12 +2136,23 @@ _hash_action = {(False, False, False, False): None,
                 }
 
 
+def _is_class_attribute(field: Field) -> bool:
+    # A `ClassVar` is a pseudo-field that asked not to be passed either
+    # way -- that is what the annotation lowers to. A pseudo-field that
+    # merely *ends up* with no parameter is not one: an `InitVar` that
+    # may not be passed by name, on a class where nothing may be passed
+    # by position, is an `InitVar` whose two settings cancelled out, and
+    # nothing is ever stored on the class for it.
+    declared = field.declared if field.declared is not MISSING else {}
+    return declared.get("kw") is False and declared.get("positional") is False
+
+
 def _make_doc_class(fields: dict[str, Field]) -> str:
     attrdocs, classattrdocs = [], []
     for name, field in fields.items():
         if not field.var:
             attrdocs.append(_make_doc_elem(field, name))
-        elif not field.init:
+        elif not field.init and _is_class_attribute(field):
             classattrdocs.append(_make_doc_elem(field, name))
     attrdocs = "\n".join(attrdocs)
     classattrdocs = "\n".join(classattrdocs)
@@ -2983,10 +3019,11 @@ class MetaMagic(ABCMeta):
         there is no value to hand back.
     mapping : bool, default=False
         Implement the `Mapping` protocol. A subclass cannot turn it off
-        again. Only a field that is holding a value is a key, so which
-        keys an instance has is a question about that instance: the
-        length can differ between two instances of one class, and can
-        change over an instance's life.
+        again: it would inherit these methods, and they answer with the
+        fields of the class they were generated for. Only a field that
+        is holding a value is a key, so which keys an instance has is a
+        question about that instance: the length can differ between two
+        instances of one class, and can change over an instance's life.
     override : bool | str | list, default=False
         Decide the settings of an inherited field again from this
         class. A field is resolved against the settings of the class
@@ -3194,10 +3231,11 @@ class Magic(metaclass=MetaMagic):
         there is no value to hand back.
     mapping : bool, default=False
         Implement the `Mapping` protocol. A subclass cannot turn it off
-        again. Only a field that is holding a value is a key, so which
-        keys an instance has is a question about that instance: the
-        length can differ between two instances of one class, and can
-        change over an instance's life.
+        again: it would inherit these methods, and they answer with the
+        fields of the class they were generated for. Only a field that
+        is holding a value is a key, so which keys an instance has is a
+        question about that instance: the length can differ between two
+        instances of one class, and can change over an instance's life.
     override : bool | str | list, default=False
         Decide the settings of an inherited field again from this
         class. A field is resolved against the settings of the class
