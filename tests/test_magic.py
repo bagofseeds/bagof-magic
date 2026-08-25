@@ -4387,6 +4387,94 @@ class TestInitFalseIsAnEscapeHatch:
                 b: Annotated[int, Field(alias="v")]
 
 
+class TestInitFalseLeavesPlainPython:
+    """Turning `init` off must hand back what a plain class would do.
+
+    `Magic` is itself built with no fields, so its own generated
+    `__init__` accepts nothing but `self`. Inheriting that instead of
+    `object.__init__` makes some classes impossible to build at all.
+    """
+
+    def test_a_class_can_take_its_arguments_in_new(self) -> None:
+        # `object.__init__` accepts the extra arguments when `__new__`
+        # is overridden, which is most of the reason to turn `init` off.
+        class Built(Magic, init=False):
+            def __new__(cls, a: int, b: int = 2) -> "Built":
+                inst = super().__new__(cls)
+                inst.a = a
+                inst.b = b
+                return inst
+
+        assert Built(1).a == 1
+        assert Built(1, 5).b == 5
+
+    def test_the_inherited_generated_init_is_stood_down(self) -> None:
+        class Plain(Magic, init=False):
+            x: int
+
+        assert Plain.__init__ is object.__init__
+
+    def test_a_subclass_does_not_inherit_its_base_s_init(self) -> None:
+        class A(Magic):
+            x: int
+
+        class B(A, init=False):
+            y: int = 0
+
+        assert B.__init__ is object.__init__
+
+    def test_asking_for_it_under_another_name_stands_it_down_too(
+        self
+    ) -> None:
+        class Named(Magic, init="setup"):
+            x: int
+
+        assert Named.__init__ is object.__init__
+        instance = Named.__new__(Named)
+        instance.setup(3)
+        assert instance.x == 3
+
+    def test_a_hand_written_init_in_a_base_survives(self) -> None:
+        # Only what Magic generated is stood down. Anything written by
+        # hand is left exactly where it is.
+        class Base(Magic):
+            x: int
+
+            def __init__(self, raw: str) -> None:
+                self.__magic_init__(int(raw))
+
+        class Sub(Base, init=False):
+            pass
+
+        assert Sub("7").x == 7
+
+    def test_the_signature_is_the_one_plain_python_reports(self) -> None:
+        # A class holding `object.__init__` has no constructor to
+        # describe, so the arguments are whatever `__new__` takes --
+        # the same answer a class with no `Magic` in sight gives.
+        class Built(Magic, init=False):
+            def __new__(cls, a: int, b: int = 2) -> "Built":
+                return super().__new__(cls)
+
+        class Plain:
+            def __new__(cls, a: int, b: int = 2) -> "Plain":
+                return super().__new__(cls)
+
+        assert list(inspect.signature(Built).parameters) == ["a", "b"]
+        assert (
+            list(inspect.signature(Built).parameters)
+            == list(inspect.signature(Plain).parameters)
+        )
+
+    def test_the_private_init_is_still_generated(self) -> None:
+        class Plain(Magic, init=False):
+            x: int
+
+        instance = Plain.__new__(Plain)
+        instance.__magic_init__(5)
+        assert instance.x == 5
+
+
 class TestGeneratedMethodNames:
 
     def test_init_is_named_init(self) -> None:

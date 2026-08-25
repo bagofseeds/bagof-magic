@@ -847,6 +847,11 @@ _ORDER_METHODS = {
 #: ordering, no hash once `__eq__` is written, and nothing for a `case`
 #: pattern to bind.
 _NEUTRAL = {
+    # `object.__init__` rather than a do-nothing function of our own:
+    # it is the one that accepts the extra arguments when a class takes
+    # them in `__new__`, which is a large part of why anyone turns
+    # `init` off.
+    "init": object.__init__,
     "repr": object.__repr__,
     "eq": object.__eq__,
     "lt": _no_order,
@@ -1934,6 +1939,17 @@ def __pre_new__(
         if init_name and init_name not in namespace:
             namespace[init_name] = magic_init
             generated[init_name] = "init"
+
+    # `__init__` is bound above by hand rather than through `_install`,
+    # since it is compiled rather than closed over, so the part of
+    # `_install` that stands an inherited generated method down has to
+    # be spelled out here too. Without it a class that turns `init` off
+    # inherits `Magic`'s own generated `__init__`, which was made for a
+    # class with no fields and so accepts nothing but `self`.
+    for name in _inherited_generated(base_mro, "init"):
+        if name != init_name and name not in namespace:
+            namespace[name] = _NEUTRAL["init"]
+            generated[name] = "init"
 
     namespace[_GENERATED] = generated
 
@@ -3224,7 +3240,16 @@ class MetaMagic(ABCMeta):
                     # Through `getattr`, not the class dict: `__new__`
                     # is stored as a `staticmethod`, which is only
                     # callable in its own right from Python 3.10.
-                    found = signature(getattr(base, name))
+                    written = getattr(base, name)
+                    # A class that turns `init` off holds `object`'s own
+                    # `__init__`, which describes nothing. `inspect`
+                    # reads that as no constructor rather than as one
+                    # taking `(*args, **kwargs)`, and keeps looking --
+                    # so a class taking its arguments in `__new__` still
+                    # reports them.
+                    if written is getattr(object, name, None):
+                        continue
+                    found = signature(written)
                     # Not `replace`, which checks the result: a pinned
                     # discriminant makes a signature Python's own
                     # syntax cannot write, and it is already true.

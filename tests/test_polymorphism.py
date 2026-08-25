@@ -1026,10 +1026,7 @@ class TestIntrospection:
                 return super().__new__(cls)
 
         assert list(signature(Built).parameters) == ["a", "b"]
-        # Through `__new__` rather than `Built(1)`: with no `__init__` of
-        # its own the class inherits one that takes no arguments, so the
-        # ordinary call cannot reach the constructor being described.
-        assert isinstance(Built.__new__(Built, 1), Built)
+        assert isinstance(Built(1), Built)
 
 
 # ======================================================================
