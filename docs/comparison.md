@@ -31,6 +31,7 @@ question of what you want the type hints to *do*.
 | Conversion from your own callable | no | yes | yes | **yes** |
 | Validation from the type hint | no | no | yes | **yes** |
 | Validation from your own callable | no | yes | yes | **yes** |
+| Defaults converted and validated | no | yes | opt-in | **yes, or opt out** |
 | Defaults built by a factory | yes | yes | yes | **yes** |
 | Mutable defaults caught | raises | raises | copies | **copies, or raises** |
 | | | | | |
