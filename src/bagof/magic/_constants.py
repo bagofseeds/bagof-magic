@@ -23,6 +23,10 @@ _FIELDS = '__magic_fields__'
 # @magic.
 _OPTIONS = '__magic_options__'
 
+# The name of an attribute on the class that stores where a type the
+# class was annotated with by name is looked up when it is first needed.
+_HINTS = '__magic_hints__'
+
 # The name of a method that is called before the __init__ method,
 # if it exists.
 # It returns (args, kwargs).

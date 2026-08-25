@@ -23,6 +23,7 @@ from ._utils import SlotsBase, slots
     'mutable_default',  # What to do with a mutable default (x: list = [])
     'convert',          # Use field type as converter if none is provided
     'validate',         # Use field type as validator if none is provided
+    'unresolved_hints',  # What to do about a type hint that never resolves
     'mapping',          # Generate Mapping methods for dict-like behavior
     'reverse',          # Use the reverse MRO order when listing fields
     'doc',              # Generate class docstring from field docstrings
@@ -60,6 +61,7 @@ class Options(SlotsBase):
         mutable_default="factory",
         convert=False,
         validate=False,
+        unresolved_hints="warn",
         mapping=False,
         reverse=False,
         doc=True,
