@@ -3212,7 +3212,10 @@ class MetaMagic(ABCMeta):
         for base in cls.__mro__:
             for name in ("__init__", "__new__"):
                 if name in base.__dict__:
-                    found = signature(base.__dict__[name])
+                    # Through `getattr`, not the class dict: `__new__`
+                    # is stored as a `staticmethod`, which is only
+                    # callable in its own right from Python 3.10.
+                    found = signature(getattr(base, name))
                     # Not `replace`, which checks the result: a pinned
                     # discriminant makes a signature Python's own
                     # syntax cannot write, and it is already true.
