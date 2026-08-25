@@ -70,8 +70,9 @@ unresolved_hints : str, default="warn"
     What to do when a type hint still names something undefined the
     first time a field needs it: "warn", "raise" or "ignore"
 mapping : bool, default=False
-    Implement the `Mapping` protocol; a subclass cannot turn it off.
-    Only a field that is holding a value is a key
+    Implement the `Mapping` protocol; a subclass inherits the dict-like
+    methods and cannot turn them off. Only a field that is holding a
+    value is a key
 override : bool | str | list, default=False
     Decide the settings of an inherited field again from this class;
     a name, or a list of names, decides only those
@@ -1348,14 +1349,13 @@ def __pre_new__(
             mapping_base = b
     if mapping_base is not None and not options.mapping:
         raise TypeError(
-            f"{clsname} gets its dict-like behaviour from "
-            f"{mapping_base.__name__}, and a subclass cannot take it "
-            f"away: {clsname} would still answer yes to an isinstance "
-            f"check against Mapping, while the dict-like methods it "
-            f"inherited would report {mapping_base.__name__}'s fields "
-            f"instead of its own. Either leave mapping alone here, or "
-            f"turn it off on {mapping_base.__name__} and ask for it only "
-            f"on the subclasses that want it."
+            f"{clsname} gets its dict-like methods from "
+            f"{mapping_base.__name__}, and turning mapping off here does "
+            f"not take them away: {clsname} would inherit them and answer "
+            f"with {mapping_base.__name__}'s fields instead of its own. "
+            f"Either leave mapping alone here, or turn it off on "
+            f"{mapping_base.__name__} and ask for it only on the "
+            f"subclasses that want it."
         )
 
     if options.mutable_default not in _MUTABLE_DEFAULT_ACTIONS:
@@ -2633,10 +2633,11 @@ class MetaMagic(ABCMeta):
         there is no value to hand back.
     mapping : bool, default=False
         Implement the `Mapping` protocol. A subclass cannot turn it off
-        again. Only a field that is holding a value is a key, so which
-        keys an instance has is a question about that instance: the
-        length can differ between two instances of one class, and can
-        change over an instance's life.
+        again: it would inherit these methods, and they answer with the
+        fields of the class they were generated for. Only a field that
+        is holding a value is a key, so which keys an instance has is a
+        question about that instance: the length can differ between two
+        instances of one class, and can change over an instance's life.
     override : bool | str | list, default=False
         Decide the settings of an inherited field again from this
         class. A field is resolved against the settings of the class
@@ -2744,10 +2745,11 @@ class Magic(metaclass=MetaMagic):
         there is no value to hand back.
     mapping : bool, default=False
         Implement the `Mapping` protocol. A subclass cannot turn it off
-        again. Only a field that is holding a value is a key, so which
-        keys an instance has is a question about that instance: the
-        length can differ between two instances of one class, and can
-        change over an instance's life.
+        again: it would inherit these methods, and they answer with the
+        fields of the class they were generated for. Only a field that
+        is holding a value is a key, so which keys an instance has is a
+        question about that instance: the length can differ between two
+        instances of one class, and can change over an instance's life.
     override : bool | str | list, default=False
         Decide the settings of an inherited field again from this
         class. A field is resolved against the settings of the class

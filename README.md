@@ -505,7 +505,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `unresolved_hints` | `"warn"` | what to do when a type hint still names something undefined the first time a field needs it; or `"raise"`, or `"ignore"` |
 | `factory` | `False` | build every missing default from its type |
 | `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
-| `mapping` | `False` | behave like a dictionary; a subclass cannot turn it off again |
+| `mapping` | `False` | behave like a dictionary; a subclass inherits the methods and cannot turn them off |
 | `override` | `False` | apply this class's settings to inherited fields too |
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
 | `doc` | `True` | add the field table to the class docstring |

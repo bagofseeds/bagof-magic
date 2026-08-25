@@ -1593,7 +1593,7 @@ class TestMapping:
         class Base(Magic, mapping=True):
             a: int
 
-        with pytest.raises(TypeError, match="cannot take it away"):
+        with pytest.raises(TypeError, match="does not take them away"):
             class Child(Base, mapping=False):
                 b: int
 
@@ -1634,6 +1634,21 @@ class TestMapping:
             b: int
 
         assert dict(Child(1, 2)) == {"a": 1, "b": 2}
+
+    def test_mapping_false_is_fine_under_a_real_mapping_base(self) -> None:
+        # The ban is about the dict-like methods a Magic base generates,
+        # not about what the class is: a class that inherits a real
+        # Mapping and asks for no dict-like methods of its own is fine,
+        # and is a Mapping all the same.
+        from collections.abc import Mapping
+
+        class RealMap(Mapping):
+            pass
+
+        class Child(Magic, RealMap, mapping=False):
+            b: int
+
+        assert issubclass(Child, Mapping)
 
     def test_mapping_false_is_fine_without_a_dict_like_base(self) -> None:
         class Base(Magic):
@@ -2761,7 +2776,7 @@ class TestOverride:
         class Base(Magic, mapping=True):
             x: int = 1
 
-        with pytest.raises(TypeError, match="a subclass cannot take it"):
+        with pytest.raises(TypeError, match="does not take them away"):
             class Sub(Base, mapping=False, override=True):
                 pass
 
