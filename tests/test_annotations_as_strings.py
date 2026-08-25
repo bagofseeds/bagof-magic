@@ -42,6 +42,7 @@ from bagof.magic import (
     NoRepr,
     Options,
     Validate,
+    fields_dict,
 )
 
 if TYPE_CHECKING:
@@ -616,3 +617,37 @@ class TestHintsThatNeverResolve:
 
         with pytest.warns(UserWarning, match="^port: the name `NeverDefined`"):
             assert field.converter("8") == "8"
+
+
+# ======================================================================
+# Type parameters
+# ======================================================================
+
+
+_T = tx.TypeVar("_T")
+
+
+class TextBox(Magic, tx.Generic[_T], convert=True):
+    item: _T
+    items: tx.List[_T]
+
+
+class TestTypeParametersWrittenAsText:
+    """A generic class in a module whose annotations are strings."""
+
+    def test_a_type_parameter_is_read_back_as_itself(self) -> None:
+        # Not carried by name: `_T` is defined in this module, so the
+        # text resolves to the very type variable the class was written
+        # with -- which is what a subclass then fills in.
+        fields = fields_dict(TextBox)
+        assert fields["item"].type is _T
+        assert fields["items"].type == tx.List[_T]
+
+    def test_a_subclass_fills_it_in(self) -> None:
+        class IntBox(TextBox[int]):
+            pass
+
+        fields = fields_dict(IntBox)
+        assert fields["item"].type is int
+        assert fields["items"].type == tx.List[int]
+        assert IntBox("1", ["2"]) == IntBox(1, [2])
