@@ -2230,14 +2230,13 @@ def _doc_type(type: tx.Any) -> str:
     return repr(type)
 
 
-def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
+def _doc_field_type(field: Field) -> str:
+    """Spell a field's own type the way the documentation should show it.
 
-    name = name or field.public_name
-
-    default = field.default
-    if field.build:
-        default = _HasFactory(field.factory)
-
+    An annotation that only marks the field -- `Doc[int, "..."]`,
+    `Optional[str]` -- is unwrapped to the type a reader cares about,
+    since what the marker asked for is written down beside it anyway.
+    """
     doctype = field.type
     if _get_origin(doctype) in (tx.Optional, tx.Annotated):
         doctype = tx.get_args(doctype)[0]
@@ -2255,10 +2254,21 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
                 if arg not in (None, type(None))
             ))
         else:
-            doctype = " | ".join([
+            return " | ".join([
                 _doc_type(arg) for arg in tx.get_args(doctype)
             ])
-    doctype = _doc_type(doctype)
+    return _doc_type(doctype)
+
+
+def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
+
+    name = name or field.public_name
+
+    default = field.default
+    if field.build:
+        default = _HasFactory(field.factory)
+
+    doctype = _doc_field_type(field)
     doc = (
         f"{name} : {doctype}, optional"
         if default is None else
