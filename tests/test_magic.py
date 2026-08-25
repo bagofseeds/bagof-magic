@@ -1,7 +1,9 @@
 """Unit tests for the bagof.magic module."""
 import copy
+import inspect
 import operator
 import pickle
+import re
 from inspect import Parameter, signature
 from typing import ClassVar as TypingClassVar
 from typing import Optional, Union
@@ -16,6 +18,7 @@ from bagof.validators.exceptions import ValidationError
 from typing_extensions import Annotated
 
 import bagof.magic._api as _api
+import bagof.magic._fields as _fields
 import bagof.magic._magic as m
 from bagof.magic import (
     HIDE_IF_NONE,
@@ -2599,6 +2602,390 @@ class TestFieldInheritance:
 
         assert _api.fields(Derived)[0].doc == "base doc"
 
+
+# ======================================================================
+# override
+# ======================================================================
+
+
+class TestOverride:
+    """A subclass deciding an inherited field's settings again."""
+
+    def test_the_worked_example(self) -> None:
+        class Record(Magic, frozen=True):
+            x: int
+            y: Frozen[int]
+
+        class Draft(Record, frozen=False, override=True):
+            z: int
+
+        d = Draft(1, 2, 3)
+        # x never asked to be frozen, so Draft's answer applies.
+        d.x = 9
+        assert d.x == 9
+        # y asked for it in writing, so it keeps it.
+        with pytest.raises(AttributeError, match="Cannot set frozen"):
+            d.y = 9
+        d.z = 9
+        assert d.z == 9
+
+    def test_saying_nothing_keeps_the_base_answer(self) -> None:
+        class Record(Magic, frozen=True):
+            x: int
+
+        class Draft(Record, frozen=False):
+            z: int
+
+        d = Draft(1, 2)
+        d.z = 9
+        with pytest.raises(AttributeError, match="Cannot set frozen"):
+            d.x = 9
+
+    def test_the_base_is_left_alone(self) -> None:
+        class Record(Magic, frozen=True):
+            x: int
+
+        class Draft(Record, frozen=False, override=True):
+            pass
+
+        Draft(1).x = 9
+        with pytest.raises(AttributeError, match="Cannot set frozen"):
+            Record(1).x = 9
+
+    # ------------------------------------------------------------------
+    # Every setting a field takes from its class
+    # ------------------------------------------------------------------
+
+    def test_frozen_is_decided_again(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Sub(Base, frozen=True, override=True):
+            pass
+
+        with pytest.raises(AttributeError, match="Cannot set frozen"):
+            Sub().x = 2
+
+    def test_kw_only_is_decided_again(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Sub(Base, kw_only=True, override=True):
+            pass
+
+        assert Sub(x=2).x == 2
+        with pytest.raises(TypeError):
+            Sub(2)
+
+    def test_positional_only_is_decided_again(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Sub(Base, positional_only=True, override=True):
+            pass
+
+        assert Sub(2).x == 2
+        with pytest.raises(TypeError):
+            Sub(x=2)
+
+    def test_convert_is_decided_again(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Kept(Base):
+            pass
+
+        class Sub(Base, convert=True, override=True):
+            pass
+
+        assert Kept("42").x == "42"
+        assert Sub("42").x == 42
+
+    def test_validate_is_decided_again(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Kept(Base):
+            pass
+
+        class Sub(Base, validate=True, override=True):
+            pass
+
+        assert Kept("nope").x == "nope"
+        with pytest.raises(ValidationError):
+            Sub("nope")
+
+    def test_a_rebuilt_converter_is_told_where_to_look(self) -> None:
+        # A type written as a name is looked up when the field is first
+        # used, and the class asking for the conversion says where and
+        # what to do when it is not there.
+        class Base(Magic):
+            parent: "Nowhere" = None  # noqa: F821
+
+        class Sub(
+            Base, convert=True, override=True, unresolved_hints="raise"
+        ):
+            pass
+
+        with pytest.raises(NameError, match="Sub.parent"):
+            Sub("anything")
+
+    def test_factory_is_decided_again(self) -> None:
+        class Base(Magic):
+            x: list
+
+        class Sub(Base, factory=True, override=True):
+            pass
+
+        assert Sub().x == []
+        # Still a factory: one list per instance, not one shared list.
+        assert Sub().x is not Sub().x
+
+    def test_repr_is_decided_again(self) -> None:
+        class Base(Magic):
+            x: Optional[int] = None
+
+        class Kept(Base):
+            pass
+
+        class Sub(Base, repr=HIDE_IF_NONE, override=True):
+            pass
+
+        assert repr(Kept()) == "Kept(x=None)"
+        assert repr(Sub()) == "Sub()"
+        assert repr(Sub(3)) == "Sub(x=3)"
+
+    def test_a_subclass_still_cannot_stop_being_dict_like(self) -> None:
+        class Base(Magic, mapping=True):
+            x: int = 1
+
+        with pytest.raises(TypeError, match="a subclass cannot take it"):
+            class Sub(Base, mapping=False, override=True):
+                pass
+
+    # ------------------------------------------------------------------
+    # What it is allowed to say
+    # ------------------------------------------------------------------
+
+    def test_one_setting_by_name(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Sub(Base, frozen=True, kw_only=True, override="frozen"):
+            pass
+
+        # frozen was asked for by name; kw_only was not, so `x` stays
+        # positional.
+        with pytest.raises(AttributeError, match="Cannot set frozen"):
+            Sub(2).x = 3
+
+    def test_several_settings_by_name(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Sub(
+            Base, frozen=True, kw_only=True, override=("frozen", "kw_only")
+        ):
+            pass
+
+        with pytest.raises(TypeError):
+            Sub(2)
+        with pytest.raises(AttributeError, match="Cannot set frozen"):
+            Sub(x=2).x = 3
+
+    @pytest.mark.parametrize("setting", ["eq", "order", "hash", "mapping"])
+    def test_a_setting_a_field_never_takes_from_its_class(
+        self, setting: str
+    ) -> None:
+        # These four are about the class as a whole -- whether a method
+        # is generated, whether there is a dict-like view. A field
+        # answers them from itself, so there is nothing to decide again
+        # and asking says so rather than doing nothing.
+        with pytest.raises(ValueError, match="not one of the settings"):
+            class Sub(Magic, override=setting):
+                x: int = 1
+
+    def test_something_that_names_nothing(self) -> None:
+        with pytest.raises(ValueError, match="neither a setting name"):
+            class Sub(Magic, override=3):
+                x: int = 1
+
+    def test_off_by_name(self) -> None:
+        class Base(Magic, frozen=True):
+            x: int = 1
+
+        class Sub(Base, frozen=False, override=()):
+            pass
+
+        with pytest.raises(AttributeError, match="Cannot set frozen"):
+            Sub().x = 2
+
+    # ------------------------------------------------------------------
+    # What survives it
+    # ------------------------------------------------------------------
+
+    def test_an_annotation_survives_in_both_directions(self) -> None:
+        class Base(Magic, frozen=True):
+            loose: NotFrozen[int] = 1
+
+        class Sub(Base, frozen=True, override=True):
+            pass
+
+        sub = Sub()
+        sub.loose = 2
+        assert sub.loose == 2
+
+    def test_an_annotated_keyword_stays_keyword_only(self) -> None:
+        class Base(Magic, kw_only=True):
+            x: KwOnly[int] = 1
+
+        class Sub(Base, kw_only=False, override=True):
+            pass
+
+        with pytest.raises(TypeError):
+            Sub(2)
+        assert Sub(x=2).x == 2
+
+    def test_a_promoted_mutable_default_survives(self) -> None:
+        # `x: list = []` becomes a factory when the base is built; that
+        # is the field's own from then on, whatever the subclass says
+        # about factories.
+        class Base(Magic):
+            x: list = []
+
+        class Sub(Base, override=True):
+            pass
+
+        assert Sub().x == []
+        assert Sub().x is not Sub().x
+
+    def test_a_doc_still_reaches_the_field_that_replaces_it(self) -> None:
+        class Base(Magic, frozen=True):
+            x: Annotated[int, Doc("base doc")] = 1
+
+        class Sub(Base, frozen=False, override=True):
+            x: int = 2
+
+        assert _api.fields(Sub)[0].doc == "base doc"
+
+    def test_a_redeclared_field_is_built_fresh(self) -> None:
+        # A field the subclass declares again is resolved against the
+        # subclass's settings like any other, with no `override` needed.
+        class Base(Magic, frozen=True):
+            x: int = 1
+
+        class Sub(Base, frozen=False):
+            x: int = 2
+
+        sub = Sub()
+        sub.x = 3
+        assert sub.x == 3
+
+    # ------------------------------------------------------------------
+    # Inheriting the setting itself
+    # ------------------------------------------------------------------
+
+    def test_a_base_can_turn_it_on_for_a_family(self) -> None:
+        class Base(Magic, frozen=True, override=True):
+            x: int = 1
+
+        class Sub(Base, frozen=False):
+            pass
+
+        Sub().x = 2
+
+    def test_a_middle_class_turns_it_on_for_what_follows(self) -> None:
+        class Top(Magic, frozen=True):
+            x: int = 1
+
+        class Middle(Top, frozen=False, override=True):
+            y: int = 2
+
+        class Bottom(Middle):
+            z: int = 3
+
+        with pytest.raises(AttributeError, match="Cannot set frozen"):
+            Top().x = 9
+        middle = Middle()
+        middle.x = 9
+        bottom = Bottom()
+        bottom.x = 9
+        bottom.y = 9
+        bottom.z = 9
+        assert (bottom.x, bottom.y, bottom.z) == (9, 9, 9)
+
+
+class TestDeclaredValues:
+    """The record of what a field asked for, which `override` reads."""
+
+    def test_it_is_taken_before_anything_is_filled_in(self) -> None:
+        field = Field.from_hint("x", Frozen[int])
+        assert field.declared is MISSING
+        field.setdefault(Options.make_default())
+        assert field.declared["frozen"] is True
+        assert field.declared["converter"] is MISSING
+
+    def test_it_is_taken_once(self) -> None:
+        field = Field.from_hint("x", int)
+        field.setdefault(Options(**dict(Options._DEFAULTS, frozen=True)))
+        assert field.frozen is True
+        field.setdefault(Options.make_default())
+        # Already answered, so a second pass changes nothing.
+        assert field.frozen is True
+        assert field.declared["frozen"] is MISSING
+
+    def test_a_copy_shares_nothing_with_its_original(self) -> None:
+        class Base(Magic, frozen=True):
+            x: int = 1
+
+        class Sub(Base, frozen=False, override=True):
+            pass
+
+        base_field = _api.fields(Base)[0]
+        sub_field = _api.fields(Sub)[0]
+        assert sub_field.declared is not base_field.declared
+        assert base_field.frozen is True
+        assert sub_field.frozen is False
+
+    def test_a_field_that_declared_nothing_copies_cleanly(self) -> None:
+        field = Field(name="x")
+        assert field.copy().declared is MISSING
+
+    def test_it_stays_out_of_the_repr(self) -> None:
+        field = Field.from_hint("x", int)
+        field.setdefault(Options.make_default())
+        assert "declared" not in repr(field)
+        assert "name='x'" in repr(field)
+
+    def test_recording_a_value_on_an_unresolved_field(self) -> None:
+        field = Field(name="x")
+        field._redeclare(factory=list)
+        assert field.factory is list
+        assert field.declared is MISSING
+
+
+class TestOverridableSettings:
+    """Which settings a field takes from its class, checked not assumed."""
+
+    def test_they_are_exactly_the_ones_a_field_reads(self) -> None:
+        # Twice a setting has been listed here that a field never takes
+        # from its class, and re-resolving it would have done nothing at
+        # all. `mapping` was the second: it stopped reaching a field the
+        # day `key` began defaulting to `not var`. So the list is read
+        # off the code that does the resolving rather than kept by hand.
+        read = re.findall(
+            r"options\.(\w+)", inspect.getsource(Field.setdefault)
+        )
+        assert set(_fields._OVERRIDABLE) == set(read)
+
+    def test_they_are_class_settings(self) -> None:
+        assert set(_fields._OVERRIDABLE) <= set(Options._DEFAULTS)
+
+    def test_they_name_field_attributes(self) -> None:
+        slots = set(Field._slots())
+        for setting, attrs in _fields._OVERRIDABLE.items():
+            assert set(attrs) <= slots, setting
+        assert set(_fields._RESOLVED_ATTRS) <= slots
 
 # ======================================================================
 # _FuncBuilder
