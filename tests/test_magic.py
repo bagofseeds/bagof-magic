@@ -5968,19 +5968,54 @@ class TestParityHelpers:
         assert _api.asdict(Point(1, 2)) == {"x": 1, "y": 2}
         assert list(_api.asdict(Point(1, 2))) == ["x", "y"]
 
-    def test_asdict_does_not_recurse_or_copy(self) -> None:
+    def test_asdict_recurses_into_magic(self) -> None:
         class Inner(Magic):
             n: int
 
         class Outer(Magic):
             inner: Inner
-            items: list
 
-        items = [1, 2]
-        outer = Outer(Inner(1), items)
-        assert _api.asdict(outer) == {"inner": Inner(1), "items": [1, 2]}
-        assert isinstance(_api.asdict(outer)["inner"], Inner)
-        assert _api.asdict(outer)["items"] is items
+        assert _api.asdict(Outer(Inner(1))) == {"inner": {"n": 1}}
+
+    def test_asdict_recurses_into_containers(self) -> None:
+        class Inner(Magic):
+            n: int
+
+        class Outer(Magic):
+            items: list
+            mapping: dict
+            pair: tuple
+
+        outer = Outer([Inner(1), Inner(2)], {"a": Inner(3)}, (Inner(4),))
+        result = _api.asdict(outer)
+        assert result == {
+            "items": [{"n": 1}, {"n": 2}],
+            "mapping": {"a": {"n": 3}},
+            "pair": ({"n": 4},),
+        }
+
+    def test_asdict_does_not_copy_non_magic_leaves(self) -> None:
+        sentinel = object()
+
+        class Outer(Magic):
+            obj: object
+
+        assert _api.asdict(Outer(sentinel))["obj"] is sentinel
+
+    def test_asdict_preserves_namedtuple_type(self) -> None:
+        from collections import namedtuple
+
+        Pair = namedtuple("Pair", "a b")
+
+        class Inner(Magic):
+            n: int
+
+        class Outer(Magic):
+            pair: tuple
+
+        result = _api.asdict(Outer(Pair(Inner(1), 2)))
+        assert type(result["pair"]).__name__ == "Pair"
+        assert result["pair"] == Pair({"n": 1}, 2)
 
     def test_asdict_keys_by_the_constructor_name(self) -> None:
         class Account(Magic):
@@ -6032,16 +6067,31 @@ class TestParityHelpers:
         assert _api.astuple(Derived(1, 2)) == (1, 2)
         assert _api.asdict(Derived(1, 2)) == {"b": 1, "a": 2}
 
-    def test_astuple_does_not_recurse_or_copy(self) -> None:
+    def test_astuple_recurses_into_magic(self) -> None:
         class Inner(Magic):
             n: int
 
         class Outer(Magic):
             inner: Inner
 
-        inner = Inner(1)
-        assert _api.astuple(Outer(inner)) == (inner,)
-        assert _api.astuple(Outer(inner))[0] is inner
+        assert _api.astuple(Outer(Inner(1))) == ((1,),)
+
+    def test_astuple_recurses_into_containers(self) -> None:
+        class Inner(Magic):
+            n: int
+
+        class Outer(Magic):
+            items: list
+
+        result = _api.astuple(Outer([Inner(1), Inner(2)]))
+        assert result == ([(1,), (2,)],)
+
+    def test_astuple_does_not_copy_non_magic(self) -> None:
+        class Outer(Magic):
+            obj: object
+
+        sentinel = object()
+        assert _api.astuple(Outer(sentinel))[0] is sentinel
 
     def test_astuple_skips_pseudo_fields(self) -> None:
         class Shifted(Magic):
