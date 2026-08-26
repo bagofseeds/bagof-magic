@@ -77,41 +77,26 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
     'name',             # Field name
     'type',             # Field type (or type hint)
     'default',          # Default value for this field.
-    # Whether this field's default is built by calling something.
-    'build',
-    # What builds it -- `None` to work that out from the field's type.
-    'factory',
+    'build',            # True if default is built by calling something.
+    'factory',          # Default factory (None = from hint).
     'repr',             # Include this field in the generated __repr__ method.
     'hash',             # Include this field in the generated __hash__ method.
     'eq',               # Include this field in the generated __eq__ method.
     'order',            # Include this field in the generated __lt__ methods.
     'metadata',         # User-defined metadata
-    # Make this field a keyword in the generated __init__ method.
-    'kw',
-    # Make this field a positional argument in the generated __init__
-    # method.
-    'positional',
+    'kw',               # Field is a keyword argument in __init__.
+    'positional',       # Field is a positional argument in __init__.
     'frozen',           # Make this field immutable after initialization.
-    # Whether the value handed to this field is converted.
-    'convert',
-    # What converts it -- `None` to work that out from the field's type.
-    'converter',
-    # Whether the value handed to this field is validated.
-    'validate',
-    # What validates it -- `None` to work that out from the field's type.
-    'validator',
-    # Which of `converter`, `validator` and `factory` were worked out
-    # from `type` rather than given.
-    'derived',
-    # Whether this field is a pseudo-field (InitVar or ClassVar).
-    'var',
+    'convert',          # Whether the value handed to this field is converted.
+    'converter',        # Value converter (None = from hint)
+    'validate',         # Whether the value handed to this field is validated.
+    'validator',        # Value validator (None = from hint)
+    'derived',          # List of hint-derived tools
+    'var',              # Whether this field is a pseudo-field
     'doc',              # Docstring for this field.
-    # Include this field in the generated dict-like interface.
-    'key',
-    # Alternative names for this field in the generated methods.
-    'alias',
-    # What the field itself asked for, before the class filled in the rest.
-    'declared',
+    'key',              # Field is a key in the dict-like interface.
+    'alias',            # Alternative names for this field.
+    'declared',         # See descriptio below.
 )
 class Field(SlotsBase):
     """A single field in a Magic class.
