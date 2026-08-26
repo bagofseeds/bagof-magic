@@ -23,6 +23,50 @@ __all__ = [
 ]
 
 
+def _asdict_inner(obj: tx.Any) -> tx.Any:
+    """Walk a value, recursing into Magic instances and containers."""
+    cls = type(obj)
+    if getattr(cls, _FIELDS, None) is not None:
+        return {
+            name: _asdict_inner(value)
+            for name, field in _keyed(
+                f for f in getattr(cls, _FIELDS).values() if not f.var
+            ).items()
+            for has_value, value in (_stored(obj, field),)
+            if has_value
+        }
+    if isinstance(obj, tuple) and hasattr(obj, "_fields"):
+        return type(obj)(*(_asdict_inner(v) for v in obj))
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_asdict_inner(v) for v in obj)
+    if isinstance(obj, dict):
+        return type(obj)(
+            (_asdict_inner(k), _asdict_inner(v)) for k, v in obj.items()
+        )
+    return obj
+
+
+def _astuple_inner(obj: tx.Any) -> tx.Any:
+    """Walk a value, recursing into Magic instances and containers."""
+    cls = type(obj)
+    if getattr(cls, _FIELDS, None) is not None:
+        return tuple(
+            _astuple_inner(_value(obj, field, "astuple"))
+            for field in _keyed(
+                f for f in getattr(cls, _FIELDS).values() if not f.var
+            ).values()
+        )
+    if isinstance(obj, tuple) and hasattr(obj, "_fields"):
+        return type(obj)(*(_astuple_inner(v) for v in obj))
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_astuple_inner(v) for v in obj)
+    if isinstance(obj, dict):
+        return type(obj)(
+            (_astuple_inner(k), _astuple_inner(v)) for k, v in obj.items()
+        )
+    return obj
+
+
 def _field_table(obj: tx.Any, caller: str) -> tx.Dict[str, Field]:
     """Every field of an instance's class, pseudo-fields included.
 
@@ -133,12 +177,9 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
     """
     Get an object's fields as a plain `dict`.
 
-    Values come back exactly as they are stored: nothing is copied,
-    converted, or looked inside. A field holding a list gives you *that*
-    list, and a field holding another Magic object gives you the object
-    itself, not a dict of its fields. If you want a copy, or a nested
-    object turned into a dict too, do it yourself -- that way you decide
-    how deep to go and what to do with the things that are neither.
+    A field holding another Magic object is turned into a dict of *its*
+    fields, and so on all the way down. Everything else is returned
+    as-is.
 
     Keys are the names the constructor takes, which for an aliased or
     underscored field is not the name the class body uses.
@@ -164,6 +205,25 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
         {'x': 1, 'y': 2}
         ```
 
+    !!! example "Nested Magic objects become dicts"
+        ```pycon
+        >>> class Point(Magic):
+        ...     x: int
+        ...     y: int
+        ...
+        >>> class Line(Magic):
+        ...     start: Point
+        ...     end: Point
+        ...
+        >>> asdict(Line(Point(0, 0), Point(1, 2)))
+        {'start': {'x': 0, 'y': 0}, 'end': {'x': 1, 'y': 2}}
+        >>> class Path(Magic):
+        ...     points: list
+        ...
+        >>> asdict(Path([Point(0, 0), Point(1, 2)]))
+        {'points': [{'x': 0, 'y': 0}, {'x': 1, 'y': 2}]}
+        ```
+
     !!! note "A field with no value is left out"
         A field the constructor does not take, and that has no default,
         holds nothing until something sets it -- so it is simply absent,
@@ -187,20 +247,6 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
         field it belongs to, a position does not, so a tuple is only
         readable while every field is in it.
 
-    !!! example "A nested object is left alone"
-        ```pycon
-        >>> class Point(Magic):
-        ...     x: int
-        ...     y: int
-        ...
-        >>> class Line(Magic):
-        ...     start: Point
-        ...     end: Point
-        ...
-        >>> asdict(Line(Point(0, 0), Point(1, 2)))
-        {'start': Point(x=0, y=0), 'end': Point(x=1, y=2)}
-        ```
-
     !!! note "Not the same as `dict(obj)`"
         A class written with `mapping=True` can be passed to `dict`
         directly, and that covers the fields marked as keys, under the
@@ -222,7 +268,7 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
     for name, field in _concrete(obj, "asdict").items():
         has_value, value = _stored(obj, field)
         if has_value:
-            found[name] = value
+            found[name] = _asdict_inner(value)
     return found
 
 
@@ -230,8 +276,8 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
     """
     Get an object's field values as a tuple, in field order.
 
-    Values come back exactly as they are stored, the same way `asdict`
-    returns them: nothing is copied, converted, or looked inside.
+    Like `asdict`, a nested Magic instance is turned into a tuple of
+    its own fields. Everything else is returned as-is.
 
     Parameters
     ----------
@@ -268,13 +314,8 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
         index would stand for a different field from one instance to
         the next, with nothing in the tuple to show it.
     """
-    # The same fields `asdict` reports, worked out the same way: a class
-    # whose fields cannot be told apart by name is refused by both,
-    # rather than answering a tuple here and an error there. A field
-    # holding no value is where the two part: a caller can see that a
-    # key is missing, but a short tuple looks like any other.
     return tuple(
-        _value(obj, field, "astuple")
+        _astuple_inner(_value(obj, field, "astuple"))
         for field in _concrete(obj, "astuple").values()
     )
 

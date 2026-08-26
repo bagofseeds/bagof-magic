@@ -298,8 +298,8 @@ Point(x=1.0, y=20.0)
 validation and init hooks all run on the new values. This is also why it
 works on a frozen class. The other side of that: a `__post_init__` that
 derives one field from another will derive it again from the already-derived
-value. `asdict` returns values exactly as stored, without copying or
-recursing. A field with no value is left out. `astuple` raises instead,
+value. `asdict` recurses into nested Magic instances. Everything else is
+returned as-is. A field with no value is left out. `astuple` raises instead,
 because a missing position would shift everything after it.
 
 There is also `fields` and `fields_dict` for the fields themselves, and

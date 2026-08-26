@@ -46,7 +46,7 @@ want the type hints to do.
 | | | | | |
 | **Around the edges** | | | | |
 | Copy with changes | `replace` | `evolve` | `model_copy` | **`replace`** |
-| Convert to a plain `dict` | `asdict` | `asdict` | `model_dump` | **`asdict`**, *without recursing* |
+| Convert to a plain `dict` | `asdict` | `asdict` | `model_dump` | **`asdict`** |
 | JSON schema | no | no | yes | no |
 | Generic classes | yes | yes | yes | **yes**, *[named subclass only][generics]* |
 | Runtime dependency | none | `attrs` | `pydantic-core` (compiled) | the `bagof` packages |
@@ -236,9 +236,9 @@ times : int, default=3
 
 - **JSON schema and serialisation.** Pydantic's strongest feature. `magic`
   has neither yet.
-- **A recursive `asdict`.** `asdict` returns values as stored. A field
-  holding another object gives you that object, not a dict of its fields.
-  The others walk the whole tree, copying lists and dicts on the way.
+- **Deep-copying leaves.** `dataclasses.asdict` deep-copies every non-dataclass
+  value; `magic`'s `asdict` returns non-Magic values as-is. This is deliberate:
+  a field holding a NumPy array or a large object should not be silently copied.
 - **A type parameter filled in at the call site.** A subclass fills one in:
   `class IntBox(Box[int])` gives `item` the type `int`, and converts and
   validates against it. But `Box[int]("1")` does not: that is a `typing`
