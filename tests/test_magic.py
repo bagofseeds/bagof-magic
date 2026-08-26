@@ -1296,6 +1296,15 @@ class TestConvertTo:
         assert p.x == 1
         assert p.y == 2.5
 
+    def test_the_flag_keyword_folds_onto_the_slot(self) -> None:
+        # `convert=`/`validate=`/`build=` are aliases for the tri-state
+        # slot; the callable spelling wins when both are given.
+        assert Field(name="x", convert=True).converter is True
+        assert Field(name="x", convert=False).converter is False
+        assert Field(name="x", validate=True).validator is True
+        assert Field(name="x", build=True).factory is True
+        assert Field(name="x", convert=True, converter=int).converter is int
+
 
 # ======================================================================
 # Validate
