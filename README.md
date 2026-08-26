@@ -363,8 +363,9 @@ class Circle(Magic):
 Circle(radius=6.0)
 ```
 
-**Generic classes.** A `Magic` class can take a type parameter, and a
-subclass that fills it in gets fields of that type:
+**Generic classes.** A `Magic` class can take a type parameter, and
+filling it in gives the fields that type — whether you name a subclass or
+fill it in at the call site:
 
 ```python
 from typing import Generic, TypeVar
@@ -384,15 +385,15 @@ class IntBox(Box[int]):
 Box(item='1')
 >>> IntBox("1")
 IntBox(item=1)
+>>> Box[int]("1")
+Box[int](item=1)
 ```
 
-`item` is `T` on `Box` (no specific type to convert to) and `int` on
-`IntBox` (which is why the string becomes a number). This works the same
-way when the parameter is nested (`List[T]`, `Optional[T]`, `Dict[str, T]`).
-
-Writing the parameter at the call site, `Box[int]("1")`, is different. That
-produces a `typing` alias, not a class. It builds a plain `Box` and `item`
-stays `T`. Give the subclass a name when you want the fields to follow.
+`item` is `T` on `Box` (no specific type to convert to) and `int` once the
+parameter is filled in — which is why the string becomes a number. Both
+spellings do the same thing: `Box[int]` is a class just as `IntBox` is,
+and `Box[int]("1") == Box(1)`. This works the same way when the parameter
+is nested (`List[T]`, `Optional[T]`, `Dict[str, T]`).
 
 **Documentation that writes itself.** Describe a field and it shows up in
 the class docstring and in the generated `__init__`:

@@ -668,3 +668,10 @@ class TestTypeParametersWrittenAsText:
         assert fields["item"].type is int
         assert fields["items"].type == tx.List[int]
         assert IntBox("1", ["2"]) == IntBox(1, [2])
+
+    def test_the_subscription_fills_it_in_too(self) -> None:
+        # The call-site form has the same job to do in a module whose
+        # annotations are text: `_T` resolves to a real type variable, so
+        # `TextBox[int]` converts and validates just as the subclass does.
+        assert fields_dict(TextBox[int])["item"].type is int
+        assert TextBox[int]("1", ["2"]) == TextBox(1, [2])

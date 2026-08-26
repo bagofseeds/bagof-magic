@@ -243,10 +243,29 @@ left exactly as it is: filling in a type variable says nothing about it.
 The snapshot holds the *names* of the three, not the type they came from,
 so there is no second copy of the type to keep in step with the first.
 
-Out of scope, and said so in `README.md` and `docs/comparison.md`:
-`Box[int]("1")`. That is a `typing` alias rather than a class, so there is
-no class being built and nowhere to hang a filled-in field table;
-catching it means intercepting `__call__` on the alias.
+The same thing happens at the call site -- `Box[int]("1")`. Subscription
+would ordinarily give a `typing` alias, with no class to hang a filled-in
+field table on, so `MetaMagic.__getitem__` intercepts it and builds a real
+subclass instead -- the same shape `class IntBox(Box[int])` produces (a
+subclass of `Box` carrying the alias as its `__orig_bases__`), routed
+through the identical substitution path with no special case, then cached
+so `Box[int] is Box[int]`. It is a metaclass `__getitem__`, not a
+`Magic.__class_getitem__`, so it wins whatever the base order is
+(`Generic[T], Magic` too) and reaches classes the `@magic` decorator built
+(which never inherit `Magic`). The hook is deliberately *not* an
+interception of `__call__` on the alias: making the subscription produce a
+class is what lets the ordinary constructor run with `T` already filled in,
+with nothing wrapping `__call__`. `Box[int](1)` equals `Box(1)`, because
+`__eq__`/order compare against the class as it was written -- the origin
+kept in `_GENERIC_ORIGIN` -- not the parameterised one, matching what
+`dataclasses` and `pydantic` both do. Still out of scope, and refused with
+a clear error rather than built wrong: subscripting a `polymorphic` class
+(dispatch and parameterisation together is a larger feature) and a
+variadic/`ParamSpec` generic (the substitution engine pairs one argument
+to one variable). Pickling leans on the same trick pydantic uses -- the
+built class is made findable under its name on its module, since pickle
+saves a class (and an instance's class) by name and a metaclass
+`__reduce__` is never consulted for a class object.
 
 ## Conventions specific to this repo (do not regress)
 

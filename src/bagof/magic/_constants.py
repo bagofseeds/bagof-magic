@@ -58,6 +58,21 @@ _REGISTRATION = '__magic_registration__'
 # down, and `__init__` has to be built the same way there.
 _PINNED = '__magic_pinned__'
 
+# Names given to a class built by filling in a generic's type parameters
+# at the subscription -- `Box[int]`. `_GENERIC_ORIGIN` is the generic
+# class it came from and `_GENERIC_ARGS` is what its type variables were
+# filled in with; together they mark the class as one of these and say
+# how to rebuild it when it is pickled.
+_GENERIC_ORIGIN = '__magic_generic_origin__'
+_GENERIC_ARGS = '__magic_generic_args__'
+
+# The name of an attribute on a generic Magic class holding the classes
+# already built from it, keyed by the filled-in arguments -- so that
+# `Box[int] is Box[int]`. Read from the class's own __dict__, never
+# inherited, so a subclass does not hand back its parent's parameterised
+# classes.
+_GENERIC_CACHE = '__magic_generic_cache__'
+
 # Name we give to classes that are only created temporarily to build the
 # MRO and then discarded.
 _DISCARD = "__magic_discard__"
