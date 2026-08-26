@@ -49,16 +49,14 @@ from ._utils import SlotsBase, _get_origin, slots
 T = tx.TypeVar("T")
 
 
-#: The class settings a field takes an answer from when it does not give
-#: one itself, and the field attributes each of them decides.
+#: Class settings that fill in a field's unset attributes, and which
+#: field attributes each setting controls.
 #:
-#: The two are not one for one -- `kw_only` and `positional_only` both
-#: decide the same pair, and `convert`, `validate` and `factory` each
-#: decide a pair of their own -- so the mapping is written out rather
-#: than guessed. It lists exactly what `Field.setdefault` reads from
-#: `Options`: `eq`, `order`, `hash` and `mapping` are not here, because
-#: a field works those out from itself rather than from its class, and
-#: there would be nothing to resolve again.
+#: The mapping is not one-to-one: `kw_only` and `positional_only` both
+#: control `kw` and `positional`, and `convert`, `validate` and `factory`
+#: each control a pair. Listed explicitly rather than inferred.
+#: `eq`, `order`, `hash` and `mapping` are absent because a field
+#: resolves those from its own values, not from its class.
 _OVERRIDABLE = {
     "convert": ("convert", "converter"),
     "factory": ("build", "factory"),
@@ -116,130 +114,111 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
     'declared',
 )
 class Field(SlotsBase):
-    """A field in a `Magic`."""
+    """A single field in a Magic class.
+
+    Every annotation in a Magic class body becomes a `Field`. You rarely
+    create one directly. The annotation family (`Factory`, `KwOnly`,
+    `ConvertTo`, ...) and the `field()` function are the usual ways in.
+    """
 
     def __init__(self, *arg, **kwargs) -> None:
         """
         Parameters
         ----------
         name : str
-            The name of the field.
+            The field's name in the class body.
         type : type or type hint
-            The type of the field.
-            This is used for type checking, validation, and conversion.
+            The field's type. Used for conversion, validation and
+            factory defaults when those are turned on.
         default : any
-            The default value for the field.
+            The default value.
         build : bool, default=`Options().factory`
-            Whether this field's default is built by calling something,
-            once per instance, instead of being one shared value.
+            Build a fresh default per instance by calling something,
+            rather than sharing one value across all instances.
         factory : Callable[[], any], optional
-            What is called to build it. Leave it out to have one worked
-            out from the field's type. Passing a callable here turns
-            `build` on, and passing `factory=True` turns it on without
-            naming one.
+            What to call. Omit it and one is worked out from the type.
+            Passing a callable turns `build` on. Passing `factory=True`
+            turns it on without naming a callable.
         init : bool, optional
-            Whether this field is a parameter of the generated `__init__`.
-            It is not stored but worked out from `kw` and `positional`:
-            reading it gives `kw or positional`, so a field that can be
-            passed neither by name nor by position is no parameter at
-            all. Passing `init=False` here forbids both ways; passing
-            `init=True` says nothing, since a field is a parameter
-            unless something says otherwise. Assigning to `field.init`
-            afterwards always sets both.
-            Whether that method is generated at all is the class-level
-            `init` option, which is a separate question.
+            Whether this field appears in `__init__`. Not stored
+            directly: it reads as `kw or positional`. Setting
+            `init=False` forbids both ways. Setting `init=True` changes
+            nothing (a field is a parameter unless something says
+            otherwise). Assigning `field.init = value` afterwards sets
+            both `kw` and `positional`.
         repr : bool, default=True (False for a pseudo-field)
-            Whether to include this field in the generated `__repr__`.
-        hash : bool, default=None (follow this field's `eq`)
-            Whether to include this field in the generated `__hash__`.
-            Equal instances must hash equally, so a field left out of
-            the comparison is left out of the hash unless you say
-            otherwise.
+            Include this field in the generated `__repr__`.
+        hash : bool, default=None (follows `eq`)
+            Include this field in the generated `__hash__`. Defaults to
+            following `eq`, since equal instances must hash equally.
         eq : bool, default=True
-            Whether to include this field in the generated `__eq__`.
-        order : bool, default=the field's `eq`
-            Whether to include this field in the generated ordering. A
-            field out of the comparison is out of the ordering too;
-            asking for the reverse explicitly is an error.
+            Include this field in the generated `__eq__`.
+        order : bool, default=follows `eq`
+            Include this field in the generated ordering. A field out
+            of `__eq__` is out of ordering too. Setting `eq=False` with
+            `order=True` is an error.
         metadata : dict, optional
-            User-defined metadata for this field.
+            Arbitrary user-defined metadata.
         kw : bool, default=`not Options().positional_only`
-            Make this field a keyword argument in the generated `__init__`
-            method. To make the field keyword-only, set `positional=False`
-            as well; with both set to False the field is no argument at
-            all, the same as `init=False`.
+            Allow this field to be passed by keyword. To make it
+            keyword-only, also set `positional=False`. With both set to
+            False, the field takes its default (same as `init=False`).
         positional : bool, default=`not Options().kw_only`
-            Make this field a positional argument in the generated `__init__`
-            method. To make the field positional-only, set `kw=False` as well.
+            Allow this field to be passed by position. To make it
+            positional-only, also set `kw=False`.
         frozen : bool, default=`Options().frozen`
-            Whether to make this field immutable after initialization.
+            Forbid assignment after construction.
         convert : bool, default=`Options().convert`
-            Whether the value handed to this field is converted.
+            Convert the incoming value.
         converter : Callable[[any], any], optional
-            What converts it. Leave it out to have one worked out from
-            the field's type. Passing a callable here turns `convert`
-            on, and passing `converter=True` turns it on without naming
-            one.
+            What converts it. Omit it and one is worked out from the
+            type. Passing a callable turns `convert` on.
         validate : bool, default=`Options().validate`
-            Whether the value handed to this field is validated.
+            Validate the incoming value.
         validator : Callable[[any], any], optional
-            What validates it: it returns the value unchanged when it is
-            valid, and raises when it is not. Leave it out to have one
-            worked out from the field's type. Passing a callable here
-            turns `validate` on, and passing `validator=True` turns it
-            on without naming one.
+            What validates it: returns the value unchanged when valid,
+            raises when not. Omit it and one is worked out from the
+            type. Passing a callable turns `validate` on.
         derived : tuple of str, optional
             Which of `converter`, `validator` and `factory` were worked
-            out from the field's type rather than handed over ready
-            made. A subclass that fills in a type variable builds those
-            again from the type it filled in, and leaves the ones you
-            passed alone.
+            out from the type rather than provided. When a subclass
+            fills in a type variable, these are rebuilt from the new
+            type. Manually provided callables are left alone.
         var : bool, default=False
-            Whether this field is a pseudo-field (InitVar or ClassVar).
-            Pseudo-fields are not set by the generated `__init__` method,
-            but may be one of its arguments (when `init=True`), or used
-            in the generated `__repr__` method (when `init=False,
-            repr=True`).
-            It is often more readable to use the `InitVar` and `ClassVar`
-            annotations.
+            Mark this as a pseudo-field. An `InitVar` is passed to the
+            constructor but not stored. A `ClassVar` is a class
+            attribute, shared by every instance and absent from the
+            constructor. Using the `InitVar` and `ClassVar` annotations
+            is usually clearer.
         doc : str, optional
-            A docstring for this field.
-            The `typing_extensions.Doc` annotation can also be used to
-            set this.
+            Documentation for this field. Also settable through the
+            `Doc` annotation.
         key : bool | str, default=`Options().mapping`
-            Whether to include this field in the generated dict-like
-            interface. If a string, it will be used as the key.
+            Include this field in the dict-like interface. A string
+            value is used as the key name.
         alias : str, default=`name.lstrip("_")`
-            An alternative name for this field in the generated methods.
-            This is useful when the field name is not a valid Python
-            identifier, or when you want to use a different name in the
-            generated methods for readability or consistency with an
-            external API.
-            By default, names that start with an underscore will have
-            the underscore stripped in the alias.
+            The name used in generated methods (constructor parameter,
+            repr output, dict key). Useful when the field name is not a
+            good public name, or when matching an external API.
         declared : dict, optional
-            What this field asked for by itself, before a class filled
-            in everything it left unsaid. It is recorded the first time
-            the field is resolved against a class, and is what the
-            `override` class setting restores from when a subclass
-            resolves the field again against its own settings. There is
-            no reason to pass it by hand.
+            What this field asked for before the class filled in the
+            rest. Recorded the first time the field is resolved against
+            a class. Used by `override` to restore the field's own
+            preferences. No reason to pass it by hand.
 
         Other Parameters
         ----------------
         compare : bool, optional
-            Alias for setting both `eq` and `order` at the same time.
+            Shorthand for setting both `eq` and `order` at once.
         """
-        # The positional argument is a special case in which `Field``
-        # acts as the opposite of `Var`.
+        # The positional argument lets Field act as the opposite of Var.
         if arg and arg[0] is not MISSING:
             kwargs["var"] = not arg[0]
-        # Converting, validating and building a default are each two
-        # questions -- whether the step happens, and what does it -- and
-        # each has a slot for both. Naming the callable is the short way
-        # of asking for the step: `converter=int` converts with `int`,
-        # `converter=True` converts with whatever the field's type calls
-        # for, and `converter=False` does not convert.
+        # Each pipeline step (convert, validate, build) has two slots:
+        # a flag for "whether" and a callable for "what". Naming the
+        # callable implies the flag: `converter=int` turns convert on,
+        # `converter=True` turns it on without naming a callable, and
+        # `converter=False` turns it off.
         for call, flag in _PIPELINE.items():
             given = kwargs.get(call, MISSING)
             if given is MISSING:
@@ -249,18 +228,14 @@ class Field(SlotsBase):
                 del kwargs[call]
             else:
                 kwargs.setdefault(flag, True)
-        # `compare` is a special alias for setting both `eq` and `order`
-        # at the same time.
+        # `compare` sets both `eq` and `order` at once.
         compare = kwargs.get("compare", MISSING)
         if compare is not MISSING:
             kwargs.setdefault("eq", compare)
             kwargs.setdefault("order", compare)
-        # `init` has no slot of its own, for the same reason `compare`
-        # has none: a field is an argument of the generated `__init__`
-        # when it can be passed by name, by position, or both, so `init`
-        # sets that pair. Only `init=False` says anything, though -- a
-        # field is an argument unless something says otherwise, so
-        # `init=True` is what it already would have been.
+        # `init` has no slot: it maps to the `kw` and `positional` pair.
+        # `init=False` forbids both. `init=True` is the default and
+        # changes nothing.
         init = kwargs.pop("init", MISSING)
         if init is True:
             init = MISSING
@@ -271,10 +246,8 @@ class Field(SlotsBase):
         super().__init__(**kwargs)
 
     def __class_getitem__(cls, t: tx.Union[type, tx.Tuple]) -> tx.TypeAlias:
-        # Allow using Field as an annotation.
-        # It will likely never be used directly on the `Field` class,
-        # but will be useful for subclasses: e.g., `Factory[list]` is
-        # more concise than `Annotated[T, Field(factory=list)]`.
+        # Support subscript syntax: `Factory[list]` becomes
+        # `Annotated[list, Factory(build=True)]`.
         if not isinstance(t, tuple):
             t = (t,)
         t, *args = t
@@ -282,25 +255,16 @@ class Field(SlotsBase):
 
     @property
     def init(self) -> bool:
-        """Whether the generated `__init__` takes this field as an
-        argument.
+        """Whether the generated `__init__` takes this field.
 
-        A field is an argument when it can be passed by keyword, by
-        position, or both, and is no argument at all when it can be
-        passed neither way. Reading this works that out from `kw` and
-        `positional`.
+        True when the field can be passed by keyword, by position, or
+        both. False when it can be passed neither way. Computed from
+        `kw` and `positional`.
 
-        There are three ways to say it, and they do not all say the
-        same thing:
-
-        - `field.init = True` or `field.init = False` sets both `kw`
-          and `positional` to that, replacing whatever they held.
-          Assignment comes after the declarations have been read, so
-          there is nothing left for it to defer to.
-        - `Field(init=False)`, like `NoInit`, forbids both ways.
-        - `Field(init=True)`, like `Init`, says nothing at all: a field
-          is an argument unless something says otherwise, so how it may
-          be passed is left to `kw`, `positional` and the class.
+        Setting `field.init = True` or `field.init = False` sets both
+        `kw` and `positional` to that value. `Field(init=False)` (or
+        `NoInit`) forbids both ways. `Field(init=True)` (or `Init`)
+        changes nothing, since a field is a parameter by default.
         """
         return bool(self.kw or self.positional)
 
@@ -357,21 +321,16 @@ class Field(SlotsBase):
         return field
 
     def copy(self) -> tx.Self:
-        # A field is mutated in place while its class is built, and so
-        # is the record of what it declared: a copy must share neither
-        # with the field it was copied from. `update` copies slots by
-        # reference and would share the record; nothing hands it a
-        # resolved field today, but a caller that does has to copy the
-        # record the way this does.
+        # A field is mutated in place during class building, so a copy
+        # must not share its `declared` dict with the original.
         new = super().copy()
         if new.declared is not MISSING:
             new.declared = dict(new.declared)
         return new
 
     def __repr__(self) -> str:
-        # Everything but the record of what was declared, which is
-        # bookkeeping for `override` and would double the length of
-        # every field's repr.
+        # Omit `declared` from repr since it is bookkeeping for
+        # `override` and would double every repr's length.
         shown = (
             slot for slot in self._slots()
             if slot != "declared"
@@ -383,9 +342,8 @@ class Field(SlotsBase):
         return f"{type(self).__name__}({params})"
 
     def _redeclare(self, **values) -> None:
-        # Record a value as if this field had asked for it itself, so
-        # that re-resolving against another class's options leaves it
-        # alone.
+        # Set a value and mark it as the field's own preference, so
+        # re-resolving against a different class's options preserves it.
         for attr, value in values.items():
             setattr(self, attr, value)
             if self.declared is not MISSING and attr in self.declared:
@@ -397,9 +355,8 @@ class Field(SlotsBase):
         attrs: tx.Sequence[str],
         hints: tx.Optional[Hints] = None,
     ) -> None:
-        # Forget what a class filled in for `attrs`, and work those out
-        # again from `options`. Whatever the field asked for itself is
-        # restored unchanged, so it survives.
+        # Reset `attrs` to the field's own declarations, then resolve
+        # them again from `options`. The field's own preferences survive.
         for attr in attrs:
             setattr(self, attr, self.declared[attr])
         self.setdefault(options, hints)
@@ -407,18 +364,13 @@ class Field(SlotsBase):
     def setdefault(
         self, options: Options, hints: tx.Optional[Hints] = None
     ) -> None:
-        # When field options are not explicitly set (MISSING), they are
-        # inherited from the class options.
+        # Fill in unset field attributes from the class options.
         #
-        # `hints` says where to look up a type this field was annotated
-        # with by name -- a class that names itself, a type imported for
-        # type checking only -- when the converter, validator or factory
-        # built here is first used.
+        # `hints` tells where to look up a forward-referenced type when
+        # the converter, validator or factory is first used.
         #
-        # What the field asked for is kept as it was, so that a subclass
-        # can fill the rest in again from its own options -- that is the
-        # `override` class option, and `_reresolve` above is the other
-        # half of it.
+        # The field's own preferences are preserved so that `override`
+        # on a subclass can restore and re-resolve them.
         if self.declared is MISSING:
             self.declared = {
                 attr: getattr(self, attr) for attr in _RESOLVED_ATTRS
@@ -431,17 +383,13 @@ class Field(SlotsBase):
             self.doc = None
         if self.var is MISSING:
             self.var = False
-        # `repr`, `eq` and `order` are deliberately *not* read from the
-        # class options. Those decide whether a method is generated at
-        # all; this decides whether a field takes part in one. Conflating
-        # them made every generated method on a class that had opted out
-        # cover no fields -- so `__magic_eq__` on an `eq=False` class
-        # compared nothing and answered True for any two instances.
+        # `repr`, `eq` and `order` are not read from the class options.
+        # The class option decides whether the method is generated. The
+        # field attribute decides whether this field takes part in it.
         if self.repr is MISSING:
             # A sentinel on the class option is a per-field instruction
-            # ("show it only when it has a value"), so it propagates;
-            # a plain bool is only about whether `__repr__` is
-            # generated, which is not this field's business.
+            # ("show only when it has a value"), so it propagates. A
+            # plain bool controls whether __repr__ is generated at all.
             sentinel = (
                 isinstance(options.repr, SHOW_ATTR)
                 or options.repr is HIDE_IF_NONE
@@ -450,14 +398,10 @@ class Field(SlotsBase):
                 options.repr if sentinel and not self.var else not self.var
             )
         if self.hash is MISSING:
-            # `None` means "follow `eq`", which `_hash_add` reads. Forcing
-            # True here made a field excluded from `__eq__` still count
-            # towards `__hash__`, so two equal instances hashed apart and
-            # a set kept both.
+            # None means "follow eq", which _hash_add reads.
             self.hash = None
-        # `repr` and `key` each answer two questions -- whether the
-        # field takes part, and under which name -- so once resolved
-        # they are held as a `SHOW_ATTR` rather than as a plain value.
+        # `repr` and `key` encode both "whether" and "under which name",
+        # so once resolved they are stored as a SHOW_ATTR.
         if self.repr is HIDE_IF_NONE:
             if self.var:
                 self.repr = SHOW_ATTR(False)
@@ -466,12 +410,9 @@ class Field(SlotsBase):
         if not isinstance(self.repr, SHOW_ATTR):
             self.repr = SHOW_ATTR(self.repr)
         if self.key is MISSING:
-            # Like `repr`, and for the same reason: the class option
-            # says whether there is a dict-like view at all, which is
-            # not this field's business. What is the field's business is
-            # whether it belongs in one -- and a real field does, so
-            # that a class turning `mapping` on later, or a subclass
-            # turning it on, finds every field already in the view.
+            # The class option controls whether the dict-like view
+            # exists. A real field defaults to being in the view, so
+            # it is already included when mapping is turned on later.
             self.key = not self.var
         if self.key is HIDE_IF_NONE:
             self.key = HIDE_IF_NONE(self.public_name)
@@ -480,9 +421,7 @@ class Field(SlotsBase):
         if self.eq is MISSING:
             self.eq = True
         if self.order is MISSING:
-            # A field out of the comparison is out of the ordering too.
-            # Only an explicit `Field(eq=False, order=True)` is a
-            # contradiction, and that is still an error.
+            # A field out of eq is out of ordering too.
             self.order = self.eq
         if options.kw_only:
             if self.kw is MISSING:
@@ -507,12 +446,9 @@ class Field(SlotsBase):
             self.validate = options.validate
         if self.build is MISSING:
             self.build = options.factory
-        # A step that is on and was given nothing to do it with is done
-        # by something worked out from the field's type. Which of the
-        # three those are is worth remembering: a subclass that fills in
-        # a type variable has to build those again from the type it
-        # filled in, and must leave a converter, validator or factory
-        # that was handed over ready made exactly as it is.
+        # An active step with no callable gets one from the field's type.
+        # Track which ones came from the type, so that filling in a type
+        # variable rebuilds only those (not manually provided callables).
         for attr in _FROM_TYPE:
             if getattr(self, attr) is MISSING:
                 setattr(self, attr, None)
@@ -523,23 +459,19 @@ class Field(SlotsBase):
         self._rebuild(hints)
 
     def _rebuild(self, hints: tx.Optional[Hints] = None) -> None:
-        # Work out again, from the field's type, whatever was worked out
-        # from it the first time round.
+        # Rebuild the type-derived callables from the current type.
         for attr in self.derived or ():
             setattr(self, attr, _FROM_TYPE[attr](self.type, hints, self.name))
 
 
-#: How each of the three is built, for a field that asked for it to be
-#: worked out from its type.
+#: How each type-derived callable is built.
 _FROM_TYPE = {
     "converter": _make_converter,
     "validator": _make_validator,
     "factory": _make_factory,
 }
 
-#: Each step's callable slot, and the slot beside it that says whether
-#: the step happens at all. Reading the second is the only way to tell
-#: "no step" from "a step done by something that happens to be falsy".
+#: Each pipeline step's callable slot mapped to its flag slot.
 _PIPELINE = {
     "converter": "convert",
     "validator": "validate",
@@ -548,11 +480,10 @@ _PIPELINE = {
 
 
 def _stored(obj: tx.Any, field: Field) -> tx.Tuple[bool, tx.Any]:
-    """The value a field holds on an object, and whether it holds one.
+    """Return (has_value, value) for a field on an object.
 
-    A field that is not a constructor argument and has no default is
-    only ever set by hand, so an object can be perfectly usable and
-    still have nothing under this name.
+    A field with no constructor parameter and no default only gets a
+    value when set by hand, so (False, None) is a normal result.
     """
     try:
         return True, getattr(obj, field.name)
@@ -564,7 +495,7 @@ def _stored(obj: tx.Any, field: Field) -> tx.Tuple[bool, tx.Any]:
 # Annotations
 def field(**kwargs: tx.Any) -> tx.Any:
     """
-    Describe one field, for use as its default.
+    Describe one field, for use as its default value.
 
     ```python
     class Task(Magic):
@@ -573,14 +504,10 @@ def field(**kwargs: tx.Any) -> tx.Any:
         token: str = field(default="", repr=False)
     ```
 
-    Takes exactly what `Field` takes, and does the same thing. The
-    difference is what a type checker makes of it: this says it produces
-    whatever the field is annotated as, so `tags: list = field(...)`
-    reads as a `list` with a default rather than as a `Field` assigned to
-    a `list`.
-
-    Writing `Field(...)` in that position still works, and still builds
-    the same object.
+    Takes the same arguments as `Field` and produces the same object.
+    The difference is for type checkers: `field(...)` declares its
+    return type as the annotated type, so `tags: list = field(...)` reads
+    cleanly. `Field(...)` in that position also works.
     """
     return Field(**kwargs)
 
@@ -653,10 +580,8 @@ class BoolAnnotatedField(AnnotatedField):
         if not isinstance(args, tuple):
             args = (args,)
         t, *args = args
-        # No positional value: every slot takes the value its own
-        # declaring class set, so an inverse comes out `False` and a
-        # mixed pair (`KwOnly`) keeps one of each. Anything after the
-        # type stays metadata.
+        # No positional value: each slot takes the value its declaring
+        # class set. Anything after the type stays as metadata.
         return tx.Annotated[(t, cls()) + tuple(args)]
 
 

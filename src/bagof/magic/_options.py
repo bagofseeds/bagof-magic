@@ -36,18 +36,15 @@ from ._utils import SlotsBase, slots
 )
 class Options(SlotsBase):
     """
-    The resolved set of class-level options for a `Magic` class.
+    The resolved set of class-level options for a Magic class.
 
-    `MetaMagic` builds one `Options` instance per class from the keyword
-    arguments passed to the class statement (or to the `magic` decorator),
-    merged with the options inherited from base classes in MRO order --
-    a base class's value is used unless a derived class explicitly sets
-    its own. The result is stored on the class as `cls.__magic_options__`
-    and, together with each field's own overrides, decides which dunder
-    methods (`__init__`, `__repr__`, `__eq__`, ...) get generated and how.
+    Each Magic class gets one ``Options`` instance, built from the
+    keyword arguments on the class statement (or the ``@magic``
+    decorator), merged with the options inherited from base classes in
+    MRO order. A base class's value is used unless a derived class
+    explicitly sets its own.
 
-    See `Magic` for the full list of supported options and their
-    defaults.
+    See ``Magic`` for the full list of options and their defaults.
     """
 
     _DEFAULTS: tx.Dict[str, tx.Any] = dict(

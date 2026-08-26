@@ -1,12 +1,10 @@
 """
 Functions you call on a Magic class or one of its instances.
 
-Everything here speaks the names the constructor uses. A field can be
-written under one name in the class body and reach `__init__` under
-another -- because it starts with an underscore, or because it was given
-an alias -- and it is that second name these functions use as a key, and
-that `replace` expects its keyword arguments to be named after. It is
-also the name `repr()` shows.
+Every function here uses the name the constructor takes. A field whose
+class-body name starts with an underscore, or that has an alias, reaches
+``__init__`` under a different name. That public name is the key in
+``fields_dict``, the keyword in ``replace``, and the label in ``repr``.
 """
 from __future__ import annotations
 
@@ -72,17 +70,21 @@ def _concrete(obj: tx.Any, caller: str) -> tx.Dict[str, Field]:
 
 def fields(cls: type) -> tx.Tuple[Field]:
     """
-    Get the fields of a Magic class.
+    Return the fields of a Magic class as a tuple.
+
+    Only concrete fields are included. ``ClassVar`` and ``InitVar``
+    fields are left out. A class that ``Magic`` never built has no
+    fields, so the result is an empty tuple.
 
     Parameters
     ----------
     cls : type
-        The class to get the fields of.
+        A Magic class (not an instance).
 
     Returns
     -------
-    fields : tuple[Field]
-        All concrete fields (that are not `ClassVar` or `InitVar`).
+    fields : tuple[Field, ...]
+        The class's concrete fields, in declaration order.
     """
     return tuple(
         field for field in getattr(cls, _FIELDS, {}).values()
