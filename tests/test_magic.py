@@ -6093,6 +6093,31 @@ class TestParityHelpers:
         sentinel = object()
         assert _api.astuple(Outer(sentinel))[0] is sentinel
 
+    def test_astuple_recurses_into_dicts(self) -> None:
+        class Inner(Magic):
+            n: int
+
+        class Outer(Magic):
+            mapping: dict
+
+        result = _api.astuple(Outer({"a": Inner(1)}))
+        assert result == ({"a": (1,)},)
+
+    def test_astuple_recurses_into_namedtuples(self) -> None:
+        from collections import namedtuple
+
+        Pair = namedtuple("Pair", "a b")
+
+        class Inner(Magic):
+            n: int
+
+        class Outer(Magic):
+            pair: tuple
+
+        result = _api.astuple(Outer(Pair(Inner(1), 2)))
+        assert type(result[0]).__name__ == "Pair"
+        assert result[0] == Pair((1,), 2)
+
     def test_astuple_skips_pseudo_fields(self) -> None:
         class Shifted(Magic):
             x: int
