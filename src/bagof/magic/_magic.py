@@ -124,6 +124,9 @@ from ._constants import (
     _FIELD_ERROR,
     _FIELDS,
     _GENERATED,
+    _GENERIC_ARGS,
+    _GENERIC_CACHE,
+    _GENERIC_ORIGIN,
     _HAS_FACTORY,
     _HINTS,
     _IS_DEFAULT,
@@ -2599,12 +2602,27 @@ def _matching(
     return not this_has_value or this_value == that_value
 
 
+def _comparison_class(cls: type) -> type:
+    """The class two instances compare as, ignoring parameterisation.
+
+    Filling in a generic's type parameters at the subscription builds a
+    subclass, but `Box[int](1)` is meant to equal `Box(1)` -- what
+    `dataclasses` and `pydantic` both do -- so equality and ordering
+    compare against the class as it was written, not the parameterised
+    one. Read from the class's own dict, so an ordinary subclass of a
+    parameterised class does not inherit its way back to the origin.
+    """
+    return cls.__dict__.get(_GENERIC_ORIGIN, cls)
+
+
 def _make_eq(qualname: str, fields: dict[str, Field]) -> tx.Callable:
 
     def __eq__(self: Magic, other: tx.Any) -> bool:
         if self is other:
             return True
-        if other.__class__ is self.__class__:
+        if _comparison_class(other.__class__) is _comparison_class(
+            self.__class__
+        ):
             return all(
                 _matching(_stored(self, field), _stored(other, field))
                 for field in fields.values()
@@ -2650,7 +2668,9 @@ def _make_order(
         return tuple(values)
 
     def method(self: Magic, other: tx.Any) -> tx.Any:
-        if other.__class__ is not self.__class__:
+        if _comparison_class(other.__class__) is not _comparison_class(
+            self.__class__
+        ):
             return NotImplemented
         return compare(ordered_values(self), ordered_values(other))
 
@@ -2995,6 +3015,84 @@ def _dispatching(metacls: type) -> type:
     return made
 
 
+def _variadic_parameter_kinds() -> tuple:
+    """The type-parameter kinds the substitution engine cannot pair up.
+
+    A `TypeVarTuple` or a `ParamSpec` stands for a variable number of
+    types, so filling one in is not the one-argument-per-variable
+    substitution the rest of the machinery does. Both are only present
+    from newer typing, hence the guarded lookup.
+    """
+    kinds = (getattr(tx, "TypeVarTuple", None), getattr(tx, "ParamSpec", None))
+    return tuple(kind for kind in kinds if isinstance(kind, type))
+
+
+def _argument_name(argument: tx.Any) -> str:
+    """How one filled-in type argument is written in a class's name.
+
+    A plain class is written as its bare name (`int`); a subscripted
+    typing form keeps its parameters (`List[int]`, not the `List` its
+    `__name__` reports), so two parameterisations differing only there
+    get two distinct names.
+    """
+    if getattr(argument, "__args__", None) is not None:
+        return repr(argument)
+    return getattr(argument, "__name__", None) or repr(argument)
+
+
+def _parameterised_class(cls: type, alias: tx.Any, arguments: tuple) -> type:
+    """Build (or reuse) `cls` with its type parameters filled in.
+
+    The class is put together exactly as `class IntBox(Box[int])` is --
+    a subclass of `cls` carrying the subscripted alias as its
+    `__orig_bases__` -- so the ordinary build path substitutes the type
+    variables and re-resolves each field's converter, validator and
+    factory with no special case. The result is cached on `cls`, so that
+    `Box[int] is Box[int]`.
+    """
+    cache = cls.__dict__.get(_GENERIC_CACHE)
+    if cache is None:
+        cache = {}
+        setattr(cls, _GENERIC_CACHE, cache)
+    # An argument that cannot be hashed (rare -- a mutable metadata object
+    # inside the subscription) is simply not cached, the way `typing`
+    # steps around the same case for its own alias cache.
+    try:
+        hit = cache.get(arguments)
+    except TypeError:
+        cacheable = False
+    else:
+        cacheable = True
+        if hit is not None:
+            return hit
+
+    written = ", ".join(_argument_name(argument) for argument in arguments)
+    name = f"{cls.__name__}[{written}]"
+    namespace = {
+        "__qualname__": name,
+        "__orig_bases__": (alias,),
+        _GENERIC_ORIGIN: cls,
+        _GENERIC_ARGS: arguments,
+    }
+    module = getattr(cls, "__module__", None)
+    if module is not None:
+        namespace["__module__"] = module
+
+    built = type(cls)(name, (cls,), namespace)
+
+    # Pickling a class saves it by name, and an instance saves its class
+    # the same way -- so unless the built class can be found under its
+    # name, it and every instance of it are unpicklable. Making it an
+    # attribute of the defining module fixes both, and is what pydantic
+    # does for the same reason.
+    if module in sys.modules:
+        setattr(sys.modules[module], name, built)
+
+    if cacheable:
+        return cache.setdefault(arguments, built)
+    return built
+
+
 # What a type checker is told about the classes this metaclass builds.
 # PEP 681 is how `dataclasses` and `attrs` describe themselves, and mypy,
 # pyright and PyCharm all read it -- so the generated `__init__` shows up
@@ -3119,6 +3217,69 @@ class MetaMagic(ABCMeta):
         cls = super().__new__(metacls, name, bases, namespace)
         cls = __post_new__(cls)
         return cls
+
+    def __getitem__(cls, parameters: tx.Any) -> tx.Any:
+        """Fill in a generic Magic class's type parameters.
+
+        `Box[int]` on a class written `class Box(Magic, Generic[T])`
+        returns a real subclass with `T` replaced by `int` throughout its
+        fields, so `Box[int]("1")` converts and validates exactly as
+        `class IntBox(Box[int])` does. A subscription that leaves a type
+        variable free (`Pair[int, S]`), or a class with no type parameters
+        to fill, is handed back as the ordinary typing alias.
+        """
+        # A `__class_getitem__` written in the class body wins, the same
+        # way a hand-written method always beats a generated one.
+        own = cls.__dict__.get("__class_getitem__")
+        if own is not None:
+            return own.__get__(None, cls)(parameters)
+
+        if not getattr(cls, "__parameters__", ()):
+            if _GENERIC_ORIGIN in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} already has its type parameters filled "
+                    f"in, so it cannot be subscripted again."
+                )
+            raise TypeError(
+                f"{cls.__name__} takes no type parameters. Write "
+                f"`class {cls.__name__}(Magic, Generic[T])` to make it "
+                f"generic before subscripting it."
+            )
+
+        # `Generic.__class_getitem__` checks the number of arguments and
+        # applies any PEP 696 defaults -- let it raise on a wrong count.
+        alias = cls.__class_getitem__(parameters)
+
+        # A parameter left free means the result is only useful as a base
+        # to fill in further, so it stays an alias.
+        if getattr(alias, "__parameters__", ()):
+            return alias
+
+        arguments = (
+            parameters if isinstance(parameters, tuple) else (parameters,)
+        )
+
+        # A variadic or parameter-spec generic cannot be filled in one
+        # argument per variable, so a class built from it would leave its
+        # fields untouched and silently convert nothing -- leave it an
+        # alias until that is supported.
+        variadic = _variadic_parameter_kinds()
+        if variadic and any(
+            isinstance(parameter, variadic)
+            for parameter in cls.__parameters__
+        ):
+            return alias
+
+        options = getattr(cls, _OPTIONS, None)
+        if options is not None and options.polymorphic:
+            raise TypeError(
+                f"{cls.__name__} chooses which subclass to build from its "
+                f"arguments, and filling in its type parameters at the same "
+                f"time is not supported yet. Parameterise the subclass you "
+                f"want instead."
+            )
+
+        return _parameterised_class(cls, alias, arguments)
 
     @property
     def __signature__(cls) -> Signature:

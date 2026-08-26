@@ -5828,6 +5828,183 @@ class _Later(Magic):
 
 
 # ======================================================================
+# Filling a type parameter in at the subscription -- `Box[int](...)`
+# ======================================================================
+
+
+class TestFillingAParameterAtTheCallSite:
+    """`Box[int]` builds a real class, like `class IntBox(Box[int])`."""
+
+    def test_the_value_is_converted_to_the_filled_in_type(self) -> None:
+        assert ConvertingBox[int]("1").item == 1
+
+    def test_the_value_is_validated_against_it(self) -> None:
+        assert ValidatingBox[int](1).item == 1
+        with pytest.raises(ValidationError):
+            ValidatingBox[int]("one")
+
+    def test_the_field_takes_the_filled_in_type(self) -> None:
+        assert _api.fields_dict(ConvertingBox[int])["item"].type is int
+
+    def test_the_same_parameterisation_is_the_same_class(self) -> None:
+        assert ConvertingBox[int] is ConvertingBox[int]
+        assert ConvertingBox[int] is not ConvertingBox[str]
+
+    def test_it_equals_the_unparameterised_spelling(self) -> None:
+        # What both `dataclasses` and `pydantic` do: filling the parameter
+        # in does not change what an instance is equal to.
+        assert ConvertingBox[int](1) == ConvertingBox(1)
+        assert ConvertingBox[int](1) != ConvertingBox(2)
+
+    def test_it_is_a_distinct_class_all_the_same(self) -> None:
+        assert type(ConvertingBox[int](1)) is not ConvertingBox
+        assert issubclass(ConvertingBox[int], ConvertingBox)
+        assert ConvertingBox[int].__name__ == "ConvertingBox[int]"
+
+    def test_it_is_a_magic_class(self) -> None:
+        assert _api.is_magic(ConvertingBox[int])
+
+    def test_the_base_is_left_as_it_was(self) -> None:
+        assert _api.fields_dict(ConvertingBox)["item"].type is _T
+        assert ConvertingBox("1").item == "1"
+
+    def test_a_free_parameter_stays_an_alias(self) -> None:
+        # `Pair[int, S]` still has a variable to fill, so it is only
+        # useful as a base -- it is handed back as a plain typing alias,
+        # not built.
+        assert not isinstance(GenericPair[int, _S], type)
+        # Filling both in does build a class.
+        assert GenericPair[int, str]("1", "two") == GenericPair(1, "two")
+
+    def test_a_bare_generic_is_left_generic(self) -> None:
+        # `Box[T]` names the same variable: nothing is filled in.
+        assert not isinstance(ConvertingBox[_T], type)
+
+    def test_a_parameter_buried_in_a_hint_is_filled_in(self) -> None:
+        class Box(Magic, tx.Generic[_T], convert=True):
+            items: tx.List[_T]
+
+        assert Box[int](["1", "2"]).items == [1, 2]
+        assert Box[int].__name__ == "Box[int]"
+
+    def test_a_nested_hint_keeps_its_parameters_in_the_name(self) -> None:
+        # Two parameterisations differing only inside the hint must get
+        # two names, or they would collide.
+        assert ConvertingBox[tx.List[int]] is not ConvertingBox[tx.List[str]]
+        assert (
+            ConvertingBox[tx.List[int]].__name__
+            != ConvertingBox[tx.List[str]].__name__
+        )
+
+    def test_any_is_a_pass_through(self) -> None:
+        assert ConvertingBox[tx.Any]("x").item == "x"
+
+    def test_an_unhashable_argument_builds_but_is_not_cached(self) -> None:
+        # A subscription that cannot be used as a cache key (unhashable
+        # metadata inside it) still builds a working class -- it just
+        # comes back a fresh one each time instead of being reused.
+        unhashable = Annotated[int, {"note": "not hashable"}]
+        assert ConvertingBox[unhashable] is not ConvertingBox[unhashable]
+        assert ConvertingBox[unhashable]("1").item == 1
+
+    def test_an_instance_round_trips(self) -> None:
+        box = ConvertingBox[int](1)
+        assert _round_trips(box) == [box] * 3
+
+    def test_the_class_round_trips_to_the_same_object(self) -> None:
+        assert _round_trips(ConvertingBox[int]) == [ConvertingBox[int]] * 3
+
+    def test_a_plain_subclass_of_a_parameterised_class(self) -> None:
+        class Labelled(ConvertingBox[int]):
+            label: str = "?"
+
+        assert Labelled("1").item == 1
+        assert Labelled("1") == Labelled("1")
+        # A real subclass is its own class again, not equal to the base.
+        assert Labelled("1", "x") != ConvertingBox(1)
+
+    def test_a_frozen_generic(self) -> None:
+        class Box(Magic, tx.Generic[_T], frozen=True, convert=True):
+            item: _T
+
+        box = Box[int]("3")
+        assert box.item == 3
+        with pytest.raises((AttributeError, TypeError)):
+            box.item = 9
+
+    def test_an_ordered_generic_compares_across_the_two_spellings(
+        self
+    ) -> None:
+        class Box(Magic, tx.Generic[_T], order=True, convert=True):
+            item: _T
+
+        assert Box[int]("1") < Box(2)
+        assert sorted([Box[int]("2"), Box(1)]) == [Box(1), Box(2)]
+
+    def test_slots_leave_no_instance_dict(self) -> None:
+        class Box(Magic, tx.Generic[_T], slots=True, convert=True):
+            item: _T
+
+        assert not hasattr(Box[int]("1"), "__dict__")
+
+    def test_the_decorator_form(self) -> None:
+        @magic(convert=True)
+        class Box(tx.Generic[_T]):
+            item: _T
+
+        assert Box[int]("1").item == 1
+
+    def test_a_generic_written_with_generic_before_magic(self) -> None:
+        # A metaclass hook wins whatever the base order is, where a
+        # `__class_getitem__` on `Magic` would be shadowed here.
+        class Box(tx.Generic[_T], Magic, convert=True):
+            item: _T
+
+        assert Box[int]("1").item == 1
+
+    # -- what is refused -----------------------------------------------
+
+    def test_a_non_generic_class_cannot_be_subscripted(self) -> None:
+        class Point(Magic):
+            x: int
+
+        with pytest.raises(TypeError, match="takes no type parameters"):
+            Point[int]
+
+    def test_a_parameterised_class_cannot_be_subscripted_again(self) -> None:
+        with pytest.raises(TypeError, match="already has its type parameters"):
+            ConvertingBox[int][str]
+
+    def test_a_polymorphic_generic_is_refused_for_now(self) -> None:
+        class Base(Magic, tx.Generic[_T], polymorphic="strict"):
+            kind: _T
+
+        with pytest.raises(TypeError, match="chooses which subclass"):
+            Base[int]
+
+    def test_a_class_body_class_getitem_still_wins(self) -> None:
+        class Box(Magic, tx.Generic[_T]):
+            item: _T
+
+            def __class_getitem__(cls, item: tx.Any) -> str:
+                return f"asked for {item}"
+
+        assert Box[int] == "asked for <class 'int'>"
+
+    @pytest.mark.skipif(
+        not hasattr(tx, "TypeVarTuple") or not hasattr(tx, "Unpack"),
+        reason="requires TypeVarTuple / Unpack",
+    )
+    def test_a_variadic_generic_stays_an_alias(self) -> None:
+        Ts = tx.TypeVarTuple("Ts")
+
+        class Box(Magic, tx.Generic[tx.Unpack[Ts]]):
+            pass
+
+        assert not isinstance(Box[int, str], type)
+
+
+# ======================================================================
 # replace / asdict / astuple / fields_dict / is_magic
 # ======================================================================
 

@@ -48,7 +48,7 @@ want the type hints to do.
 | Copy with changes | `replace` | `evolve` | `model_copy` | **`replace`** |
 | Convert to a plain `dict` | `asdict` | `asdict` | `model_dump` | **`asdict`** |
 | JSON schema | no | no | yes | no |
-| Generic classes | yes | yes | yes | **yes**, *[named subclass only][generics]* |
+| Generic classes | yes | yes | yes | **yes** |
 | Runtime dependency | none | `attrs` | `pydantic-core` (compiled) | the `bagof` packages |
 
 ## The same class, four ways
@@ -239,12 +239,6 @@ times : int, default=3
 - **Deep-copying leaves.** `dataclasses.asdict` deep-copies every non-dataclass
   value; `magic`'s `asdict` returns non-Magic values as-is. This is deliberate:
   a field holding a NumPy array or a large object should not be silently copied.
-- **A type parameter filled in at the call site.** A subclass fills one in:
-  `class IntBox(Box[int])` gives `item` the type `int`, and converts and
-  validates against it. But `Box[int]("1")` does not: that is a `typing`
-  alias, not a class, so it builds a plain `Box` whose `item` is still `T`.
-  [Tracked here][generics]. Pydantic fills that one in too. `dataclasses`
-  and `attrs` fill in neither.
 - **Editor and type-checker support.** The others are understood by mypy and
   pyright today, so your editor completes the constructor and catches wrong
   argument types. `magic` is not, yet ([tracked here][typing]). The route
@@ -255,5 +249,4 @@ times : int, default=3
 [dataclasses]: https://docs.python.org/3/library/dataclasses.html
 [attrs]: https://www.attrs.org
 [pydantic]: https://docs.pydantic.dev
-[generics]: https://github.com/bagofseeds/bagof-magic/issues/50
 [typing]: https://github.com/bagofseeds/bagof-magic/issues/30
