@@ -5899,6 +5899,14 @@ class TestFillingAParameterAtTheCallSite:
     def test_any_is_a_pass_through(self) -> None:
         assert ConvertingBox[tx.Any]("x").item == "x"
 
+    def test_an_unhashable_argument_builds_but_is_not_cached(self) -> None:
+        # A subscription that cannot be used as a cache key (unhashable
+        # metadata inside it) still builds a working class -- it just
+        # comes back a fresh one each time instead of being reused.
+        unhashable = Annotated[int, {"note": "not hashable"}]
+        assert ConvertingBox[unhashable] is not ConvertingBox[unhashable]
+        assert ConvertingBox[unhashable]("1").item == 1
+
     def test_an_instance_round_trips(self) -> None:
         box = ConvertingBox[int](1)
         assert _round_trips(box) == [box] * 3

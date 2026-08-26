@@ -3035,12 +3035,9 @@ def _argument_name(argument: tx.Any) -> str:
     `__name__` reports), so two parameterisations differing only there
     get two distinct names.
     """
-    if isinstance(argument, type) and not getattr(argument, "__args__", None):
-        return argument.__name__
-    name = getattr(argument, "__name__", None)
-    if name is None or getattr(argument, "__args__", None):
+    if getattr(argument, "__args__", None) is not None:
         return repr(argument)
-    return name
+    return getattr(argument, "__name__", None) or repr(argument)
 
 
 def _parameterised_class(cls: type, alias: tx.Any, arguments: tuple) -> type:
