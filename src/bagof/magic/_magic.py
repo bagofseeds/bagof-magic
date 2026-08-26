@@ -1124,8 +1124,7 @@ def _pin_discriminants(
         # The pin is the value, so a default the field would otherwise
         # have built for itself no longer applies -- and nothing is left
         # behind to build it with.
-        field.build = False
-        field.factory = None
+        field.factory = False
         if action == "classvar":
             field.var = True
             field.repr = SHOW_ATTR(False)
@@ -1207,7 +1206,7 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     # written as `lambda: copy(default)` would give.
     # Recorded as the field's own, so that a subclass resolving the
     # field again against its own settings does not undo it.
-    field._redeclare(build=True, factory=partial(copy.copy, default))
+    field._redeclare(factory=partial(copy.copy, default))
     field.default = MISSING
     return True
 
@@ -2126,7 +2125,7 @@ def _is_class_attribute(field: Field) -> bool:
     # may not be passed by name, on a class where nothing may be passed
     # by position, is an `InitVar` whose two settings cancelled out, and
     # nothing is ever stored on the class for it.
-    declared = field.declared if field.declared is not MISSING else {}
+    declared = field._declared if field._declared is not MISSING else {}
     return declared.get("kw") is False and declared.get("positional") is False
 
 
