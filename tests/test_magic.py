@@ -3183,10 +3183,10 @@ class TestDeclaredValues:
 
     def test_it_is_taken_before_anything_is_filled_in(self) -> None:
         field = Field.from_hint("x", Frozen[int])
-        assert field.declared is MISSING
+        assert field._declared is MISSING
         field.setdefault(Options.make_default())
-        assert field.declared["frozen"] is True
-        assert field.declared["converter"] is MISSING
+        assert field._declared["frozen"] is True
+        assert field._declared["converter"] is MISSING
 
     def test_it_is_taken_once(self) -> None:
         field = Field.from_hint("x", int)
@@ -3195,7 +3195,7 @@ class TestDeclaredValues:
         field.setdefault(Options.make_default())
         # Already answered, so a second pass changes nothing.
         assert field.frozen is True
-        assert field.declared["frozen"] is MISSING
+        assert field._declared["frozen"] is MISSING
 
     def test_a_copy_shares_nothing_with_its_original(self) -> None:
         class Base(Magic, frozen=True):
@@ -3206,13 +3206,13 @@ class TestDeclaredValues:
 
         base_field = _api.fields(Base)[0]
         sub_field = _api.fields(Sub)[0]
-        assert sub_field.declared is not base_field.declared
+        assert sub_field._declared is not base_field._declared
         assert base_field.frozen is True
         assert sub_field.frozen is False
 
     def test_a_field_that_declared_nothing_copies_cleanly(self) -> None:
         field = Field(name="x")
-        assert field.copy().declared is MISSING
+        assert field.copy()._declared is MISSING
 
     def test_it_stays_out_of_the_repr(self) -> None:
         field = Field.from_hint("x", int)
@@ -3224,7 +3224,7 @@ class TestDeclaredValues:
         field = Field(name="x")
         field._redeclare(factory=list)
         assert field.factory is list
-        assert field.declared is MISSING
+        assert field._declared is MISSING
 
 
 class TestOverridableSettings:
@@ -5810,8 +5810,8 @@ class TestFillingATypeParameterIn:
             worked_out: _T
 
         fields = _api.fields_dict(Box)
-        assert fields["given"].derived == ()
-        assert fields["worked_out"].derived == ("converter",)
+        assert fields["given"]._derived == ()
+        assert fields["worked_out"]._derived == ("converter",)
 
     def test_a_type_still_written_as_a_name_is_filled_in_too(self) -> None:
         class Box(Magic, tx.Generic[_T], convert=True):

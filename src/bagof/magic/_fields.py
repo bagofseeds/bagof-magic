@@ -58,13 +58,13 @@ T = tx.TypeVar("T")
 #: `eq`, `order`, `hash` and `mapping` are absent because a field
 #: resolves those from its own values, not from its class.
 _OVERRIDABLE = {
-    "convert": ("convert", "converter"),
-    "factory": ("build", "factory"),
+    "convert": ("converter",),
+    "factory": ("factory",),
     "frozen": ("frozen",),
     "kw_only": ("kw", "positional"),
     "positional_only": ("kw", "positional"),
     "repr": ("repr",),
-    "validate": ("validate", "validator"),
+    "validate": ("validator",),
 }
 
 #: Every field attribute a class setting decides, in a stable order.
@@ -77,8 +77,7 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
     'name',             # Field name
     'type',             # Field type (or type hint)
     'default',          # Default value for this field.
-    'build',            # True if default is built by calling something.
-    'factory',          # Default factory (None = from hint).
+    'factory',          # Default: False (none), True (from hint), callable.
     'repr',             # Include this field in the generated __repr__ method.
     'hash',             # Include this field in the generated __hash__ method.
     'eq',               # Include this field in the generated __eq__ method.
@@ -87,16 +86,14 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
     'kw',               # Field is a keyword argument in __init__.
     'positional',       # Field is a positional argument in __init__.
     'frozen',           # Make this field immutable after initialization.
-    'convert',          # Whether the value handed to this field is converted.
-    'converter',        # Value converter (None = from hint)
-    'validate',         # Whether the value handed to this field is validated.
-    'validator',        # Value validator (None = from hint)
-    'derived',          # List of hint-derived tools
+    'converter',        # Convert: False (no), True (from hint), callable.
+    'validator',        # Validate: False (no), True (from hint), callable.
+    '_derived',         # Which tools were worked out from the hint.
     'var',              # Whether this field is a pseudo-field
     'doc',              # Docstring for this field.
     'key',              # Field is a key in the dict-like interface.
     'alias',            # Alternative names for this field.
-    'declared',         # See description below.
+    '_declared',        # What the field asked for (bookkeeping for override).
 )
 class Field(SlotsBase):
     """A single field in a Magic class.
@@ -117,13 +114,13 @@ class Field(SlotsBase):
             factory defaults when those are turned on.
         default : any
             The default value.
-        build : bool, default=`Options().factory`
-            Build a fresh default per instance by calling something,
-            rather than sharing one value across all instances.
-        factory : Callable[[], any], optional
-            What to call. Omit it and one is worked out from the type.
-            Passing a callable turns `build` on. Passing `factory=True`
-            turns it on without naming a callable.
+        factory : bool or Callable[[], any], default=`Options().factory`
+            How a fresh default is built per instance, rather than one
+            value shared across instances: `False` builds nothing,
+            `True` works the factory out from the type, and a callable
+            is called to build it. The `build` property reads this as a
+            plain "is a default built?" boolean. The `build=` keyword is
+            an alias that sets this: `build=True`/`build=False`.
         init : bool, optional
             Whether this field appears in `__init__`. Not stored
             directly: it reads as `kw or positional`. Setting
@@ -153,22 +150,17 @@ class Field(SlotsBase):
             positional-only, also set `kw=False`.
         frozen : bool, default=`Options().frozen`
             Forbid assignment after construction.
-        convert : bool, default=`Options().convert`
-            Convert the incoming value.
-        converter : Callable[[any], any], optional
-            What converts it. Omit it and one is worked out from the
-            type. Passing a callable turns `convert` on.
-        validate : bool, default=`Options().validate`
-            Validate the incoming value.
-        validator : Callable[[any], any], optional
-            What validates it: returns the value unchanged when valid,
-            raises when not. Omit it and one is worked out from the
-            type. Passing a callable turns `validate` on.
-        derived : tuple of str, optional
-            Which of `converter`, `validator` and `factory` were worked
-            out from the type rather than provided. When a subclass
-            fills in a type variable, these are rebuilt from the new
-            type. Manually provided callables are left alone.
+        converter : bool or Callable[[any], any], default=`Options().convert`
+            How the incoming value is converted: `False` not at all,
+            `True` using a converter worked out from the type, or a
+            callable that converts it. The `convert` property reads this
+            as a boolean. The `convert=` keyword is an alias that sets
+            this: `convert=True`/`convert=False`.
+        validator : bool or Callable[[any], any], default=`Options().validate`
+            How the incoming value is validated, in the same three forms
+            as `converter` (a validator returns the value unchanged when
+            valid and raises when not). The `validate` property reads
+            this as a boolean; `validate=` is an alias that sets it.
         var : bool, default=False
             Mark this as a pseudo-field. An `InitVar` is passed to the
             constructor but not stored. A `ClassVar` is a class
@@ -185,11 +177,6 @@ class Field(SlotsBase):
             The name used in generated methods (constructor parameter,
             repr output, dict key). Useful when the field name is not a
             good public name, or when matching an external API.
-        declared : dict, optional
-            What this field asked for before the class filled in the
-            rest. Recorded the first time the field is resolved against
-            a class. Used by `override` to restore the field's own
-            preferences. No reason to pass it by hand.
 
         Other Parameters
         ----------------
@@ -199,20 +186,14 @@ class Field(SlotsBase):
         # The positional argument lets Field act as the opposite of Var.
         if arg and arg[0] is not MISSING:
             kwargs["var"] = not arg[0]
-        # Each pipeline step (convert, validate, build) has two slots:
-        # a flag for "whether" and a callable for "what". Naming the
-        # callable implies the flag: `converter=int` turns convert on,
-        # `converter=True` turns it on without naming a callable, and
-        # `converter=False` turns it off.
-        for call, flag in _PIPELINE.items():
-            given = kwargs.get(call, MISSING)
-            if given is MISSING:
-                continue
-            if given is True or given is False:
-                kwargs.setdefault(flag, given)
-                del kwargs[call]
-            else:
-                kwargs.setdefault(flag, True)
+        # Each pipeline step has one tri-state slot: `False` (off),
+        # `True` (on, work the callable out from the type) or a callable
+        # (on, use it). `convert`/`validate`/`build` are aliases that set
+        # the same slot -- `convert=True` is `converter=True` -- and the
+        # callable spelling wins if both are given.
+        for flag, call in _FLAG_TO_CALL.items():
+            if flag in kwargs:
+                kwargs.setdefault(call, kwargs.pop(flag))
         # `compare` sets both `eq` and `order` at once.
         compare = kwargs.get("compare", MISSING)
         if compare is not MISSING:
@@ -256,6 +237,33 @@ class Field(SlotsBase):
     @init.setter
     def init(self, value: bool) -> None:
         self.kw = self.positional = value
+
+    @property
+    def convert(self) -> bool:
+        """Whether the incoming value is converted.
+
+        Reads `converter`: `True` for a converter worked out from the
+        type or a callable given directly, `False` when conversion is
+        off. Set conversion through `converter`, or the `convert=`
+        keyword when building the field.
+        """
+        return self.converter is not False
+
+    @property
+    def validate(self) -> bool:
+        """Whether the incoming value is validated.
+
+        Reads `validator`, the same way `convert` reads `converter`.
+        """
+        return self.validator is not False
+
+    @property
+    def build(self) -> bool:
+        """Whether a fresh default is built for this field per instance.
+
+        Reads `factory`, the same way `convert` reads `converter`.
+        """
+        return self.factory is not False
 
     @property
     def public_name(self) -> str:
@@ -307,18 +315,19 @@ class Field(SlotsBase):
 
     def copy(self) -> tx.Self:
         # A field is mutated in place during class building, so a copy
-        # must not share its `declared` dict with the original.
+        # must not share its `_declared` dict with the original.
         new = super().copy()
-        if new.declared is not MISSING:
-            new.declared = dict(new.declared)
+        if new._declared is not MISSING:
+            new._declared = dict(new._declared)
         return new
 
     def __repr__(self) -> str:
-        # Omit `declared` from repr since it is bookkeeping for
-        # `override` and would double every repr's length.
+        # Omit the two bookkeeping slots from repr: they are internal to
+        # `override` and rebuild-on-substitution, and would only make
+        # every repr longer.
         shown = (
             slot for slot in self._slots()
-            if slot != "declared"
+            if slot not in ("_declared", "_derived")
             and getattr(self, slot, MISSING) is not MISSING
         )
         params = ", ".join(
@@ -331,8 +340,8 @@ class Field(SlotsBase):
         # re-resolving against a different class's options preserves it.
         for attr, value in values.items():
             setattr(self, attr, value)
-            if self.declared is not MISSING and attr in self.declared:
-                self.declared[attr] = value
+            if self._declared is not MISSING and attr in self._declared:
+                self._declared[attr] = value
 
     def _reresolve(
         self,
@@ -343,7 +352,7 @@ class Field(SlotsBase):
         # Reset `attrs` to the field's own declarations, then resolve
         # them again from `options`. The field's own preferences survive.
         for attr in attrs:
-            setattr(self, attr, self.declared[attr])
+            setattr(self, attr, self._declared[attr])
         self.setdefault(options, hints)
 
     def setdefault(
@@ -356,8 +365,8 @@ class Field(SlotsBase):
         #
         # The field's own preferences are preserved so that `override`
         # on a subclass can restore and re-resolve them.
-        if self.declared is MISSING:
-            self.declared = {
+        if self._declared is MISSING:
+            self._declared = {
                 attr: getattr(self, attr) for attr in _RESOLVED_ATTRS
             }
         if options.kw_only and options.positional_only:
@@ -425,27 +434,26 @@ class Field(SlotsBase):
                 self.positional = True
         if self.frozen is MISSING:
             self.frozen = options.frozen
-        if self.convert is MISSING:
-            self.convert = options.convert
-        if self.validate is MISSING:
-            self.validate = options.validate
-        if self.build is MISSING:
-            self.build = options.factory
-        # An active step with no callable gets one from the field's type.
-        # Track which ones came from the type, so that filling in a type
-        # variable rebuilds only those (not manually provided callables).
-        for attr in _FROM_TYPE:
-            if getattr(self, attr) is MISSING:
-                setattr(self, attr, None)
-        self.derived = tuple(
-            attr for attr in _FROM_TYPE
-            if getattr(self, _PIPELINE[attr]) and getattr(self, attr) is None
+        # Each pipeline slot the field left unset takes the class option:
+        # `True` (on, from the type) or `False` (off).
+        if self.converter is MISSING:
+            self.converter = options.convert
+        if self.validator is MISSING:
+            self.validator = options.validate
+        if self.factory is MISSING:
+            self.factory = options.factory
+        # A slot left as `True` is on but named no callable, so one is
+        # worked out from the field's type. Track which, so that filling
+        # in a type variable rebuilds only those, not a callable given
+        # by hand.
+        self._derived = tuple(
+            attr for attr in _FROM_TYPE if getattr(self, attr) is True
         )
         self._rebuild(hints)
 
     def _rebuild(self, hints: tx.Optional[Hints] = None) -> None:
         # Rebuild the type-derived callables from the current type.
-        for attr in self.derived or ():
+        for attr in self._derived or ():
             setattr(self, attr, _FROM_TYPE[attr](self.type, hints, self.name))
 
 
@@ -456,11 +464,12 @@ _FROM_TYPE = {
     "factory": _make_factory,
 }
 
-#: Each pipeline step's callable slot mapped to its flag slot.
-_PIPELINE = {
-    "converter": "convert",
-    "validator": "validate",
-    "factory": "build",
+#: The `convert`/`validate`/`build` keyword aliases, each mapped to the
+#: tri-state slot it sets.
+_FLAG_TO_CALL = {
+    "convert": "converter",
+    "validate": "validator",
+    "build": "factory",
 }
 
 
@@ -616,13 +625,13 @@ class Factory(AnnotatedField):
     !!! example "How it lowers"
         ```pycon
         >>> Factory()
-        Factory(build=True)
+        Factory(factory=True)
         >>> Factory(list)
-        Factory(build=True, factory=<class 'list'>)
+        Factory(factory=<class 'list'>)
         >>> Factory[list]
-        typing.Annotated[list, Factory(build=True)]
+        typing.Annotated[list, Factory(factory=True)]
         >>> Factory[list, tuple]
-        typing.Annotated[list, Factory(build=True, factory=<class 'tuple'>)]
+        typing.Annotated[list, Factory(factory=<class 'tuple'>)]
         ```
 
     !!! example "In a class"
@@ -649,11 +658,11 @@ class ConvertTo(AnnotatedField):
     !!! example "How it lowers"
         ```pycon
         >>> ConvertTo()
-        ConvertTo(convert=True)
+        ConvertTo(converter=True)
         >>> ConvertTo(int)
-        ConvertTo(convert=True, converter=<class 'int'>)
+        ConvertTo(converter=<class 'int'>)
         >>> ConvertTo[int]
-        typing.Annotated[int, ConvertTo(convert=True)]
+        typing.Annotated[int, ConvertTo(converter=True)]
         ```
 
     !!! example "In a class"
@@ -681,9 +690,9 @@ class Validate(AnnotatedField):
     !!! example "How it lowers"
         ```pycon
         >>> Validate()
-        Validate(validate=True)
+        Validate(validator=True)
         >>> Validate[str]
-        typing.Annotated[str, Validate(validate=True)]
+        typing.Annotated[str, Validate(validator=True)]
         ```
 
     !!! example "In a class"

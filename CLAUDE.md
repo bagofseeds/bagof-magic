@@ -91,6 +91,19 @@ Tests that exercise internals import them from the module that defines them
   `try` costs nothing while nothing fails.
 - **Options are inherited by merging down the MRO** (`Options.update` per base,
   in reverse MRO order), so a derived class only overrides what it states.
+- **Each pipeline step is one tri-state `Field` slot**, not a flag plus a
+  callable: `converter` / `validator` / `factory` each hold `False` (off),
+  `True` (on, work the callable out from the type) or a callable (on, use it).
+  The booleans `convert` / `validate` / `build` are **read-only properties**
+  returning `slot is not False` — every "is this step on?" read goes through
+  them, so a falsy callable can't turn itself off (the concern that once split
+  these into two slots each; a property is enough, a second slot is not). The
+  `convert=`/`validate=`/`build=` constructor keywords are aliases folded onto
+  the slot in `Field.__init__`. Internal code that sets a step writes the slot
+  directly (`field.factory = False`, `_redeclare(factory=...)`), never the
+  property. `_declared` (what the field asked for, for `override`) and
+  `_derived` (which callables came from the type, for rebuild-on-substitution)
+  are private bookkeeping — not constructor arguments, kept out of repr.
 
 ### Reading annotations
 
