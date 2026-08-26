@@ -4,18 +4,18 @@ icon: fontawesome/solid/scale-balanced
 
 # How it compares
 
-Four libraries solve overlapping problems, and picking between them is mostly a
-question of what you want the type hints to *do*.
+Four libraries solve overlapping problems. The choice depends on what you
+want the type hints to do.
 
-- **[dataclasses][]** is in the standard library and does the boring part:
-  `__init__`, `__repr__`, `__eq__`. It reads your hints but never acts on them.
-- **[attrs][]** does the same, better and with more control, and adds
-  converters and validators you write yourself.
-- **[pydantic][]** reads the hints and *acts* on them — parsing, coercing and
-  rejecting values — which is why it is everywhere in web and config code.
-- **`magic`** sits with attrs on API design and with pydantic on hints: nothing
-  is added to your class unless you ask for it, but when you do ask, the type
-  hint is what drives it.
+- **[dataclasses][]** is in the standard library. It generates `__init__`,
+  `__repr__`, `__eq__`. It reads your hints but never acts on them.
+- **[attrs][]** does the same, with more control, and adds converters and
+  validators you write yourself.
+- **[pydantic][]** reads the hints and acts on them: parsing, coercing and
+  rejecting values. This is why it dominates web and config code.
+- **`magic`** sits with attrs on API design and with pydantic on hints.
+  Nothing is added to your class unless you ask for it. When you do ask,
+  the type hint drives it.
 
 ## At a glance
 
@@ -100,42 +100,43 @@ question of what you want the type hints to *do*.
         tags: list = Field(default_factory=list)
     ```
 
-## Where each one is the better choice
+## Where each one fits best
 
-### Reach for dataclasses when…
+### dataclasses
 
-…you want no dependency at all and you only need the boring part. It is in the
-standard library, everyone recognises it, and every tool understands it. If
-your data is already the right type by the time it reaches you, the other three
-have nothing to add.
+Use it when you want no dependency and only need the basics. It is in the
+standard library, everyone recognises it, and every tool supports it. If
+your data is already the right type by the time it reaches you, the other
+three have nothing to add.
 
-### Reach for attrs when…
+### attrs
 
-…you want the boring part done well, with full control and no surprises. It is
-older and more battle-tested than either of the others, has no runtime
-dependency to speak of, and its validator library is excellent. `magic` follows
-its design lead — which means if you like attrs and want the type hints to do
-more of the work, `magic` should feel familiar rather than foreign.
+Use it when you want the basics done well, with full control and no
+surprises. It is older and more battle-tested than either of the others,
+has no heavy runtime dependency, and its validator library is excellent.
+`magic` follows its design lead. If you like attrs and want the type hints
+to do more of the work, `magic` should feel familiar.
 
-### Reach for pydantic when…
+### pydantic
 
-…you are parsing untrusted input at a boundary, and you want JSON schema,
-serialisation, and an enormous ecosystem of integrations. Nothing here competes
-with that. It also means your model class gains a large public API you did not
-write, which is fine at a boundary and less fine for a domain object.
+Use it when you are parsing untrusted input at a boundary, and you need
+JSON schema, serialisation, and a large ecosystem of integrations. Nothing
+here competes with that. It also means your model class gains a large
+public API you did not write. That is fine at a boundary and less fine for
+a domain object.
 
-### Reach for magic when…
+### magic
 
-…you want the hints to drive conversion and validation, but you want a plain
-class at the end of it — one where the only methods are the ones you wrote and
-the ones you asked for.
+Use it when you want the hints to drive conversion and validation, but you
+want a plain class at the end of it. One where the only methods are the
+ones you wrote and the ones you asked for.
 
 ## Things magic does that the others do not
 
 ### Settings are inherited
 
-Every other library re-applies its decorator per class. `magic` merges settings
-down the inheritance chain, so a base class sets the house style once:
+Every other library re-applies its decorator per class. `magic` merges
+settings down the inheritance chain. A base class sets the house style once:
 
 ```python
 from bagof.magic import Magic
@@ -154,14 +155,13 @@ User(name='ada', age=36)
 ```
 
 A subclass that changes a setting changes it for the fields it declares
-itself. Add `override=True` and it changes for the inherited fields too —
-except where a field asked for something in its own annotation, which always
-wins.
+itself. Add `override=True` and it changes inherited fields too. A field
+that asked for something in its own annotation always wins.
 
 ### Per-field behaviour is part of the annotation
 
-The others put it in a `field()` call on the right-hand side, which pushes the
-default out of the way and reads oddly once you use more than one:
+The others put it in a `field()` call on the right-hand side. That pushes
+the default out of the way and reads oddly once you use more than one:
 
 === "magic"
 
@@ -190,8 +190,8 @@ default out of the way and reads oddly once you use more than one:
 
 ### Instances can behave like dictionaries
 
-Useful for anything that is conceptually a record — a config section, a row, a
-header block:
+Useful for anything that is conceptually a record: a config section, a row,
+a header block:
 
 ```python
 from bagof.magic import Magic
@@ -206,8 +206,8 @@ class Header(Magic, mapping=True):
 {'content_type': 'text/plain', 'length': 12}
 ```
 
-A key is there while its field is holding a value, so a field that is only
-filled in later stays out of the view until it is.
+A key is present while its field holds a value. A field that is only filled
+in later stays out of the view until it is.
 
 ### The docstring writes itself
 
@@ -234,26 +234,22 @@ times : int, default=3
 
 ## Things the others do that magic does not
 
-Being honest about the gaps, with links to where they are being worked on:
-
-- **JSON schema and serialisation.** Pydantic's real draw, and `magic` has
-  neither yet.
-- **A recursive `asdict`.** `asdict` hands back the values as they are
-  stored, so a field holding another object gives you that object rather
-  than a dict of its fields. The others walk the whole tree, copying
-  lists and dicts as they go.
-- **A type parameter filled in where the object is built.** A subclass
-  fills one in — `class IntBox(Box[int])` gives `item` the type `int`, and
-  converts and validates against it — but the same thing written at the
-  point of use, `Box[int]("1")`, does not: that is a `typing` alias rather
-  than a class, so it builds a plain `Box` whose `item` is still `T`.
-  [Tracked here][generics]. Pydantic fills that one in too; `dataclasses`
+- **JSON schema and serialisation.** Pydantic's strongest feature. `magic`
+  has neither yet.
+- **A recursive `asdict`.** `asdict` returns values as stored. A field
+  holding another object gives you that object, not a dict of its fields.
+  The others walk the whole tree, copying lists and dicts on the way.
+- **A type parameter filled in at the call site.** A subclass fills one in:
+  `class IntBox(Box[int])` gives `item` the type `int`, and converts and
+  validates against it. But `Box[int]("1")` does not: that is a `typing`
+  alias, not a class, so it builds a plain `Box` whose `item` is still `T`.
+  [Tracked here][generics]. Pydantic fills that one in too. `dataclasses`
   and `attrs` fill in neither.
 - **Editor and type-checker support.** The others are understood by mypy and
-  pyright today, so your editor completes the constructor and catches a wrong
-  argument type. `magic` is not, yet — [tracked here][typing]. The route is
-  the same standard the others use, so most of it should follow; the part
-  that will not is a field written purely as an annotation
+  pyright today, so your editor completes the constructor and catches wrong
+  argument types. `magic` is not, yet ([tracked here][typing]). The route
+  is the same standard the others use, so most of it should follow. The
+  part that will not is a field written purely as an annotation
   (`tags: Factory[list]`), which a checker cannot see a default for.
 
 [dataclasses]: https://docs.python.org/3/library/dataclasses.html

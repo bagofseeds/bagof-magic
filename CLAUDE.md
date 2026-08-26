@@ -320,77 +320,65 @@ argued the other way:
 
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 
-Docs are for **humans who are not necessarily experts in arcane Python
-features**. They want to know how to use `magic` well — to write correct,
-readable, efficient code. Apply this to every hand-written page and to every
-public docstring:
+Docs are for **Python developers who want to use `magic` to build clean data
+classes**. They are not experts in metaclasses, typing internals, or the
+builder's implementation. Every sentence should help them write correct,
+readable code. Apply this to every hand-written page and to every public
+docstring:
 
-1. **Show the sugar first.** When several spellings do the same thing, lead
-   with the nicest one and list the rest in `=== "..."` tabs.
-2. **Plain language.** No agentic or internal-monologue phrasing, and no
-   unexplained internal names — those belong in code comments and in this
-   file, not in the docs. Say what a reader needs in order to *use* the
-   library, not what the builder does internally.
+1. **Lead with what the user writes.** Show the simplest spelling first.
+   When several spellings do the same thing, put them in `=== "..."` tabs.
+2. **Say what it does, not how it works.** No internal function names, no
+   private attributes, no implementation-level explanations. Those belong in
+   code comments and in this file.
 3. **Real `pycon`, not pseudo-code.** An example that shows a value must show
-   the value the interpreter actually prints. For the annotation family in
-   `_fields.py` this means showing the lowering as it really is:
+   what the interpreter actually prints:
 
    ```pycon
    >>> Factory[list]
-   typing.Annotated[list, Factory(factory=True)]
+   typing.Annotated[list, Factory(build=True)]
    ```
 
-   not an invented `~>` arrow. Every such block should be copy-pasteable and
-   true.
-4. **An example must run on the oldest supported Python.** `tests/
+   Every `pycon` block should be copy-pasteable and true.
+4. **Examples must run on the oldest supported Python.** `tests/
    test_docstrings.py` executes every `pycon` block, and CI runs it on 3.8 as
    well as current. The usual trap is `typing`: `Annotated` only exists from
    3.9. Prefer the package's own sugar (`Doc[int, "..."]`, `Frozen[int]`) in
-   examples, which works everywhere and is what the docs should be showing
-   anyway.
-5. **Leanness bar.** If an example does not read as short and natural, that is
-   a signal: either a nicer spelling already exists and the example should use
-   it, or `magic` is missing sugar — file an `enhancement` issue for the gap
-   rather than shipping an awkward example.
+   examples.
+5. **Short sentences, no filler.** If a sentence can be cut without losing
+   meaning, cut it. If an example reads as awkward, that is a signal that
+   `magic` is missing sugar. File an `enhancement` issue for the gap.
 
 **This applies equally to every public docstring** (anything without a leading
-underscore, reachable from `bagof.magic`) — the API reference renders them
-directly through `mkdocstrings`, so a docstring *is* a doc page. Concretely, a
-public docstring must **not**:
+underscore, reachable from `bagof.magic`). The API reference renders them
+directly through `mkdocstrings`, so a docstring *is* a doc page. A public
+docstring must **not**:
 
-- reference an issue or PR number, or a review finding — that belongs in a
-  commit message, a code comment, or this file;
-- name an internal mechanism the reader has no reason to know about (which
-  helper resolves it, which private attribute holds it);
-- read like a note to a fellow contributor ("kept for symmetry with X", "this
-  used to be broken") — say what the reader needs, not how it got that way.
+- reference an issue/PR number or a review finding;
+- name an internal mechanism the reader has no reason to know about;
+- read like a note to a fellow contributor.
 
-Internal rationale and history still belong somewhere — just not in a public
-docstring. Use a code comment near the implementation, or a section of this
-file.
+Internal rationale and history belong in a code comment near the
+implementation, or in a section of this file.
 
 ### Code comments, private docstrings and error messages
 
-Same standard, different reader. The audience here is a contributor opening
-the file for the first time, with no background on how the builder works —
-not you, later, remembering why you did it.
+The audience is a contributor opening the file for the first time, with no
+background on how the builder works.
 
 1. **Say what the code does, not what you decided.** "Replace any inherited
    generated method for this option" is useful. "Rather than try to tell them
-   apart, we now raise" is a changelog entry; put that in the commit message.
-2. **Name a helper for what it actually does**, not for the shape of what it
-   returns. `_defines` sounded like a predicate and returned a class;
-   `_defining_class` says it.
-3. **An error message is read by someone stuck**, not by whoever wrote the
-   check. It must name what happened, in the reader's vocabulary, and what to
-   write instead. Never mention metaclasses, namespaces, rebuilding, or any
-   private helper — a user has no reason to know those exist, and naming them
-   makes a fixable mistake feel like a library bug. Compare:
+   apart, we now raise" is a changelog entry. Put that in the commit message.
+2. **Name a helper for what it does.** `_defines` sounded like a predicate
+   and returned a class; `_defining_class` says it.
+3. **Error messages are read by someone stuck.** Name what happened and what
+   to write instead. Never mention metaclasses, namespaces, rebuilding, or any
+   private helper. A user has no reason to know those exist. Compare:
 
    > `Chord has already been built by Magic, so it cannot be rebuilt: pass
    > the options to the class statement instead`
 
-   with what it became:
+   with:
 
    > `Chord is already a Magic class, so it cannot be built a second time.
    > This happens when @magic is used twice on the same class, or when it is
@@ -398,9 +386,9 @@ not you, later, remembering why you did it.
    > class statement instead — `class Chord(Magic, frozen=True)` — which does
    > the same job.`
 
-4. **Don't reference an internal name a user could not have typed.** The
-   `slots` helper in `_utils.py` is ours; an error that mentions it sends the
-   reader looking for something they never used.
+4. **No internal names in user-facing errors.** The `slots` helper in
+   `_utils.py` is ours; an error that mentions it sends the reader looking for
+   something they never used.
 
 ## Third-party code
 

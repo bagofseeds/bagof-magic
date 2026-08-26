@@ -6,151 +6,87 @@
 #   class creation time, rather than looping through fields at run-time.
 #   This is already done for __init__, but not for the other ones.
 """
-A `Magic` acts like a python `dataclass`, except that it operates
-via inheritance, rather than via a decorator (although the @magic
-decorator can be used if preferred).
+The class builder: ``MetaMagic``, ``Magic``, and the ``magic`` decorator.
 
-The options typically specified in the @dataclass decorator are instead
-specified as class keyword arguments, and are inherited (or overloaded)
-by subclasses.
+``MetaMagic`` is the metaclass that reads annotations, resolves options,
+and writes the generated methods (``__init__``, ``__repr__``, ``__eq__``,
+and the rest) into the class namespace before the class object exists.
 
-```python
-class Point(Magic, frozen=True):
-    x: float
-    y: float
+``Magic`` is the base class most users inherit from. ``magic`` is a
+decorator that does the same thing for a class that does not inherit
+from ``Magic``.
 
-# --- or ---
+Options are class keyword arguments and are inherited by subclasses::
 
-@magic(frozen=True)
-class Point:
-    x: float
-    y: float
-```
+    class Point(Magic, frozen=True):
+        x: float
+        y: float
 
-Most options supported by dataclasses are supported, but there are
-some differences. Additional options are also implemented:
+Per-field behaviour is written in the annotation::
+
+    x: Factory[list]          # default factory
+    x: ConvertTo[int]         # convert on the way in
+    x: KwOnly[bool] = False   # keyword-only with a default
 
 Parameters
 ----------
 init : bool | str, default=True
-    Generate `__init__` method
+    Generate ``__init__`` method.
 repr : bool | str, default=True
-    Generate `__repr__` method; a field holding no value is left out
+    Generate ``__repr__`` method. A field holding no value is left out.
 eq : bool | str, default=True
-    Generate `__eq__` method; two objects are equal when the same
-    fields are holding values and those values match
+    Generate ``__eq__`` method. Two objects are equal when the same
+    fields hold values and those values match.
 order : bool | str, default=False
-    Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods; a field
-    holding no value stops the comparison
+    Generate ``__lt__``, ``__le__``, ``__gt__`` and ``__ge__`` methods.
 hash : bool | str, default=None
-    Generate `__hash__` method; if `None`, decide automatically
+    Generate ``__hash__`` method. If None, decide automatically.
 unsafe_hash : bool, default=False
-    Always generate `__hash__` method
+    Always generate ``__hash__`` method.
 frozen : bool, default=False
-    Disable `__setattr__` and `__delattr__`
+    Disable ``__setattr__`` and ``__delattr__``.
 match_args : bool | str, default=False
-    Generate `__match_args__` for pattern matching
+    Generate ``__match_args__`` for pattern matching.
 kw_only : bool, default=False
-    Make all fields keyword-only by default
+    Make all fields keyword-only by default.
 positional_only : bool, default=False
-    Make all fields positional-only by default
+    Make all fields positional-only by default.
 slots : bool, default=False
-    Generate `__slots__` and remove `__dict__`
+    Generate ``__slots__`` and remove ``__dict__``.
 weakref_slot : bool, default=False
-    Generate a weakref slot in `__slots__`
+    Generate a weakref slot in ``__slots__``.
 factory : bool, default=False
-    Use field type as factory if none is provided
+    Use field type as factory if none is provided.
 mutable_default : str, default="factory"
-    What to do with a mutable default such as `x: list = []`
+    What to do with a mutable default such as ``x: list = []``.
+    "factory" gives each instance its own copy, "raise" refuses the
+    class, "allow" shares one object between instances.
 convert : bool, default=False
-    Use field type as converter if none is provided
+    Use field type as converter if none is provided.
 validate : bool, default=False
-    Use field type as validator if none is provided
+    Use field type as validator if none is provided.
 convert_defaults : bool, default=True
-    Convert a value that came from a field's own default
+    Convert a value that came from a field's own default.
 validate_defaults : bool, default=True
-    Validate a value that came from a field's own default
+    Validate a value that came from a field's own default.
 unresolved_hints : str, default="warn"
-    What to do when a type hint still names something undefined the
-    first time a field needs it: "warn", "raise" or "ignore"
+    What to do when a type hint names something still undefined the
+    first time a field needs it. "warn", "raise" or "ignore".
 mapping : bool, default=False
-    Implement the `Mapping` protocol; a subclass inherits the dict-like
-    methods and cannot turn them off. Only a field that is holding a
-    value is a key
+    Implement the Mapping protocol. Only a field holding a value is
+    a key.
 override : bool | str | list, default=False
-    Decide the settings of an inherited field again from this class;
-    a name, or a list of names, decides only those
+    Resolve an inherited field's settings again from this class.
 polymorphic : bool | str, default=False
     Build one of this class's subclasses instead of this class,
-    chosen from the arguments it was given. A subclass says which
-    arguments it stands for with `on=` on its own class statement.
-    With "strict", a call matching none of them is refused rather
-    than building this class.
-pin_discriminant : {"pin", "classvar", "keep"}, default="pin"
-    What a subclass does with a field it matches on exactly. "pin"
-    gives the field that value as its default, so it still shows in
-    the repr and survives a round trip; "classvar" makes it a class
-    attribute that is not stored per instance, still accepted by the
-    constructor and discarded; "keep" leaves the field alone.
+    chosen from the arguments it was given.
+pin_discriminant : str, default="pin"
+    What a subclass does with a field it matches on exactly.
+    "pin", "classvar" or "keep".
 reverse : bool, default=False
-    Use the reverse MRO order to determine field order
+    Use the reverse MRO order to determine field order.
 doc : bool | str, default=True
-    Add field documentation to class docstring
-
-Examples
---------
-It also differs from a standard dataclass in that field-specific options
-are assigned via annotations, rather than via a `field` function:
-
-```python
-# - Default factories
-#   instead of x: list = field(factory=list)
-x: Factory[list, list_factory]
-x: Annotated[list, Factory(list_factory)]
-
-#   if no factory is provided, it will use the type as the default factory
-x: Factory[list] -> x: Annotated[list, Factory(list)]
-
-# - Include in the init method
-#   instead of x: int = field(init=True)
-x: Init[int]
-x: Annotated[int, Init()]
-x: Annotated[int, Init(True)]
-x: NoInit[int]
-x: Annotated[int, NoInit()]
-x: Annotated[int, Init(False)]
-
-# - Keyword-only arguments
-#   instead of x: int = field(kw_only=True)
-x: KwOnly[int]
-x: Annotated[int, KwOnly()]
-x: Annotated[int, KwOnly(True)]
-x: NotKwOnly[int]
-x: Annotated[int, NotKwOnly()]
-x: Annotated[int, KwOnly(False)]
-```
-
-It supports additional features such as automatic conversion of field
-values via annotations:
-
-```python
-x: ConvertTo[int, partial(int, base=16)]
-x: Annotated[int, ConvertTo(partial(int, base=16))]
-
-# if no converter is provided, it will use the type as the default converter
-x: ConvertTo[int] -> x: Annotated[int, ConvertTo(int)]
-```
-
-Frozen or unfrozen fields:
-
-```python
-x: Frozen[int]
-x: Annotated[int, Frozen()]
-x: Annotated[int, Frozen(True)]
-x: NotFrozen[int]
-x: Annotated[int, NotFrozen()]
-x: Annotated[int, Frozen(False)]
-```
+    Add field documentation to class docstring.
 """
 from __future__ import annotations
 
@@ -3078,21 +3014,10 @@ def _dispatching(metacls: type) -> type:
 )
 class MetaMagic(ABCMeta):
     """
-    Examples
-    --------
-    ```python
-    # Functional API
-    MetaMagic(name, bases, namespace, **options) -> type: ...
+    Metaclass that builds a Magic class.
 
-    # Class-based API
-    class Magic(*bases, metaclass=MetaMagic, **options):
-        ...
-
-    # Decorator API
-    @magic(**options)
-    class MyStruct:
-        ...
-    ```
+    Most users never name ``MetaMagic`` directly. Inherit from
+    ``Magic`` instead, or use the ``@magic`` decorator.
 
     Parameters
     ----------
@@ -3106,101 +3031,69 @@ class MetaMagic(ABCMeta):
     Other Parameters
     ----------------
     init : bool | str, default=True
-        Generate `__init__` method.
+        Generate ``__init__`` method.
     repr : bool | str, default=True
-        Generate `__repr__` method. A field is shown while it is
-        holding a value, so a field the constructor does not take, with
-        no default, is left out until something sets it.
+        Generate ``__repr__`` method. A field is shown while it holds
+        a value. A field the constructor does not take, with no
+        default, is left out until something sets it.
     eq : bool | str, default=True
-        Generate `__eq__` method. Two objects are equal when the same
-        fields are holding values and those values match: one that has
-        been given a value is never equal to one that is still without.
+        Generate ``__eq__`` method. Two objects are equal when the
+        same fields hold values and those values match.
     order : bool | str, default=False
-        Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
-        Given a name, generate the `<` comparison under that name; the
-        class is then left with none of the four comparison operators,
-        including any it would otherwise inherit. A field holding no
-        value stops the comparison and says so, since an order over
-        part of an object is not an order over the object.
+        Generate ``__lt__``, ``__le__``, ``__gt__`` and ``__ge__``
+        methods. Given a name, generate the ``<`` comparison under
+        that name.
     hash : bool | str, default=None
-        Generate `__hash__` method.
-        If `None`, decide automatically.
+        Generate ``__hash__`` method. If None, decide automatically.
     unsafe_hash : bool, default=False
-        Always generate `__hash__` method.
+        Always generate ``__hash__`` method.
     frozen : bool, default=False
-        Disable `__setattr__` and `__delattr__`.
+        Disable ``__setattr__`` and ``__delattr__``.
     match_args : bool | str, default=False
-        Generate `__match_args__` for pattern matching.
+        Generate ``__match_args__`` for pattern matching.
     kw_only : bool, default=False
         Make all fields keyword-only by default.
     positional_only : bool, default=False
         Make all fields positional-only by default.
     slots : bool, default=False
-        Generate `__slots__` and remove `__dict__`.
+        Generate ``__slots__`` and remove ``__dict__``.
     weakref_slot : bool, default=False
-        Generate a weakref slot in `__slots__`.
+        Generate a weakref slot in ``__slots__``.
     factory : bool, default=False
         Use field type as factory if none is provided.
-    mutable_default : {"factory", "raise", "allow"}, default="factory"
-        What to do with a mutable default such as `x: list = []`.
-        "factory" gives each instance its own copy, "raise" refuses the
-        class, and "allow" shares one object between instances.
+    mutable_default : str, default="factory"
+        What to do with a mutable default such as ``x: list = []``.
+        "factory" gives each instance its own copy, "raise" refuses
+        the class, "allow" shares one object between instances.
     convert : bool, default=False
         Use field type as converter if none is provided.
     validate : bool, default=False
         Use field type as validator if none is provided.
     convert_defaults : bool, default=True
-        Convert a value that came from a field's own default, the same
-        way a value passed to the constructor is converted. Set it to
-        False to leave the defaults written in the class alone and
-        convert only what a caller passes.
+        Convert a value that came from a field's own default.
     validate_defaults : bool, default=True
-        Validate a value that came from a field's own default, the same
-        way a value passed to the constructor is validated. Set it to
-        False to leave the defaults written in the class alone and
-        check only what a caller passes.
+        Validate a value that came from a field's own default.
     unresolved_hints : str, default="warn"
-        What to do when a field is annotated with a type that is still
-        not defined the first time the field needs it. "warn" says so
-        once and carries on without converting or validating, "raise"
-        turns it into an error, and "ignore" says nothing. A default
-        value that cannot be built raises whichever is chosen, since
-        there is no value to hand back.
+        What to do when a type hint names something still undefined
+        the first time a field needs it. "warn" says so once, "raise"
+        turns it into an error, "ignore" says nothing.
     mapping : bool, default=False
-        Implement the `Mapping` protocol. A subclass cannot turn it off
-        again: it would inherit these methods, and they answer with the
-        fields of the class they were generated for. Only a field that
-        is holding a value is a key, so which keys an instance has is a
-        question about that instance: the length can differ between two
-        instances of one class, and can change over an instance's life.
+        Implement the Mapping protocol. Only a field holding a value
+        is a key.
     override : bool | str | list, default=False
-        Decide the settings of an inherited field again from this
-        class. A field is resolved against the settings of the class
-        that declares it and keeps those answers, so by default
-        `frozen=False` on a subclass only reaches the fields that
-        subclass declares itself; `override=True` applies this class's
-        settings to the fields it inherits as well. What a field asked
-        for in its own annotation always wins, whichever way this is
-        set. Give the name of a setting, or a list of names, to decide
-        only those again: frozen, kw_only, positional_only, convert,
-        validate, factory and repr are the ones a field takes from its
-        class.
+        Resolve an inherited field's settings again from this class.
+        ``override=True`` applies to all inherited fields. A name or
+        list of names applies to those settings only.
     polymorphic : bool | str, default=False
         Build one of this class's subclasses instead of this class,
-        chosen from the arguments it was given. A subclass says which
-        arguments it stands for with `on=` on its own class statement.
-        With "strict", a call matching none of them is refused rather
-        than building this class.
-    pin_discriminant : {"pin", "classvar", "keep"}, default="pin"
+        chosen from the arguments it was given. With "strict", a call
+        matching no subclass is refused.
+    pin_discriminant : str, default="pin"
         What a subclass does with a field it matches on exactly. "pin"
-        gives the field that value as its default, so it still shows in
-        the repr and survives a round trip; "classvar" makes it a class
-        attribute that is not stored per instance, still accepted by the
-        constructor and discarded; "keep" leaves the field alone.
+        gives it a default, "classvar" makes it a class attribute,
+        "keep" leaves it alone.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
-        This only affects the relative order of the fields of one class
-        with respect to the fields of its base classes.
     doc : bool | str, default=True
         Add field documentation to class docstring.
 
@@ -3327,114 +3220,86 @@ class MetaMagic(ABCMeta):
 
 class Magic(metaclass=MetaMagic):
     """
-    Base class for data structures.
+    Base class for data structures driven by type hints.
+
+    Inherit from ``Magic`` to get a generated ``__init__``, ``__repr__``
+    and ``__eq__``. Options are class keyword arguments and are
+    inherited by subclasses.
 
     Examples
     --------
-    ```python
-    class Point(Magic, frozen=True):
-        x: float
-        y: float
-    ```
+    ::
+
+        class Point(Magic, frozen=True):
+            x: float
+            y: float
 
     Parameters
     ----------
     init : bool | str, default=True
-        Generate `__init__` method.
+        Generate ``__init__`` method.
     repr : bool | str, default=True
-        Generate `__repr__` method. A field is shown while it is
-        holding a value, so a field the constructor does not take, with
-        no default, is left out until something sets it.
+        Generate ``__repr__`` method. A field is shown while it holds
+        a value. A field the constructor does not take, with no
+        default, is left out until something sets it.
     eq : bool | str, default=True
-        Generate `__eq__` method. Two objects are equal when the same
-        fields are holding values and those values match: one that has
-        been given a value is never equal to one that is still without.
+        Generate ``__eq__`` method. Two objects are equal when the
+        same fields hold values and those values match.
     order : bool | str, default=False
-        Generate `__lt__`, `__le__`, `__gt__` and `__ge__` methods.
-        Given a name, generate the `<` comparison under that name; the
-        class is then left with none of the four comparison operators,
-        including any it would otherwise inherit. A field holding no
-        value stops the comparison and says so, since an order over
-        part of an object is not an order over the object.
+        Generate ``__lt__``, ``__le__``, ``__gt__`` and ``__ge__``
+        methods. Given a name, generate the ``<`` comparison under
+        that name.
     hash : bool | str, default=None
-        Generate `__hash__` method.
-        If `None`, decide automatically.
+        Generate ``__hash__`` method. If None, decide automatically.
     unsafe_hash : bool, default=False
-        Always generate `__hash__` method.
+        Always generate ``__hash__`` method.
     frozen : bool, default=False
-        Disable `__setattr__` and `__delattr__`.
+        Disable ``__setattr__`` and ``__delattr__``.
     match_args : bool | str, default=False
-        Generate `__match_args__` for pattern matching.
+        Generate ``__match_args__`` for pattern matching.
     kw_only : bool, default=False
         Make all fields keyword-only by default.
     positional_only : bool, default=False
         Make all fields positional-only by default.
     slots : bool, default=False
-        Generate `__slots__` and remove `__dict__`.
+        Generate ``__slots__`` and remove ``__dict__``.
     weakref_slot : bool, default=False
-        Generate a weakref slot in `__slots__`.
+        Generate a weakref slot in ``__slots__``.
     factory : bool, default=False
         Use field type as factory if none is provided.
-    mutable_default : {"factory", "raise", "allow"}, default="factory"
-        What to do with a mutable default such as `x: list = []`.
-        "factory" gives each instance its own copy, "raise" refuses the
-        class, and "allow" shares one object between instances.
+    mutable_default : str, default="factory"
+        What to do with a mutable default such as ``x: list = []``.
+        "factory" gives each instance its own copy, "raise" refuses
+        the class, "allow" shares one object between instances.
     convert : bool, default=False
         Use field type as converter if none is provided.
     validate : bool, default=False
         Use field type as validator if none is provided.
     convert_defaults : bool, default=True
-        Convert a value that came from a field's own default, the same
-        way a value passed to the constructor is converted. Set it to
-        False to leave the defaults written in the class alone and
-        convert only what a caller passes.
+        Convert a value that came from a field's own default.
     validate_defaults : bool, default=True
-        Validate a value that came from a field's own default, the same
-        way a value passed to the constructor is validated. Set it to
-        False to leave the defaults written in the class alone and
-        check only what a caller passes.
+        Validate a value that came from a field's own default.
     unresolved_hints : str, default="warn"
-        What to do when a field is annotated with a type that is still
-        not defined the first time the field needs it. "warn" says so
-        once and carries on without converting or validating, "raise"
-        turns it into an error, and "ignore" says nothing. A default
-        value that cannot be built raises whichever is chosen, since
-        there is no value to hand back.
+        What to do when a type hint names something still undefined
+        the first time a field needs it. "warn" says so once, "raise"
+        turns it into an error, "ignore" says nothing.
     mapping : bool, default=False
-        Implement the `Mapping` protocol. A subclass cannot turn it off
-        again: it would inherit these methods, and they answer with the
-        fields of the class they were generated for. Only a field that
-        is holding a value is a key, so which keys an instance has is a
-        question about that instance: the length can differ between two
-        instances of one class, and can change over an instance's life.
+        Implement the Mapping protocol. Only a field holding a value
+        is a key.
     override : bool | str | list, default=False
-        Decide the settings of an inherited field again from this
-        class. A field is resolved against the settings of the class
-        that declares it and keeps those answers, so by default
-        `frozen=False` on a subclass only reaches the fields that
-        subclass declares itself; `override=True` applies this class's
-        settings to the fields it inherits as well. What a field asked
-        for in its own annotation always wins, whichever way this is
-        set. Give the name of a setting, or a list of names, to decide
-        only those again: frozen, kw_only, positional_only, convert,
-        validate, factory and repr are the ones a field takes from its
-        class.
+        Resolve an inherited field's settings again from this class.
+        ``override=True`` applies to all inherited fields. A name or
+        list of names applies to those settings only.
     polymorphic : bool | str, default=False
         Build one of this class's subclasses instead of this class,
-        chosen from the arguments it was given. A subclass says which
-        arguments it stands for with `on=` on its own class statement.
-        With "strict", a call matching none of them is refused rather
-        than building this class.
-    pin_discriminant : {"pin", "classvar", "keep"}, default="pin"
+        chosen from the arguments it was given. With "strict", a call
+        matching no subclass is refused.
+    pin_discriminant : str, default="pin"
         What a subclass does with a field it matches on exactly. "pin"
-        gives the field that value as its default, so it still shows in
-        the repr and survives a round trip; "classvar" makes it a class
-        attribute that is not stored per instance, still accepted by the
-        constructor and discarded; "keep" leaves the field alone.
+        gives it a default, "classvar" makes it a class attribute,
+        "keep" leaves it alone.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
-        This only affects the relative order of the fields of one class
-        with respect to the fields of its base classes.
     doc : bool | str, default=True
         Add field documentation to class docstring.
     """
@@ -3479,8 +3344,10 @@ def magic(cls: type, **kwargs) -> type: ...
 )
 def magic(cls: tx.Optional[type] = None, **kwargs):
     """
-    Decorator for defining a Magic class.
-    See `Magic` for parameters and examples.
+    Build a Magic class from a plain class.
+
+    Takes the same options as ``Magic``. Use this when inheritance is
+    not an option.
     """
     if cls is None:
         return partial(magic, **kwargs)
