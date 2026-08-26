@@ -145,6 +145,18 @@ def fields_dict(cls: type) -> tx.Dict[str, Field]:
     constructor takes, which for an aliased or underscored field is not
     the name the class body uses.
 
+    !!! example
+        ```pycon
+        >>> class Point(Magic):
+        ...     x: int
+        ...     y: int
+        ...
+        >>> list(fields_dict(Point))
+        ['x', 'y']
+        >>> fields_dict(Point)["x"].type
+        <class 'int'>
+        ```
+
     Parameters
     ----------
     cls : type
@@ -157,18 +169,6 @@ def fields_dict(cls: type) -> tx.Dict[str, Field]:
         A class that `Magic` never built simply has none, so the answer
         is an empty dict -- the same as `fields` gives. `asdict`,
         `astuple` and `replace` need a real instance and say so instead.
-
-    !!! example
-        ```pycon
-        >>> class Point(Magic):
-        ...     x: int
-        ...     y: int
-        ...
-        >>> list(fields_dict(Point))
-        ['x', 'y']
-        >>> fields_dict(Point)["x"].type
-        <class 'int'>
-        ```
     """
     return _keyed(fields(cls))
 
@@ -183,17 +183,6 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
 
     Keys are the names the constructor takes, which for an aliased or
     underscored field is not the name the class body uses.
-
-    Parameters
-    ----------
-    obj : Magic
-        An instance of a Magic class.
-
-    Returns
-    -------
-    values : dict[str, any]
-        Every concrete field (not `ClassVar` or `InitVar`) that is
-        holding a value, in field order.
 
     !!! example
         ```pycon
@@ -263,6 +252,17 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
         >>> asdict(Row("ada", 36))
         {'name': 'ada', 'age': 36}
         ```
+
+    Parameters
+    ----------
+    obj : Magic
+        An instance of a Magic class.
+
+    Returns
+    -------
+    values : dict[str, any]
+        Every concrete field (not `ClassVar` or `InitVar`) that is
+        holding a value, in field order.
     """
     found = {}
     for name, field in _concrete(obj, "asdict").items():
@@ -278,6 +278,23 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
 
     Like `asdict`, a nested Magic instance is turned into a tuple of
     its own fields. Everything else is returned as-is.
+
+    !!! example
+        ```pycon
+        >>> class Point(Magic):
+        ...     x: int
+        ...     y: int
+        ...
+        >>> astuple(Point(1, 2))
+        (1, 2)
+        ```
+
+    !!! note "A field with no value is an error here"
+        `asdict` and `dict(obj)` leave such a field out; this one says
+        so. A position only means anything while every field is in the
+        tuple: drop one and everything after it moves up, so the same
+        index would stand for a different field from one instance to
+        the next, with nothing in the tuple to show it.
 
     Parameters
     ----------
@@ -296,23 +313,6 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
         If a field has never been given a value. A field the
         constructor does not take, with no default, is only set if
         something sets it by hand.
-
-    !!! example
-        ```pycon
-        >>> class Point(Magic):
-        ...     x: int
-        ...     y: int
-        ...
-        >>> astuple(Point(1, 2))
-        (1, 2)
-        ```
-
-    !!! note "A field with no value is an error here"
-        `asdict` and `dict(obj)` leave such a field out; this one says
-        so. A position only means anything while every field is in the
-        tuple: drop one and everything after it moves up, so the same
-        index would stand for a different field from one instance to
-        the next, with nothing in the tuple to show it.
     """
     return tuple(
         _astuple_inner(_value(obj, field, "astuple"))
@@ -338,25 +338,6 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
 
     Name each change after the argument the constructor takes, which for
     an aliased or underscored field is not the name the class body uses.
-
-    Parameters
-    ----------
-    obj : Magic
-        An instance of a Magic class.
-    **changes : any
-        New values, by constructor argument name.
-
-    Returns
-    -------
-    copy : Magic
-        A new instance of the same class.
-
-    Raises
-    ------
-    TypeError
-        If `obj` is not an instance of a Magic class; if a change names
-        something the constructor does not take; or if the class has an
-        `InitVar` with no default and no value was given for it.
 
     !!! example
         ```pycon
@@ -426,6 +407,25 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
         Where that matters, turn conversion off for the fields it
         affects, or write the converter so that running it twice is the
         same as running it once.
+
+    Parameters
+    ----------
+    obj : Magic
+        An instance of a Magic class.
+    **changes : any
+        New values, by constructor argument name.
+
+    Returns
+    -------
+    copy : Magic
+        A new instance of the same class.
+
+    Raises
+    ------
+    TypeError
+        If `obj` is not an instance of a Magic class; if a change names
+        something the constructor does not take; or if the class has an
+        `InitVar` with no default and no value was given for it.
     """
     cls = type(obj)
     # Every field, pseudo-fields included: a change has to be turned
@@ -489,16 +489,6 @@ def is_magic(obj: tx.Any) -> bool:
     built either way -- by inheriting from `Magic`, or by decorating a
     plain class with `magic`.
 
-    Parameters
-    ----------
-    obj : any
-        A class, or any object at all.
-
-    Returns
-    -------
-    is_magic : bool
-        Whether the class, or the object's class, is a Magic class.
-
     !!! example
         ```pycon
         >>> class Point(Magic):
@@ -509,6 +499,16 @@ def is_magic(obj: tx.Any) -> bool:
         >>> is_magic(int), is_magic(3)
         (False, False)
         ```
+
+    Parameters
+    ----------
+    obj : any
+        A class, or any object at all.
+
+    Returns
+    -------
+    is_magic : bool
+        Whether the class, or the object's class, is a Magic class.
     """
     cls = obj if isinstance(obj, type) else type(obj)
     # The question is whether the class carries the table of fields the
