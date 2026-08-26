@@ -3388,9 +3388,11 @@ class Magic(metaclass=MetaMagic):
     inherited by subclasses.
 
     !!! example
+        ```python
         class Point(Magic, frozen=True):
             x: float
             y: float
+        ```
 
     Parameters
     ----------
