@@ -3387,10 +3387,7 @@ class Magic(metaclass=MetaMagic):
     and ``__eq__``. Options are class keyword arguments and are
     inherited by subclasses.
 
-    Examples
-    --------
-    ::
-
+    !!! example
         class Point(Magic, frozen=True):
             x: float
             y: float
@@ -3513,8 +3510,3 @@ def magic(cls: tx.Optional[type] = None, **kwargs):
     if cls is None:
         return partial(magic, **kwargs)
     return rebuild_cls(cls, partial(MetaMagic, **kwargs))
-
-
-# ----------------------------------------------------------------------
-# External methods
-# ----------------------------------------------------------------------
