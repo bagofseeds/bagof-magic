@@ -96,7 +96,7 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
     'doc',              # Docstring for this field.
     'key',              # Field is a key in the dict-like interface.
     'alias',            # Alternative names for this field.
-    'declared',         # See descriptio below.
+    'declared',         # See description below.
 )
 class Field(SlotsBase):
     """A single field in a Magic class.
