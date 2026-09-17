@@ -2036,7 +2036,13 @@ class _FuncBuilder:
             indent(f"return {return_names}", " " * 4)
         ])
         temporary_namespace = {}
-        exec(txt, self.globals, temporary_namespace)
+        # Compile with dont_inherit=True so this module's `from __future__
+        # import annotations` does not stringify the generated annotations.
+        # The annotation expressions reference the real type objects held in
+        # self.locals (e.g. `__magic_x_type__`); inheriting the future flag
+        # would turn each into that internal local name as a string instead.
+        code = compile(txt, "<bagof.magic>", "exec", dont_inherit=True)
+        exec(code, self.globals, temporary_namespace)
         fns = temporary_namespace['__create_fn__'](**self.locals)
 
         # Now that we've generated the functions, assign them into cls.

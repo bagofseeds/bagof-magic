@@ -567,6 +567,35 @@ class TestParameterAnnotations:
             C(1, 2)
 
 
+class TestInitAnnotationsAreObjects:
+    """The generated `__init__` carries real types, not their local names.
+
+    Each parameter's type is held in a local of the generated builder,
+    under an internal `__magic_*__` name. The annotations must be the
+    type objects those locals hold, so that a reader of the signature --
+    `inspect.signature`, `get_type_hints`, an IDE -- sees the real type
+    and never the internal name spelled as a string.
+    """
+
+    class Point(Magic):
+        x: int = 0
+        y: str = "hi"
+
+    def test_annotations_are_the_type_objects(self) -> None:
+        ann = self.Point.__init__.__annotations__
+        assert ann["x"] is int
+        assert ann["y"] is str
+        assert ann["return"] is None
+
+    def test_no_internal_name_leaks_into_the_signature(self) -> None:
+        assert "__magic" not in str(signature(self.Point.__init__))
+
+    def test_get_type_hints_resolves(self) -> None:
+        hints = tx.get_type_hints(self.Point.__init__)
+        assert hints["x"] is int
+        assert hints["y"] is str
+
+
 class TestFieldInit:
     """`init` is what the pair adds up to, and a way to write it."""
 
