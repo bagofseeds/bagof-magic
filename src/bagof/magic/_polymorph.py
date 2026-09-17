@@ -38,8 +38,6 @@ holds that, and `_read` uses it, so dispatch costs a couple of dict
 lookups per constrained field rather than binding a signature.
 """
 
-from __future__ import annotations
-
 __all__ = [
     "PolymorphError",
     "NoPolymorphError",

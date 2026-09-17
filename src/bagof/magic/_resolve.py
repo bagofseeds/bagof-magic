@@ -27,8 +27,6 @@ unvalidated, so those two carry on; a default value cannot be invented,
 so a factory raises whatever the option says.
 """
 
-from __future__ import annotations
-
 __all__ = ["Hints", "POLICIES", "make_converter", "make_validator",
            "make_factory"]
 

@@ -19,8 +19,6 @@ callable signature (``Callable[[T], T]``), and a base that fills one
 parameter of two (``Pair[int, S]``, which leaves ``S`` standing).
 """
 
-from __future__ import annotations
-
 __all__ = ["substitute", "type_arguments"]
 
 import typing_extensions as tx

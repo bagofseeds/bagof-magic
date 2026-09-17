@@ -3,8 +3,6 @@
 Everything here is re-exported from the modules beside this one; import
 it from `bagof.magic` rather than from those, which are free to move.
 """
-from __future__ import annotations
-
 from ._api import *  # noqa: F401, F403
 from ._api import __all__ as __all_api__
 

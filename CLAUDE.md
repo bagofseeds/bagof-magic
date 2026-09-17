@@ -283,10 +283,18 @@ saves a class (and an instance's class) by name and a metaclass
 ## Conventions specific to this repo (do not regress)
 
 1. **Wide Python (3.8+).** Runtime code must stay old-compatible: no walrus in
-   runtime paths that 3.8 would reject, no PEP 604 `|` or PEP 585 `list[...]`
-   in *values*, and never subscript an abc/builtin generic at runtime. Modern
-   typing lives in **annotations only** — every module starts with
-   `from __future__ import annotations`, so they are lazy strings.
+   runtime paths that 3.8 would reject, no PEP 604 `|` or PEP 585 `list[...]`,
+   and never subscript an abc/builtin generic. **No module uses `from
+   __future__ import annotations`** — matching every sibling package — so an
+   annotation is evaluated eagerly when its `def` or class body runs, and must
+   be 3.8-safe just like a value: write `tx.Tuple[...]`, `tx.Dict[...]`,
+   `tx.List[...]`, `tx.Union[...]`, `tx.Optional[...]`, never the builtin or
+   `|` spellings. A self-referential annotation uses `tx.Self` (a method whose
+   receiver or result is an instance of its own class); a forward reference to
+   a class not yet bound — including the builder functions that run while
+   `Magic` itself is being built — is `tx.Self` when it means "this class",
+   and a minimal quoted name (`"MetaMagic"`) when it genuinely means some
+   other class defined further down.
 2. **All typing goes through `import typing_extensions as tx`.** `tx.Union`,
    `tx.Sequence`, `tx.Self`, … — do not import from `typing` or
    `collections.abc`. This matches the bagof-hints house style.
