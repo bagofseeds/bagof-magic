@@ -1,6 +1,4 @@
 """The object handed to `__pre_init__` and `__post_init__`."""
-from __future__ import annotations
-
 import typing_extensions as tx
 
 __all__ = ["Arguments"]

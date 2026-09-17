@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 __all__ = [
     "Field",
     "field",
@@ -289,7 +287,7 @@ class Field(SlotsBase):
     @classmethod
     def from_hint(
         cls, name: str, hint: tx.Any, default: tx.Any = MISSING
-    ) -> Field:
+    ) -> tx.Self:
         type = hint
         origin = _get_origin(hint)
 

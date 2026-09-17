@@ -9,8 +9,6 @@ LICENSE-PSF-2.0.txt for its text and NOTICE.md for the list of derived
 components and the summary of changes.
 """
 
-from __future__ import annotations
-
 import typing_extensions as tx
 
 T = tx.TypeVar("T")

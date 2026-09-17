@@ -6,8 +6,6 @@ class-body name starts with an underscore, or that has an alias, reaches
 ``__init__`` under a different name. That public name is the key in
 ``fields_dict``, the keyword in ``replace``, and the label in ``repr``.
 """
-from __future__ import annotations
-
 import typing_extensions as tx
 
 from ._constants import _FIELDS, MISSING, _HasFactory

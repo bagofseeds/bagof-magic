@@ -9,8 +9,6 @@ LICENSE-PSF-2.0.txt for its text and NOTICE.md for the list of derived
 components and the summary of changes.
 """
 
-from __future__ import annotations
-
 __all__ = ["SlotsBase", "rebuild_cls", "slots"]
 import copy as copy_
 import inspect
@@ -53,7 +51,7 @@ def _update_func_cell_for__class__(
 
 def rebuild_cls(
     cls: type,
-    type_func: tx.Callable[[str, tuple[type, ...], dict], type] = type,
+    type_func: tx.Callable[[str, tx.Tuple[type, ...], dict], type] = type,
 ) -> type:
     namespace = dict(cls.__dict__)
 
@@ -116,7 +114,9 @@ def slots(*aslots, **kwslots):
     else:
         _slots = aslots
 
-    def add_slots(name: str, bases: tuple[type, ...], namespace: dict) -> type:
+    def add_slots(
+        name: str, bases: tx.Tuple[type, ...], namespace: dict
+    ) -> type:
         namespace['__slots__'] = _slots
         return type(name, bases, namespace)
 

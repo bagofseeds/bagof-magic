@@ -88,8 +88,6 @@ reverse : bool, default=False
 doc : bool | str, default=True
     Add field documentation to class docstring.
 """
-from __future__ import annotations
-
 __all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 # stdlib
 import ast
@@ -315,7 +313,7 @@ def _override_attrs(override: tx.Any, clsname: str) -> tx.Tuple[str, ...]:
 
 
 def _add_fields(
-    fields: dict[str, Field],
+    fields: tx.Dict[str, Field],
     new_fields: tx.Iterable[Field],
     replace: bool = False,
     reverse: bool = False,
@@ -381,7 +379,7 @@ def _add_fields(
             fields.setdefault(name, old_field)
 
 
-def _check_public_names(clsname: str, fields: dict[str, Field]) -> None:
+def _check_public_names(clsname: str, fields: tx.Dict[str, Field]) -> None:
     # Two fields cannot answer to one outside name.
     #
     # A field is known outside the class by its alias, or by its own name
@@ -407,7 +405,7 @@ def _check_public_names(clsname: str, fields: dict[str, Field]) -> None:
         seen[public] = name
 
 
-def _check_public_keys(clsname: str, fields: dict[str, Field]) -> None:
+def _check_public_keys(clsname: str, fields: tx.Dict[str, Field]) -> None:
     # Two fields cannot answer to one key of the dict-like view.
     #
     # A field's key is the one `Key("...")` gives it, or its public
@@ -733,7 +731,7 @@ class _BadSignature(SyntaxError):
 def _unbuildable_init(clsname: str, reason: str) -> tx.Callable:
     """Stand-in for an `__init__` this class's fields cannot describe."""
 
-    def __magic_init__(self: Magic, *args, **kwargs) -> tx.NoReturn:
+    def __magic_init__(self: tx.Self, *args, **kwargs) -> tx.NoReturn:
         raise TypeError(
             f"no __init__ could be generated for {clsname}: {reason}"
         )
@@ -741,7 +739,7 @@ def _unbuildable_init(clsname: str, reason: str) -> tx.Callable:
     return __magic_init__
 
 
-def _no_order(self: Magic, other: tx.Any) -> tx.Any:
+def _no_order(self: tx.Self, other: tx.Any) -> tx.Any:
     """Take the place of an ordering method a subclass turned off.
 
     Returning `NotImplemented` tells Python nobody knows how to compare
@@ -1351,12 +1349,12 @@ def _mro(
 
 def __pre_new__(
 
-    metacls: MetaMagic,
+    metacls: "MetaMagic",
     clsname: str,
-    bases: tuple[type, ...],
+    bases: tx.Tuple[type, ...],
     namespace: dict,
     **kwargs
-) -> tuple[str, tuple[type, ...], dict]:
+) -> tx.Tuple[str, tx.Tuple[type, ...], dict]:
 
     if clsname == _DISCARD:
         # This is a dummy class used to compute the MRO of our class
@@ -2036,7 +2034,15 @@ class _FuncBuilder:
             indent(f"return {return_names}", " " * 4)
         ])
         temporary_namespace = {}
-        exec(txt, self.globals, temporary_namespace)
+        # Compile with dont_inherit=True so no compiler flag in force where
+        # this runs -- a `from __future__ import annotations` added to this
+        # module later, most of all -- leaks into the generated code and
+        # stringifies its annotations. The annotation expressions reference
+        # the real type objects held in self.locals (e.g. `__magic_x_type__`);
+        # inheriting the future flag would turn each into that internal local
+        # name as a string instead.
+        code = compile(txt, "<bagof.magic>", "exec", dont_inherit=True)
+        exec(code, self.globals, temporary_namespace)
         fns = temporary_namespace['__create_fn__'](**self.locals)
 
         # Now that we've generated the functions, assign them into cls.
@@ -2078,7 +2084,7 @@ def _hash_add(qualname: str, fields: dict) -> int:
         if (f.eq if f.hash is None else f.hash)
     ]
 
-    def __hash__(self: Magic) -> int:
+    def __hash__(self: tx.Self) -> int:
         # What is hashed is what `__eq__` compares: for each field,
         # whether it is holding a value and the value it holds. Two
         # objects that are equal hash together, a field holding nothing
@@ -2129,7 +2135,7 @@ def _is_class_attribute(field: Field) -> bool:
     return declared.get("kw") is False and declared.get("positional") is False
 
 
-def _make_doc_class(fields: dict[str, Field]) -> str:
+def _make_doc_class(fields: tx.Dict[str, Field]) -> str:
     attrdocs, classattrdocs = [], []
     for name, field in fields.items():
         if not field.var:
@@ -2220,7 +2226,7 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
 
 
 def _make_init(
-    fields: dict[str, Field],
+    fields: tx.Dict[str, Field],
     prepost: tx.Mapping[str, bool],
     clsname: str,
     options: Options,
@@ -2560,7 +2566,7 @@ def _make_init(
     }, required
 
 
-def _make_repr(qualname: str, fields: dict[str, Field]) -> tx.Callable:
+def _make_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     """Build `__repr__`, over the fields that are shown.
 
     A field is shown while it is holding a value, so which fields an
@@ -2571,7 +2577,7 @@ def _make_repr(qualname: str, fields: dict[str, Field]) -> tx.Callable:
     is `None`.
     """
 
-    def __repr__(self: Magic) -> str:
+    def __repr__(self: tx.Self) -> str:
         params = []
         for field in fields.values():
             has_value, value = _stored(self, field)
@@ -2614,9 +2620,9 @@ def _comparison_class(cls: type) -> type:
     return cls.__dict__.get(_GENERIC_ORIGIN, cls)
 
 
-def _make_eq(qualname: str, fields: dict[str, Field]) -> tx.Callable:
+def _make_eq(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
 
-    def __eq__(self: Magic, other: tx.Any) -> bool:
+    def __eq__(self: tx.Self, other: tx.Any) -> bool:
         if self is other:
             return True
         if _comparison_class(other.__class__) is _comparison_class(
@@ -2634,14 +2640,14 @@ def _make_eq(qualname: str, fields: dict[str, Field]) -> tx.Callable:
 
 
 def _make_order(
-    qualname: str, fields: dict[str, Field], slot: str
+    qualname: str, fields: tx.Dict[str, Field], slot: str
 ) -> tx.Callable:
     # Build one of the four comparisons -- `slot` is "lt", "le", "gt" or
     # "ge". All four compare the same thing: the values of the fields
     # that take part in the ordering, as a tuple.
     name, compare = _ORDER_METHODS[slot]
 
-    def ordered_values(obj: Magic) -> tx.Tuple:
+    def ordered_values(obj: "Magic") -> tx.Tuple:
         """The values being compared, in field order.
 
         A field holding no value stops the comparison, with a message
@@ -2666,7 +2672,7 @@ def _make_order(
             values.append(value)
         return tuple(values)
 
-    def method(self: Magic, other: tx.Any) -> tx.Any:
+    def method(self: tx.Self, other: tx.Any) -> tx.Any:
         if _comparison_class(other.__class__) is not _comparison_class(
             self.__class__
         ):
@@ -2690,7 +2696,7 @@ def _make_assign(cls: type) -> type:
     # We are calling object methods instead of super(), because
     # super() falls back to inherited magic methods, which we don't want.
 
-    def __delattr__(self: Magic, name: str) -> None:
+    def __delattr__(self: tx.Self, name: str) -> None:
         field = fields.get(name)
         if field:
             if getattr(field, 'frozen', False):
@@ -2701,7 +2707,7 @@ def _make_assign(cls: type) -> type:
             )
         object.__delattr__(self, name)
 
-    def __setattr__(self: Magic, name: str, value: tx.Any) -> None:
+    def __setattr__(self: tx.Self, name: str, value: tx.Any) -> None:
         field = fields.get(name)
         if field and not field.var:
             if field.frozen:
@@ -2754,7 +2760,7 @@ def _make_state(
     have no method to borrow it from.
     """
 
-    def __getstate__(self: Magic) -> tx.Tuple:
+    def __getstate__(self: tx.Self) -> tx.Tuple:
         attributes = getattr(self, "__dict__", None)
         slots = {}
         for name in slot_names:
@@ -2766,7 +2772,7 @@ def _make_state(
                 pass
         return (dict(attributes) if attributes else None, slots or None)
 
-    def __setstate__(self: Magic, state: tx.Tuple) -> None:
+    def __setstate__(self: tx.Self, state: tx.Tuple) -> None:
         attributes, slots = state
         if attributes:
             self.__dict__.update(attributes)
@@ -2803,9 +2809,9 @@ def _get_slots(cls: type) -> tx.Iterator[str]:
 
 def _make_slots(
     ancestors: tx.Sequence[type],
-    fields: dict[str, Field],
+    fields: tx.Dict[str, Field],
     weakref_slot: bool = False,
-) -> tx.Union[tuple[str, ...], dict[str, tx.Optional[str]]]:
+) -> tx.Union[tx.Tuple[str, ...], tx.Dict[str, tx.Optional[str]]]:
     inherited_slots = set(
         slot
         for base in ancestors
@@ -2830,7 +2836,7 @@ def _make_slots(
 
 
 def _make_mapping(
-    qualname: str, fields: dict[str, Field]
+    qualname: str, fields: tx.Dict[str, Field]
 ) -> tx.Mapping[str, tx.Callable]:
     """The dict-like methods, over the fields that carry a key.
 
@@ -2842,12 +2848,12 @@ def _make_mapping(
     as its value is `None`.
     """
 
-    def _is_key(self: Magic, field: Field) -> bool:
+    def _is_key(self: "Magic", field: Field) -> bool:
         """Whether a field is one of the keys as things stand."""
         has_value, value = _stored(self, field)
         return has_value and bool(field.key(value))
 
-    def _value(self: Magic, key: str, field: Field) -> tx.Any:
+    def _value(self: "Magic", key: str, field: Field) -> tx.Any:
         """The value behind a key, or a `KeyError` saying why there is none.
 
         A field holding nothing gets a written message: it is a real
@@ -2865,7 +2871,7 @@ def _make_mapping(
             raise KeyError(key)
         return value
 
-    def __getitem__(self: Magic, key: str) -> tx.Any:
+    def __getitem__(self: tx.Self, key: str) -> tx.Any:
         """The value behind a key.
 
         Raises `KeyError` if the class has no such key, or if the field
@@ -2876,14 +2882,14 @@ def _make_mapping(
             raise KeyError(key)
         return _value(self, key, field)
 
-    def __setitem__(self: Magic, key: str, value: tx.Any) -> None:
+    def __setitem__(self: tx.Self, key: str, value: tx.Any) -> None:
         """Give a key its value, adding it if it had none."""
         field = fields.get(key)
         if field is None:
             raise KeyError(key)
         setattr(self, field.name, value)
 
-    def __delitem__(self: Magic, key: str) -> None:
+    def __delitem__(self: tx.Self, key: str) -> None:
         """Take a key's value away, so the key goes with it."""
         field = fields.get(key)
         if field is None:
@@ -2907,13 +2913,13 @@ def _make_mapping(
             )
         delattr(self, field.name)
 
-    def __iter__(self: Magic) -> tx.Iterator[str]:
+    def __iter__(self: tx.Self) -> tx.Iterator[str]:
         """The keys that have a value, in field order."""
         for key, field in fields.items():
             if _is_key(self, field):
                 yield key
 
-    def __len__(self: Magic) -> int:
+    def __len__(self: tx.Self) -> int:
         """How many keys have a value.
 
         Only the fields holding a value are counted, so two instances of

@@ -83,6 +83,21 @@ class TestAnnotationFamily:
             Server(80, True)
         assert Server(80, debug=True).debug is True
 
+    def test_init_annotations_are_the_type_objects(self) -> None:
+        # This module's text annotations are read back to real types
+        # before the class is built, so the generated `__init__` must
+        # carry those types -- not the internal local names spelled as
+        # strings, even though the builder's own module hands its
+        # annotations over as text.
+        class Point(Magic):
+            x: int = 0
+            y: str = "hi"
+
+        ann = Point.__init__.__annotations__
+        assert ann["x"] is int
+        assert ann["y"] is str
+        assert "__magic" not in str(inspect.signature(Point.__init__))
+
     def test_class_var_is_shared_and_not_an_init_parameter(self) -> None:
         class Counter(Magic):
             value: int = 0

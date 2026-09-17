@@ -12,8 +12,6 @@ the class, the field and the offending value in front of the original
 text, and the original as its cause.
 """
 
-from __future__ import annotations
-
 __all__ = ["field_error"]
 
 # dependencies
