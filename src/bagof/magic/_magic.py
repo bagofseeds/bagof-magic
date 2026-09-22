@@ -221,13 +221,21 @@ def __post_new__(cls: type) -> type:
     if getattr(getattr(cls, _OPTIONS, None), "polymorphic", False) == "strict":
         _arm_polymorph(cls, specs if registration is not None else None)
 
+    # A class that freezes, converts or validates a field -- or inherits a
+    # `__setattr__` that does -- needs one of its own; one that does none
+    # of those assigns straight through `object`, so it is left without,
+    # and `__init__` was compiled to assign directly (see
+    # `_direct_assignment`).
+    options = getattr(cls, _OPTIONS, None)
     fields = getattr(cls, _FIELDS, {})
-    fields = {name: field for name, field in fields.items() if not field.var}
-    __delattr__, __setattr__ = _make_assign(cls)
-    if "__setattr__" not in cls.__dict__:
-        cls.__setattr__ = __setattr__
-    if "__delattr__" not in cls.__dict__:
-        cls.__delattr__ = __delattr__
+    if options is None or not _direct_assignment(
+        options, fields, cls.__bases__
+    ):
+        __delattr__, __setattr__ = _make_assign(cls)
+        if "__setattr__" not in cls.__dict__:
+            cls.__setattr__ = __setattr__
+        if "__delattr__" not in cls.__dict__:
+            cls.__delattr__ = __delattr__
 
     return cls
 
@@ -1702,11 +1710,20 @@ def __pre_new__(
     )
 
     # Build __init__. The builder writes source, so binding the public
-    # name has to wait until `insert_fns` has compiled it (below).
+    # name has to wait until `insert_fns` has compiled it (below). A class
+    # that needs no `__setattr__` of its own assigns its fields directly,
+    # and `__post_new__` skips installing one -- the same decision, made
+    # the same way from the options, the fields and the bases. A
+    # hand-written `__setattr__` is kept and still bypassed at
+    # construction, so a class that has one never assigns directly.
+    direct_assign = _direct_assignment(options, fields, bases) and not (
+        "__setattr__" in namespace or "__delattr__" in namespace
+    )
     try:
         init_kwargs, sentinels, alias_params, alias_defaults = _make_init(
             fields, prepost, clsname, options,
             {fields[name].public_name for name in pinned},
+            direct_assign,
         )
     except _BadSignature as error:
         if init_name:
@@ -2251,12 +2268,46 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
     return doc
 
 
+def _direct_assignment(
+    options: Options,
+    fields: tx.Mapping[str, Field],
+    bases: tx.Sequence[type],
+) -> bool:
+    # Whether the class can set its fields with a plain `self.x = value`
+    # and needs no `__setattr__` of its own. A class installs one to
+    # freeze a field, or to run a converter or a validator on assignment;
+    # without any of those, and with no base that installs one either, the
+    # generated method would only ever pass the value straight to
+    # `object`, and going through it -- both to bypass it in `__init__` and
+    # on every later assignment -- costs more than the plain store it
+    # guards. So a class like that skips it, and `__init__` assigns
+    # directly, the way `dataclasses` does.
+    if options.frozen:
+        return False
+    for field in fields.values():
+        if not field.var and (
+            field.frozen or field.convert or field.validate
+        ):
+            return False
+    for base in bases:
+        for ancestor in base.__mro__:
+            if ancestor is object:
+                continue
+            if (
+                "__setattr__" in ancestor.__dict__
+                or "__delattr__" in ancestor.__dict__
+            ):
+                return False
+    return True
+
+
 def _make_init(
     fields: tx.Dict[str, Field],
     prepost: tx.Mapping[str, bool],
     clsname: str,
     options: Options,
     pinned: tx.Container[str] = (),
+    direct_assign: bool = False,
 ) -> tx.Tuple[dict, tx.Set[str]]:
 
     # The body below is written in terms of these; each is carried
@@ -2270,6 +2321,16 @@ def _make_init(
         _HAS_FACTORY: _HasFactory,
     }
     positional_onlys, args, kw_onlys = {}, {}, {}
+
+    def _store(name: str, value: str) -> str:
+        # How a field's value is written onto the instance. A class with
+        # no `__setattr__` of its own assigns straight through, which
+        # `object`'s own store handles; one that has a `__setattr__`
+        # bypasses it -- its converting and validating have already run
+        # here, and must not run a second time.
+        if direct_assign:
+            return f"{SELF}.{name} = {value}"
+        return f"{_OBJECT}.__setattr__({SELF}, {name!r}, {value})"
 
     # A field that accepts more than one keyword name has each extra name
     # as a keyword-only parameter, and the alias handling is compiled into
@@ -2555,10 +2616,8 @@ def _make_init(
                 if splits and skip_validate else step
             )
         if not field.var:
-            # NOTE: we by pass the object's __setattr__ to avoid running
-            # through conversion and validation multiple times.
             body += dedent(f"""
-            {_OBJECT}.__setattr__({SELF}, {field.name!r}, {name})
+            {_store(field.name, name)}
             """)
         return body
 
@@ -2579,7 +2638,7 @@ def _make_init(
         locals[default] = field.factory if field.build else field.default
         if not (field.build or converter or validator):
             return dedent(f"""
-            {_OBJECT}.__setattr__({SELF}, {field.name!r}, {default})
+            {_store(field.name, default)}
             """)
         # Building, converting and validating are taken one at a time,
         # so that whichever of them fails can say what it was doing.
@@ -2603,7 +2662,7 @@ def _make_init(
                 field, "validate", value
             )
         return body + dedent(f"""
-        {_OBJECT}.__setattr__({SELF}, {field.name!r}, {value})
+        {_store(field.name, value)}
         """)
 
     def _make_required_elem(name: str) -> str:
@@ -2666,6 +2725,31 @@ def _make_init(
     }, required, set(alias_params), alias_defaults
 
 
+def _compile_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
+    # With every shown field always set, `repr` reads each field directly
+    # rather than looping and guarding a `getattr` per field. A field
+    # shown only when it is not `None` keeps that one check; a field shown
+    # unconditionally has none. The label is the public name, the value
+    # the stored one, exactly as the looped version reports them.
+    lines = ["def __repr__(self):", "    parts = []"]
+    for field in fields.values():
+        label, name = field.public_name, field.name
+        append = f'parts.append("{label}=" + repr(self.{name}))'
+        if field.repr.hide_if_none:
+            lines.append(f"    if self.{name} is not None:")
+            lines.append(f"        {append}")
+        else:
+            lines.append(f"    {append}")
+    lines.append(
+        '    return self.__class__.__name__ + "(" + ", ".join(parts) + ")"'
+    )
+    namespace: tx.Dict[str, tx.Any] = {}
+    exec("\n".join(lines), namespace)
+    __repr__ = namespace["__repr__"]
+    __repr__.__qualname__ = f"{qualname}.__repr__"
+    return __repr__
+
+
 def _make_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     """Build `__repr__`, over the fields that are shown.
 
@@ -2676,6 +2760,8 @@ def _make_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     -- and a field can also ask to be left out for as long as its value
     is `None`.
     """
+    if all(_always_set(field) for field in fields.values()):
+        return _compile_repr(qualname, fields)
 
     def __repr__(self: tx.Self) -> str:
         params = []
@@ -2720,8 +2806,52 @@ def _comparison_class(cls: type) -> type:
     return cls.__dict__.get(_GENERIC_ORIGIN, cls)
 
 
-def _make_eq(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
+def _always_set(field: Field) -> bool:
+    # Whether every constructed instance holds this field: it is a
+    # constructor parameter, or it is given a default or a factory. A
+    # field that is none of these is only ever set by hand, so reading it
+    # can fail -- and the methods that read fields have to allow for that.
+    return (
+        field.positional or field.kw
+        or field.default is not MISSING or field.build
+    )
 
+
+def _compile_eq(qualname: str, names: tx.List[str]) -> tx.Callable:
+    # With every compared field always set, equality is the plain tuple
+    # comparison `dataclasses` compiles, reading each field directly
+    # rather than looping and guarding a `getattr` per field. The class
+    # check keeps a fast identity path in front of the generic-origin one
+    # that lets `Box[int](1)` equal `Box(1)`.
+    ours = "(" + "".join(f"self.{name}, " for name in names) + ")"
+    theirs = "(" + "".join(f"other.{name}, " for name in names) + ")"
+    namespace: tx.Dict[str, tx.Any] = {"_comparison_class": _comparison_class}
+    exec(
+        "def __eq__(self, other):\n"
+        "    if self is other:\n"
+        "        return True\n"
+        "    if other.__class__ is self.__class__ or (\n"
+        "        _comparison_class(other.__class__)\n"
+        "        is _comparison_class(self.__class__)\n"
+        "    ):\n"
+        f"        return {ours} == {theirs}\n"
+        "    return NotImplemented\n",
+        namespace,
+    )
+    __eq__ = namespace["__eq__"]
+    __eq__.__qualname__ = f"{qualname}.__eq__"
+    return __eq__
+
+
+def _make_eq(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
+    eq_fields = [field for field in fields.values() if field.eq]
+    if all(_always_set(field) for field in eq_fields):
+        return _compile_eq(qualname, [field.name for field in eq_fields])
+
+    # A field that is not always set is compared through `_stored`, which
+    # tells "holds a value" from "holds this value" -- two instances that
+    # differ in which fields have been set are different, whatever the
+    # values they do hold.
     def __eq__(self: tx.Self, other: tx.Any) -> bool:
         if self is other:
             return True
@@ -2739,6 +2869,34 @@ def _make_eq(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     return __eq__
 
 
+def _compile_order(
+    qualname: str, name: str, compare: tx.Callable, names: tx.List[str]
+) -> tx.Callable:
+    # With every ordered field always set, ordering is the tuple
+    # comparison `dataclasses` compiles, reading each field directly
+    # rather than looping and guarding a `getattr` per field.
+    ours = "(" + "".join(f"self.{field}, " for field in names) + ")"
+    theirs = "(" + "".join(f"other.{field}, " for field in names) + ")"
+    namespace: tx.Dict[str, tx.Any] = {
+        "_comparison_class": _comparison_class,
+        "compare": compare,
+    }
+    exec(
+        "def method(self, other):\n"
+        "    if other.__class__ is self.__class__ or (\n"
+        "        _comparison_class(other.__class__)\n"
+        "        is _comparison_class(self.__class__)\n"
+        "    ):\n"
+        f"        return compare({ours}, {theirs})\n"
+        "    return NotImplemented\n",
+        namespace,
+    )
+    method = namespace["method"]
+    method.__name__ = name
+    method.__qualname__ = f"{qualname}.{name}"
+    return method
+
+
 def _make_order(
     qualname: str, fields: tx.Dict[str, Field], slot: str
 ) -> tx.Callable:
@@ -2746,6 +2904,12 @@ def _make_order(
     # "ge". All four compare the same thing: the values of the fields
     # that take part in the ordering, as a tuple.
     name, compare = _ORDER_METHODS[slot]
+
+    order_fields = [field for field in fields.values() if field.order]
+    if all(_always_set(field) for field in order_fields):
+        return _compile_order(
+            qualname, name, compare, [field.name for field in order_fields]
+        )
 
     def ordered_values(obj: "Magic") -> tx.Tuple:
         """The values being compared, in field order.

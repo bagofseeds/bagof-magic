@@ -165,18 +165,28 @@ class InputAliases:
         return result
 
 
+def _compile_accessors(target: str) -> tx.Tuple[tx.Callable, tx.Callable]:
+    # The target is a field name, so it is always a plain identifier, and
+    # the getter and setter read and write it directly -- `self.<target>`,
+    # not `getattr(self, name)` -- so a forwarding property costs a plain
+    # attribute access rather than a builtin call and a name lookup.
+    namespace: tx.Dict[str, tx.Any] = {}
+    exec(
+        "def get(self):\n"
+        f"    return self.{target}\n"
+        "def set(self, value):\n"
+        f"    self.{target} = value\n",
+        namespace,
+    )
+    return namespace["get"], namespace["set"]
+
+
 class ForwardingProperty(property):
     """An identifiable generated property, so subclasses can replace it."""
 
     def __init__(self, target: str, mode: tx.Union[bool, str]) -> None:
         self.target = target
-
-        def get(instance: tx.Any) -> tx.Any:
-            return getattr(instance, target)
-
-        def set(instance: tx.Any, value: tx.Any) -> None:
-            setattr(instance, target, value)
-
+        get, set = _compile_accessors(target)
         access = "read/write" if mode is True else "read-only"
         super().__init__(
             get,

@@ -178,6 +178,23 @@ class TestBasicStruct:
         assert A(1) != B(1)
         assert A(1).__eq__(B(1)) is NotImplemented
 
+    def test_eq_and_repr_with_a_hand_set_field(self) -> None:
+        # A field with no parameter and no default is not always set, so
+        # `__eq__` and `__repr__` fall back to reading each field through a
+        # presence check rather than the compiled fast path. Two instances
+        # that differ in which fields have been set are unequal, and a
+        # field with no value is left out of the repr.
+        class Point(Magic):
+            x: int
+            y: NoInit[int]
+
+        assert Point(1) == Point(1)
+        assert repr(Point(1)) == "Point(x=1)"
+        one, other = Point(1), Point(1)
+        one.y = 2
+        assert one != other
+        assert repr(one) == "Point(x=1, y=2)"
+
     def test_keyword_args(self) -> None:
         class Point(Magic):
             x: int
@@ -3894,6 +3911,32 @@ class TestUserDefinedAssignment:
 
         with pytest.raises(AttributeError, match="frozen"):
             F(1).x = 2
+
+    def test_user_setattr_kept_when_class_also_converts(self) -> None:
+        # A class that converts a field would generate a `__setattr__`,
+        # but a hand-written one still wins. Construction converts and
+        # bypasses it; a later assignment goes through the user's method,
+        # which here does not convert.
+        class S(Magic, convert=True):
+            x: int
+
+            def __setattr__(self, name: str, value: object) -> None:
+                object.__setattr__(self, name, value)
+
+        assert S("1").x == 1
+        s = S(0)
+        s.x = "2"
+        assert s.x == "2"
+
+    def test_user_delattr_kept_when_class_is_frozen(self) -> None:
+        class D(Magic, frozen=True):
+            x: int = 0
+
+            def __delattr__(self, name: str) -> None:
+                raise RuntimeError("no deleting")
+
+        with pytest.raises(RuntimeError, match="no deleting"):
+            del D(1).x
 
 class TestPublicName:
     """A field whose parameter name differs from its own name."""
