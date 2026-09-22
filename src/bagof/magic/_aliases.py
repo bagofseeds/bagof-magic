@@ -84,6 +84,21 @@ def property_option(value: tx.Any) -> tx.Any:
     return pairs
 
 
+def readonly_property(value: tx.Any) -> tx.Any:
+    """Turn every enabled mode of a normalized property value read-only.
+
+    Given the output of `property_option`, force each read/write mode to
+    "readonly" while leaving disabled names (`False`) untouched.
+    """
+    if value is True:
+        return "readonly"
+    if value is MISSING or value is False or value == "readonly":
+        return value
+    return tuple(
+        (name, mode if mode is False else "readonly") for name, mode in value
+    )
+
+
 class InputAliases:
     """Resolve keywords before binding, hooks or polymorphic selection."""
 

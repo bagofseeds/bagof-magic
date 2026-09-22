@@ -15,6 +15,7 @@ from bagof.magic import (
     InitVar,
     Magic,
     Property,
+    ReadOnlyProperty,
     asdict,
     field,
     fields,
@@ -433,3 +434,57 @@ def test_readonly_shorthand_and_none_default() -> None:
         obj.value = 3
     obj._value = 3
     assert obj.value == 3
+
+
+def test_read_only_property_sugar() -> None:
+    class Bare(Magic, alias=True):
+        _value: ReadOnlyProperty[int]
+
+    obj = Bare(3)
+    assert obj.value == 3
+    with pytest.raises(AttributeError):
+        obj.value = 4
+
+    class Named(Magic):
+        value: ReadOnlyProperty[int, ("label", "title")]
+
+    named = Named(3)
+    assert named.label == named.title == 3
+    with pytest.raises(AttributeError):
+        named.label = 4
+    with pytest.raises(AttributeError):
+        named.title = 4
+
+    class Mixed(Magic):
+        value: ReadOnlyProperty[int, {"shown": True, "hidden": False}]
+
+    mixed = Mixed(3)
+    assert mixed.shown == 3
+    assert not hasattr(mixed, "hidden")
+    with pytest.raises(AttributeError):
+        mixed.shown = 4
+
+
+def test_read_only_property_matches_property_with_readonly_mapping() -> None:
+    class Sugar(Magic):
+        value: ReadOnlyProperty[int, ("a", "b")]
+
+    class Spelled(Magic):
+        value: Property[int, {"a": "readonly", "b": "readonly"}]
+
+    expected = {"a": "readonly", "b": "readonly"}
+    assert fields(Sugar)[0].properties == expected
+    assert fields(Spelled)[0].properties == expected
+
+
+def test_stacked_property_hints_do_not_merge() -> None:
+    # The annotation family is last-wins for a repeated slot: the outer
+    # Property replaces the inner rather than merging with it. Several
+    # forwarding names go in one mapping, not one hint each.
+    class Example(Magic):
+        value: Property[Property[int, "inner"], "outer"]
+
+    obj = Example(3)
+    assert obj.outer == 3
+    assert not hasattr(obj, "inner")
+    assert fields(Example)[0].properties == {"outer": True}

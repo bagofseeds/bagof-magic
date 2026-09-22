@@ -134,7 +134,6 @@ from ._constants import (
     _GENERIC_ORIGIN,
     _HAS_FACTORY,
     _HINTS,
-    _INPUT_ALIASES,
     _IS_DEFAULT,
     _ISINSTANCE,
     _MAGIC,
@@ -1662,7 +1661,6 @@ def __pre_new__(
 
     # Remember all of the fields on our class (including bases).
     namespace[_FIELDS] = fields
-    namespace[_INPUT_ALIASES] = InputAliases(fields)
 
     # Was this class defined with an explicit __hash__?  Note that if
     # __eq__ is defined in this class, then python will automatically
@@ -1854,7 +1852,11 @@ def __pre_new__(
             co_name=magic_init.__name__
         )
         _show_real_signature(magic_init, sentinels)
-        magic_init = namespace[_INPUT_ALIASES].wrap(magic_init, clsname)
+        # Route alternate input keywords to their preferred names before
+        # the compiled body binds them, so a direct `__magic_init__` call
+        # honours aliases too. The map is derived from the fields, which
+        # already carry every accepted name.
+        magic_init = InputAliases(fields).wrap(magic_init, clsname)
         namespace[_MAGIC("init")] = magic_init
         if init_name and init_name not in namespace:
             namespace[init_name] = magic_init
@@ -3004,12 +3006,18 @@ def _dispatching(metacls: type) -> type:
         # itself have to be one, has nothing here. The lookup is a
         # direct one: a subclass answers for the subclasses registered
         # with *it*, and never for its parent's.
-        aliases = getattr(cls, _INPUT_ALIASES, None)
-        if aliases is not None:
+        # Polymorphic selection reads the arguments before `__init__`
+        # runs, so alternate input keywords have to reach their preferred
+        # names first. The map comes from the fields rather than a stored
+        # copy; a class with no alternate names needs no rewriting.
+        fields = getattr(cls, _FIELDS, None)
+        if fields is not None:
             owner = next(b for b in cls.__mro__ if "__init__" in b.__dict__)
             generated_init = "__init__" in owner.__dict__.get(_GENERATED, {})
             if generated_init:
-                kwargs = aliases.normalize(args, kwargs, cls.__name__)
+                aliases = InputAliases(fields)
+                if aliases.multiple:
+                    kwargs = aliases.normalize(args, kwargs, cls.__name__)
         found = cls.__dict__.get(_POLYMORPHS)
         if found is None:
             return build(cls, *args, **kwargs)

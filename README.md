@@ -598,7 +598,7 @@ one shown in the signature, repr and dict-like view. The stored attribute
 keeps the name written in the class body:
 
 ```python
-from bagof.magic import Magic, Alias, Property, field, replace
+from bagof.magic import Magic, Alias, Property, ReadOnlyProperty, field, replace
 
 class Person(Magic):
     name: Alias[str, ("label", "name", "title")]
@@ -645,6 +645,19 @@ chooses access for each name: `True` and `"readwrite"` are equivalent,
 Deletion through a property is unsupported. Writes use the target field's
 conversion, validation and frozen rules. Read-only access does not freeze
 an object returned by the property.
+
+`ReadOnlyProperty` is `Property` with every name read-only, so you can
+skip the mapping when none of them should be writable:
+
+```python
+class Named(Magic, alias=True):
+    name: ReadOnlyProperty[str, ("label", "title")]
+```
+
+A single `Property` (or `ReadOnlyProperty`) hint describes all of a
+field's forwarding attributes. Stacking two hints does not merge them --
+the outer one replaces the inner, as elsewhere in the annotation family
+-- so list several names in one mapping rather than one hint each.
 
 The equivalent field declaration is:
 
@@ -696,6 +709,7 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | --- | --- | --- |
 | `Alias[T, names]` | accept input names, preferred first | -- |
 | `Property[T, names]` | expose forwarding attributes | -- |
+| `ReadOnlyProperty[T, names]` | expose read-only forwarding attributes | -- |
 | `Default[T, v]` | give the field a default | -- |
 | `Factory[T]` | build the default by calling something | -- |
 | `ConvertTo[T]` | convert whatever comes in | -- |

@@ -1,6 +1,7 @@
 __all__ = [
     "Alias",
     "Property",
+    "ReadOnlyProperty",
     "Field",
     "field",
     "Default",
@@ -38,7 +39,7 @@ __all__ = [
 ]
 import typing_extensions as tx
 
-from ._aliases import alias_option, property_option
+from ._aliases import alias_option, property_option, readonly_property
 from ._constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
 from ._options import Options
 from ._resolve import Hints
@@ -179,14 +180,17 @@ class Field(SlotsBase):
             value is used as the key name.
         alias : str | sequence[str] | bool, optional
             Input name or ordered input names. The first is preferred in
-            signatures, repr and mapping keys. True adds enabled property
-            names after the default public name. False keeps the stored
-            name, including leading underscores.
+            signatures, repr and mapping keys. By default the field is
+            known by its own name with any leading underscore removed.
+            True adds enabled property names after that default public
+            name. False keeps the stored name, including leading
+            underscores.
         property : str | sequence[str] | mapping | bool, default=False
             Forwarding attributes. A name or sequence creates read/write
             properties. A mapping chooses True (or "readwrite"),
             "readonly", or False for each name. True or "readonly" alone
-            exposes the preferred public name with that access mode.
+            exposes just the preferred public name (not the other input
+            aliases) with that access mode.
 
         Other Parameters
         ----------------
@@ -646,6 +650,27 @@ class Property(AnnotatedField):
     """
 
     __set_slots__ = {"property": True}
+
+
+@slots
+class ReadOnlyProperty(Property):
+    """Expose read-only forwarding attributes for a stored field.
+
+    Write ``ReadOnlyProperty[str, "label"]`` to read the field through
+    ``label`` without allowing assignment to it. A sequence exposes every
+    name read-only. With no configuration, expose the preferred public
+    name read-only. It is the read-only counterpart of ``Property``, so
+    ``ReadOnlyProperty[str, names]`` matches ``Property[str, names]`` but
+    forbids writes.
+    """
+
+    __set_slots__ = {"property": "readonly"}
+
+    def __init__(self, *values: tx.Any, **kwvalues: tx.Any) -> None:
+        super().__init__(*values, **kwvalues)
+        # Names given by position or in a sequence normalize to read/write
+        # pairs; force them read-only so the name alone means read-only.
+        self.property = readonly_property(self.property)
 
 
 @slots
