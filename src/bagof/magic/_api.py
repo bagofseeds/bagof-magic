@@ -334,8 +334,9 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
     is. Anything you do not mention is carried over unchanged. It works
     on a frozen class, which is where it is most useful.
 
-    Name each change after the argument the constructor takes, which for
-    an aliased or underscored field is not the name the class body uses.
+    Name each change after an argument the constructor takes. Any of a
+    field's input aliases can be used, but supplying two names for the
+    same field is an error.
 
     !!! example
         ```pycon
@@ -431,7 +432,20 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
     # a class that cannot tell two of its fields apart cannot say which
     # one a change was meant for.
     keyed = _keyed(_field_table(obj, "replace").values())
-    given, arguments = dict(changes), []
+    given, arguments = {}, []
+    aliases = {
+        alias: field.public_name
+        for field in keyed.values()
+        for alias in field.aliases
+    }
+    for name, value in changes.items():
+        preferred = aliases.get(name, name)
+        if preferred in given:
+            raise TypeError(
+                f"{cls.__name__} got multiple values for argument "
+                f"{preferred!r}"
+            )
+        given[preferred] = value
     for name, field in keyed.items():
         # A field the constructor does not take -- one that can be
         # passed neither by position nor by name, which is what `NoInit`

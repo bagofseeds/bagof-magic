@@ -1,10 +1,14 @@
 __all__ = ["Options"]
 import typing_extensions as tx
 
+from ._aliases import alias_option, property_option
+from ._constants import MISSING
 from ._utils import SlotsBase, slots
 
 
 @slots(
+    'alias',            # Input naming policy for fields
+    'property',         # Forwarding attribute policy for fields
     'init',             # Generate __init__ method (or its name)
     'repr',             # Generate __repr__ method (or its name)
     'eq',               # Generate __eq__ method (or its name)
@@ -46,6 +50,8 @@ class Options(SlotsBase):
     """
 
     _DEFAULTS: tx.Dict[str, tx.Any] = dict(
+        alias=MISSING,
+        property=False,
         init=True,
         repr=True,
         eq=True,
@@ -72,6 +78,13 @@ class Options(SlotsBase):
         reverse=False,
         doc=True,
     )
+
+    def __init__(self, **kwargs) -> None:
+        if "alias" in kwargs:
+            kwargs["alias"] = alias_option(kwargs["alias"])
+        if "property" in kwargs:
+            kwargs["property"] = property_option(kwargs["property"])
+        super().__init__(**kwargs)
 
     @staticmethod
     def make_default() -> tx.Self:

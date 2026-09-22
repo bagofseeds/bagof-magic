@@ -72,6 +72,13 @@ validate_defaults : bool, default=True
 unresolved_hints : str, default="warn"
     What to do when a type hint names something still undefined the
     first time a field needs it. "warn", "raise" or "ignore".
+alias : str | sequence | bool, optional
+    Default input names. True includes property names; False keeps
+    leading underscores. The first name is preferred.
+property : str | sequence | mapping | bool, default=False
+    Default forwarding properties for stored instance fields. True
+    exposes the public name; "readonly" makes it read-only; "all"
+    exposes every input alias.
 mapping : bool, default=False
     Implement the Mapping protocol. Only a field holding a value is
     a key.
@@ -108,10 +115,12 @@ import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
 # internals
+from ._aliases import InputAliases, install_properties
 from ._arguments import *  # noqa: F401, F403
 from ._arguments import Arguments
 from ._arguments import __all__ as __all_arguments__
 from ._constants import (
+    _ABSENT,
     _ARGUMENTS,
     _CONVERTER,
     _DEFAULT,
@@ -380,29 +389,18 @@ def _add_fields(
 
 
 def _check_public_names(clsname: str, fields: tx.Dict[str, Field]) -> None:
-    # Two fields cannot answer to one outside name.
-    #
-    # A field is known outside the class by its alias, or by its own name
-    # with any leading underscore removed. That one name is the
-    # constructor parameter, the key `repr()` shows, the key of the
-    # dict-like view, and the key `fields_dict`, `asdict` and `replace`
-    # speak -- so when two fields share it, only one of them is ever
-    # reachable and the other is silently unreachable under it. The class
-    # is refused here, whether or not the pair would meet in a signature,
-    # so that every accessor can key by that name and trust it.
+    # Every input spelling belongs to one field, including names inherited
+    # from different bases. Output methods use only the preferred name.
     seen = {}
     for name, field in fields.items():
-        public = field.public_name
-        if public in seen:
-            raise TypeError(
-                f"{clsname} has two fields, {seen[public]!r} and {name!r}, "
-                f"and both are known as {public!r} outside the class: that "
-                f"is the name the constructor takes and repr() shows. A "
-                f"field is known by its alias, or by its own name with any "
-                f"leading underscore removed. Rename one of the two fields, "
-                f"or give one of them an alias of its own."
-            )
-        seen[public] = name
+        for public in field.aliases:
+            if public in seen:
+                raise TypeError(
+                    f"{clsname} has two fields, {seen[public]!r} and "
+                    f"{name!r}, and both are known as {public!r} outside "
+                    "the class. Rename one or give it different aliases."
+                )
+            seen[public] = name
 
 
 def _check_public_keys(clsname: str, fields: tx.Dict[str, Field]) -> None:
@@ -1706,7 +1704,7 @@ def __pre_new__(
     # Build __init__. The builder writes source, so binding the public
     # name has to wait until `insert_fns` has compiled it (below).
     try:
-        init_kwargs, sentinels = _make_init(
+        init_kwargs, sentinels, alias_params, alias_defaults = _make_init(
             fields, prepost, clsname, options,
             {fields[name].public_name for name in pinned},
         )
@@ -1718,7 +1716,7 @@ def __pre_new__(
         # its own `__magic_init__`, one that explains the problem if it
         # is ever called -- without it, `self.__magic_init__(...)` would
         # quietly find a base class's version and set the wrong fields.
-        init_kwargs, sentinels = None, ()
+        init_kwargs, sentinels, alias_params, alias_defaults = None, (), (), {}
         namespace.setdefault(
             _MAGIC("init"), _unbuildable_init(clsname, str(error))
         )
@@ -1855,7 +1853,11 @@ def __pre_new__(
         magic_init.__code__ = magic_init.__code__.replace(
             co_name=magic_init.__name__
         )
-        _show_real_signature(magic_init, sentinels)
+        # The alias parameters are compiled into `__init__`, so its
+        # signature is curated here to hide them and show each preferred
+        # name's real default in place of the marker it carries.
+        _show_real_signature(magic_init, sentinels, alias_params,
+                             alias_defaults)
         if init_name and init_name not in namespace:
             namespace[init_name] = magic_init
             generated[init_name] = "init"
@@ -1871,6 +1873,7 @@ def __pre_new__(
             namespace[name] = _NEUTRAL["init"]
             generated[name] = "init"
 
+    install_properties(clsname, fields, namespace, base_mro)
     namespace[_GENERATED] = generated
 
     # Add attributes to class documentation
@@ -1887,27 +1890,33 @@ def __pre_new__(
 
 
 def _show_real_signature(
-    func: tx.Callable, sentinels: tx.Container[str]
+    func: tx.Callable,
+    sentinels: tx.Container[str],
+    alias_params: tx.Container[str] = (),
+    alias_defaults: tx.Optional[tx.Mapping[str, tx.Any]] = None,
 ) -> None:
     """Say what the compiled parameters stand in for.
 
-    Two of them stand in for something. A field whose default skips
+    Three of them stand in for something. A field whose default skips
     conversion or validation carries that default behind a marker, so
     that the body can tell "not passed" from a caller who passed the
-    same value; and a parameter with no default at all, sitting behind
+    same value; a parameter with no default at all, sitting behind
     one that has a default -- which a pinned discriminant can leave
     behind it, and which Python's own syntax cannot write -- carries a
-    sentinel saying so.
+    sentinel saying so; and an aliased field's parameters carry the alias
+    marker, with the extra names present only to be passed, not read.
 
-    Neither is anything a reader should meet. `help`, an editor's
-    tooltip and `Signature.bind` all go by the signature, and would
-    show a marker where a default belongs, or take a required argument
-    for an optional one. Both are put right here, in one signature:
-    written as two, whichever ran second would silently undo the first.
+    None of it is anything a reader should meet. `help`, an editor's
+    tooltip and `Signature.bind` all go by the signature, and would show
+    a marker where a default belongs, take a required argument for an
+    optional one, or list an alias the preferred name already stands for.
+    All are put right here, in one signature: written apart, whichever ran
+    last would silently undo the others.
     """
+    alias_defaults = alias_defaults or {}
     marked = list(func.__defaults__ or ())
     marked += list((func.__kwdefaults__ or {}).values())
-    if not sentinels and not any(
+    if not sentinels and not alias_params and not alias_defaults and not any(
         isinstance(default, _HasDefault) for default in marked
     ):
         # Nothing stands in for anything, so the compiled signature is
@@ -1917,7 +1926,22 @@ def _show_real_signature(
     known = signature(func)
     parameters = []
     for parameter in known.parameters.values():
-        if parameter.name in sentinels:
+        if parameter.name in alias_params:
+            # A generated alias parameter: the preferred name it feeds
+            # already stands in the signature, so this one is left out.
+            continue
+        if parameter.name in alias_defaults:
+            # An aliased field's preferred name carries the alias marker;
+            # show the field's real default, the way an unaliased field's
+            # parameter shows it.
+            default = alias_defaults[parameter.name]
+            if parameter.name in sentinels or default is REQUIRED:
+                parameter = parameter.replace(default=Parameter.empty)
+            elif isinstance(default, _HasDefault):
+                parameter = parameter.replace(default=default.value)
+            else:
+                parameter = parameter.replace(default=default)
+        elif parameter.name in sentinels:
             # No value to show: this parameter really has no default.
             parameter = parameter.replace(default=Parameter.empty)
         elif isinstance(parameter.default, _HasDefault):
@@ -2220,6 +2244,8 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
         if default is not MISSING else
         f"{name} : {doctype}"
     )
+    if name == field.public_name and field.kw and len(field.aliases) > 1:
+        doc += "\n    Also accepts: " + ", ".join(field.aliases[1:]) + "."
     if field.doc:
         doc += "\n" + indent(dedent(field.doc).strip(), " " * 4)
     return doc
@@ -2244,6 +2270,19 @@ def _make_init(
         _HAS_FACTORY: _HasFactory,
     }
     positional_onlys, args, kw_onlys = {}, {}, {}
+
+    # A field that accepts more than one keyword name has each extra name
+    # as a keyword-only parameter, and the alias handling is compiled into
+    # the body rather than bolted on with a wrapper. `alias_params` is the
+    # generated parameters to hide from the signature people read, and
+    # `alias_defaults` the real default to show for each preferred name in
+    # their place. A positional-only field cannot be passed by keyword, so
+    # its alternate names add no parameter.
+    def _aliased(field: Field) -> bool:
+        return field.kw and len(field.aliases) > 1
+
+    alias_params: tx.List[str] = []
+    alias_defaults: tx.Dict[str, tx.Any] = {}
 
     SELF = "self"
     # Fields that are stored on the instance without being a parameter:
@@ -2274,21 +2313,28 @@ def _make_init(
         if field.public_name == "self":
             SELF = _SELF
 
-    # Pinning a field gives it a default, which can leave a parameter
-    # without one behind it -- `MinorChord(mode="minor", root)`, which
-    # Python's syntax has no way to write. Those parameters are given a
+    # Pinning a field, and aliasing one, both give a parameter a default
+    # it was not written with -- `MinorChord(mode="minor", root)`, which
+    # Python's syntax has no way to write, and the alias marker an aliased
+    # parameter carries. Either can leave a parameter without a default
+    # behind one that has one. Those trailing parameters are given a
     # sentinel default instead, and the body turns a sentinel that is
-    # still there back into the usual "missing a required argument". A
-    # class that pins nothing is untouched: two hand-written fields in
-    # that order are still refused, with the error that says so.
+    # still there back into the usual "missing a required argument". Two
+    # hand-written fields in that order, neither pinned nor aliased, are
+    # still refused, with the error that says so.
     required = set()
-    if pinned:
-        after_pin = False
-        for field in list(positional_onlys.values()) + list(args.values()):
-            if field.public_name in pinned:
-                after_pin = True
-            elif after_pin and field.default is MISSING and not field.build:
-                required.add(field.public_name)
+    # An aliased field with no default of its own carries the alias marker
+    # and is restored to the required sentinel, so the missing-argument
+    # check has to cover it too.
+    for field in fields.values():
+        if _aliased(field) and field.default is MISSING and not field.build:
+            required.add(field.public_name)
+    after_synthetic = False
+    for field in list(positional_onlys.values()) + list(args.values()):
+        if field.public_name in pinned or _aliased(field):
+            after_synthetic = True
+        elif after_synthetic and field.default is MISSING and not field.build:
+            required.add(field.public_name)
 
     def _skipped(field: Field) -> tx.Tuple[bool, bool]:
         # Which of the field's two steps a value coming from its own
@@ -2328,7 +2374,15 @@ def _make_init(
             # default.
             default = REQUIRED
         locals[_TYPE(name)] = field.type
-        if default is MISSING:
+        if _aliased(field):
+            # The parameter carries the alias marker instead of its
+            # default; the body puts the real default back, and the
+            # signature people read shows it in the marker's place.
+            locals[_ABSENT] = MISSING
+            locals[_DEFAULT(name)] = default
+            alias_defaults[name] = default
+            signature = f"{name}: {_TYPE(name)}={_ABSENT}"
+        elif default is MISSING:
             signature = f"{name}: {_TYPE(name)}"
         else:
             locals[_DEFAULT(name)] = default
@@ -2351,6 +2405,22 @@ def _make_init(
                     f"default: {elem}"
                 )
 
+    def _alias_param_elems() -> tx.List[str]:
+        # Every extra name a field accepts, as a keyword-only parameter
+        # defaulting to the alias marker. Only a keyword-able field has
+        # them, so `positional_onlys` are skipped.
+        elems = []
+        for field in list(args.values()) + list(kw_onlys.values()):
+            if not _aliased(field):
+                continue
+            for alias in field.aliases[1:]:
+                alias_params.append(alias)
+                locals[_ABSENT] = MISSING
+                elems.append(f"{alias}={_ABSENT}")
+        return elems
+
+    alias_elems = _alias_param_elems()
+
     signature, doc = [], ["Parameters", "----------"]
     for _name, field in positional_onlys.items():
         signature_elem, doc_elem = _make_signature_elem(field)
@@ -2362,12 +2432,15 @@ def _make_init(
         signature_elem, doc_elem = _make_signature_elem(field)
         signature.append(signature_elem)
         doc.append(doc_elem)
-    if kw_onlys:
+    # The alias parameters are keyword-only, so `*` is needed when any
+    # field has one even if no field asked to be keyword-only itself.
+    if kw_onlys or alias_elems:
         signature.append("*")
     for _name, field in kw_onlys.items():
         signature_elem, doc_elem = _make_signature_elem(field)
         signature.append(signature_elem)
         doc.append(doc_elem)
+    signature.extend(alias_elems)
 
     _check_signature(signature)
 
@@ -2543,12 +2616,39 @@ def _make_init(
             raise TypeError({message!r})
         """)
 
+    def _make_alias_prelude(field: Field) -> str:
+        # Resolve the field's parameter from whichever of its names the
+        # caller used: move an alias's value onto the preferred name,
+        # refuse a field given under two names at once, and put the real
+        # default back when it was not named at all. This runs before the
+        # missing-argument check, which then meets the preferred name
+        # holding either the value or its default, exactly as an
+        # unaliased field's parameter does.
+        name = field.public_name
+        blame = f"{clsname} got multiple values for argument {name!r}"
+        prelude = ""
+        for alias in field.aliases[1:]:
+            prelude += dedent(f"""
+            if {alias} is not {_ABSENT}:
+                if {name} is not {_ABSENT}:
+                    raise TypeError({blame!r})
+                {name} = {alias}
+            """)
+        return prelude + dedent(f"""
+        if {name} is {_ABSENT}:
+            {name} = {_DEFAULT(name)}
+        """)
+
+    # An aliased field resolves its preferred name from its aliases first,
+    # so the checks and unpacking below see it the way they see any other.
+    aliased = [field for field in parameters if _aliased(field)]
     # Missing arguments are complained about before anything is
     # unpacked, because that is where Python itself complains about
     # them: a call with too few arguments never reaches the body, so
     # nothing a default would have built or unwrapped can fail first
     # and report something else instead.
-    body = [_make_required_elem(name) for name in sorted(required)]
+    body = [_make_alias_prelude(field) for field in aliased]
+    body += [_make_required_elem(name) for name in sorted(required)]
     body += [_make_unpack_elem(field) for field in parameters]
     if _PRE_INIT_NAME in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
@@ -2563,7 +2663,7 @@ def _make_init(
         "doc": doc,
         "locals": locals,
         "return_type": None,
-    }, required
+    }, required, set(alias_params), alias_defaults
 
 
 def _make_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
@@ -3001,6 +3101,17 @@ def _dispatching(metacls: type) -> type:
         # itself have to be one, has nothing here. The lookup is a
         # direct one: a subclass answers for the subclasses registered
         # with *it*, and never for its parent's.
+        # Polymorphic selection reads the arguments before `__init__`
+        # runs, so alternate input keywords have to reach their preferred
+        # names first. Only a generated `__init__` does its own alias
+        # handling, and a class that has one always carries its fields, so
+        # the map is rebuilt from them; a class with no alternate names
+        # needs no rewriting.
+        owner = next(b for b in cls.__mro__ if "__init__" in b.__dict__)
+        if "__init__" in owner.__dict__.get(_GENERATED, {}):
+            aliases = InputAliases(getattr(cls, _FIELDS))
+            if aliases.multiple:
+                kwargs = aliases.normalize(args, kwargs, cls.__name__)
         found = cls.__dict__.get(_POLYMORPHS)
         if found is None:
             return build(cls, *args, **kwargs)
@@ -3180,6 +3291,14 @@ class MetaMagic(ABCMeta):
         What to do when a type hint names something still undefined
         the first time a field needs it. "warn" says so once, "raise"
         turns it into an error, "ignore" says nothing.
+    alias : str | sequence | bool, optional
+        Default input names for fields. True includes property names.
+        False keeps leading underscores. The first name is preferred.
+    property : str | sequence | mapping | bool, default=False
+        Default forwarding properties. True exposes the public name;
+        "readonly" makes it read-only; "all" exposes every input alias.
+        Explicit names may choose access individually. Applies to stored
+        instance fields.
     mapping : bool, default=False
         Implement the Mapping protocol. Only a field holding a value
         is a key.
@@ -3448,6 +3567,14 @@ class Magic(metaclass=MetaMagic):
         What to do when a type hint names something still undefined
         the first time a field needs it. "warn" says so once, "raise"
         turns it into an error, "ignore" says nothing.
+    alias : str | sequence | bool, optional
+        Default input names for fields. True includes property names.
+        False keeps leading underscores. The first name is preferred.
+    property : str | sequence | mapping | bool, default=False
+        Default forwarding properties. True exposes the public name;
+        "readonly" makes it read-only; "all" exposes every input alias.
+        Explicit names may choose access individually. Applies to stored
+        instance fields.
     mapping : bool, default=False
         Implement the Mapping protocol. Only a field holding a value
         is a key.

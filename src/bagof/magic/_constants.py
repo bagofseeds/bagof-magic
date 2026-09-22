@@ -138,6 +138,13 @@ _ISINSTANCE = "__magic_isinstance__"
 _EXCEPTION = "__magic_exception__"
 _HAS_FACTORY = "__magic_has_factory__"
 
+# Name given, when generating __init__, to the local holding the marker an
+# aliased field's parameters default to. Every name a field accepts (its
+# preferred one and each alias) is a keyword-only parameter defaulting to
+# this marker; the body picks whichever was passed, complains if more than
+# one was, and restores the real default when none was.
+_ABSENT = "__magic_absent__"
+
 # Name given to a method's return type variable when generating it
 def _RETURN_TYPE(x: str) -> str: return f"__magic_{x}_return_type__"
 

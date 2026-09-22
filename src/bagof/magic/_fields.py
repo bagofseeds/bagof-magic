@@ -1,4 +1,7 @@
 __all__ = [
+    "Alias",
+    "Property",
+    "ReadOnlyProperty",
     "Field",
     "field",
     "Default",
@@ -36,6 +39,13 @@ __all__ = [
 ]
 import typing_extensions as tx
 
+from ._aliases import (
+    alias_option,
+    merge_alias,
+    merge_property,
+    property_option,
+    readonly_property,
+)
 from ._constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
 from ._options import Options
 from ._resolve import Hints
@@ -56,6 +66,8 @@ T = tx.TypeVar("T")
 #: `eq`, `order`, `hash` and `mapping` are absent because a field
 #: resolves those from its own values, not from its class.
 _OVERRIDABLE = {
+    "alias": ("alias",),
+    "property": ("property",),
     "convert": ("converter",),
     "factory": ("factory",),
     "frozen": ("frozen",),
@@ -69,6 +81,13 @@ _OVERRIDABLE = {
 _RESOLVED_ATTRS = tuple(dict.fromkeys(
     attr for attrs in _OVERRIDABLE.values() for attr in attrs
 ))
+
+
+def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
+    """Feed one callable's result into another: `first`, then `second`."""
+    def chained(value: tx.Any) -> tx.Any:
+        return second(first(value))
+    return chained
 
 
 @slots(
@@ -91,6 +110,7 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
     'doc',              # Docstring for this field.
     'key',              # Field is a key in the dict-like interface.
     'alias',            # Alternative names for this field.
+    'property',         # Forwarding attribute names and access modes.
     '_declared',        # What the field asked for (bookkeeping for override).
 )
 class Field(SlotsBase):
@@ -171,10 +191,20 @@ class Field(SlotsBase):
         key : bool | str, default=`Options().mapping`
             Include this field in the dict-like interface. A string
             value is used as the key name.
-        alias : str, default=`name.lstrip("_")`
-            The name used in generated methods (constructor parameter,
-            repr output, dict key). Useful when the field name is not a
-            good public name, or when matching an external API.
+        alias : str | sequence[str] | bool, optional
+            Input name or ordered input names. The first is preferred in
+            signatures, repr and mapping keys. By default the field is
+            known by its own name with any leading underscore removed.
+            True adds enabled property names after that default public
+            name. False keeps the stored name, including leading
+            underscores.
+        property : str | sequence[str] | mapping | bool, default=False
+            Forwarding attributes. A name or sequence creates read/write
+            properties. A mapping chooses True (or "readwrite"),
+            "readonly", or False for each name. True or "readonly" alone
+            exposes the preferred public name with that access mode. "all"
+            exposes every input alias the field accepts (bar the stored
+            attribute and any name already in use), read/write.
 
         Other Parameters
         ----------------
@@ -206,6 +236,10 @@ class Field(SlotsBase):
         if init is not MISSING:
             kwargs.setdefault("kw", init)
             kwargs.setdefault("positional", init)
+        if "alias" in kwargs:
+            kwargs["alias"] = alias_option(kwargs["alias"])
+        if "property" in kwargs:
+            kwargs["property"] = property_option(kwargs["property"])
         # set slots from keywords
         super().__init__(**kwargs)
 
@@ -264,13 +298,46 @@ class Field(SlotsBase):
         return self.factory is not False
 
     @property
-    def public_name(self) -> str:
-        """The public name of this field, used in generated methods."""
+    def aliases(self) -> tx.Tuple[str, ...]:
+        """Accepted input names, with the preferred public name first."""
         if self.alias is False:
-            return self.name
-        if self.alias is not MISSING:
+            return (self.name,)
+        if isinstance(self.alias, str):
+            return (self.alias,)
+        if isinstance(self.alias, tuple):
             return self.alias
-        return self.name.lstrip("_")
+        names = (self.name.lstrip("_"),)
+        if self.alias is True and isinstance(self.property, tuple):
+            names += tuple(name for name, mode in self.property
+                           if mode is not False and name not in names)
+        return names
+
+    @property
+    def properties(self) -> tx.Mapping[str, tx.Union[bool, str]]:
+        """Forwarding attribute names and their access modes, as a copy."""
+        if self.property is MISSING or self.property is False:
+            return {}
+        if isinstance(self.property, tuple):
+            return dict(self.property)
+        if self.property in ("all", "readonly-all"):
+            # Forward every input alias the field accepts, bar the stored
+            # attribute itself (already reachable) and any double-underscore
+            # name (which Python reserves). Read/write unless the read-only
+            # form asked otherwise; a name already taken is left alone when
+            # the class is built.
+            mode = "readonly" if self.property == "readonly-all" else True
+            return {
+                name: mode
+                for name in self.aliases
+                if name != self.name and not name.startswith("__")
+            }
+        # `True`/`"readonly"` exposes just the preferred public name.
+        return {self.public_name: self.property}
+
+    @property
+    def public_name(self) -> str:
+        """The preferred public name, used in generated methods."""
+        return self.aliases[0]
 
     @property
     def public_key(self) -> tx.Optional[str]:
@@ -310,6 +377,59 @@ class Field(SlotsBase):
                     field.doc = hint.documentation
         field.update(Field(name=name, type=type, default=default))
         return field
+
+    def update(self, other: tx.Self) -> None:
+        # The collection-valued slots accumulate when one field is
+        # declared more than once -- stacked annotations, or an annotation
+        # and a `field()` default: aliases concatenate, property tables and
+        # metadata are unioned, and a converter or validator declared on
+        # both is chained (the earlier one runs first) -- rather than the
+        # later declaration replacing the earlier. Every other slot is
+        # last-wins. A whole-field toggle (`alias=True`, `property="all"`)
+        # is not a collection, and a type-derived pipeline step (`True`)
+        # is not yet a callable to chain, so those stay last-wins too.
+        mine, theirs = self.alias, other.alias
+        alias = (
+            merge_alias(mine, theirs)
+            if isinstance(mine, (str, tuple))
+            and isinstance(theirs, (str, tuple))
+            else MISSING
+        )
+        mine, theirs = self.property, other.property
+        prop = (
+            merge_property(mine, theirs)
+            if isinstance(mine, tuple) and isinstance(theirs, tuple)
+            else MISSING
+        )
+        mine, theirs = self.metadata, other.metadata
+        meta = (
+            {**mine, **theirs}
+            if isinstance(mine, dict) and isinstance(theirs, dict)
+            else MISSING
+        )
+        mine, theirs = self.converter, other.converter
+        converter = (
+            _chain(mine, theirs)
+            if callable(mine) and callable(theirs)
+            else MISSING
+        )
+        mine, theirs = self.validator, other.validator
+        validator = (
+            _chain(mine, theirs)
+            if callable(mine) and callable(theirs)
+            else MISSING
+        )
+        super().update(other)
+        if alias is not MISSING:
+            self.alias = alias
+        if prop is not MISSING:
+            self.property = prop
+        if meta is not MISSING:
+            self.metadata = meta
+        if converter is not MISSING:
+            self.converter = converter
+        if validator is not MISSING:
+            self.validator = validator
 
     def copy(self) -> tx.Self:
         # A field is mutated in place during class building, so a copy
@@ -371,6 +491,10 @@ class Field(SlotsBase):
             raise ValueError(
                 "Cannot set both kw_only and positional_only to True"
             )
+        if self.alias is MISSING:
+            self.alias = options.alias
+        if self.property is MISSING:
+            self.property = False if self.var is True else options.property
         if self.doc is MISSING:
             self.doc = None
         if self.var is MISSING:
@@ -582,6 +706,53 @@ class InversedBoolAnnotatedField(BoolAnnotatedField):
     """Base for the negative half of a pair (`NoInit`, `NotKw`, ...)."""
 
     __set_value__ = False
+
+
+@slots
+class Alias(AnnotatedField):
+    """Accept a name or ordered sequence of names in the constructor.
+
+    Write ``Alias[str, ("label", "name")]`` to accept either keyword,
+    with ``label`` preferred. ``Alias[str]`` includes property names.
+    """
+
+    __set_slots__ = {"alias": True}
+
+
+@slots
+class Property(AnnotatedField):
+    """Expose forwarding attributes for a stored field.
+
+    Write ``Property[str, "label"]`` for read/write access, or
+    ``Property[str, {"label": "readonly"}]`` for read-only access.
+    A sequence gives every name read/write access. With no configuration,
+    expose the preferred public name; ``Property[str, "all"]`` exposes
+    every input alias the field accepts.
+    """
+
+    __set_slots__ = {"property": True}
+
+
+@slots
+class ReadOnlyProperty(Property):
+    """Expose read-only forwarding attributes for a stored field.
+
+    Write ``ReadOnlyProperty[str, "label"]`` to read the field through
+    ``label`` without allowing assignment to it. A sequence exposes every
+    name read-only. With no configuration, expose the preferred public
+    name read-only; ``ReadOnlyProperty[str, "all"]`` exposes every input
+    alias. It is the read-only counterpart of ``Property``, so
+    ``ReadOnlyProperty[str, names]`` matches ``Property[str, names]`` but
+    forbids writes.
+    """
+
+    __set_slots__ = {"property": "readonly"}
+
+    def __init__(self, *values: tx.Any, **kwvalues: tx.Any) -> None:
+        super().__init__(*values, **kwvalues)
+        # Names given by position or in a sequence normalize to read/write
+        # pairs; force them read-only so the name alone means read-only.
+        self.property = readonly_property(self.property)
 
 
 @slots
