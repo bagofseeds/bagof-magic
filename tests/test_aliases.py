@@ -477,17 +477,56 @@ def test_read_only_property_matches_property_with_readonly_mapping() -> None:
     assert fields(Spelled)[0].properties == expected
 
 
-def test_stacked_property_hints_do_not_merge() -> None:
-    # The annotation family is last-wins for a repeated slot: the outer
-    # Property replaces the inner rather than merging with it. Several
-    # forwarding names go in one mapping, not one hint each.
+def test_stacked_property_hints_merge() -> None:
+    # Stacked Property hints accumulate: the outer adds to the inner
+    # rather than replacing it. A name declared on both takes the outer
+    # access mode.
     class Example(Magic):
         value: Property[Property[int, "inner"], "outer"]
 
     obj = Example(3)
-    assert obj.outer == 3
-    assert not hasattr(obj, "inner")
-    assert fields(Example)[0].properties == {"outer": True}
+    assert obj.outer == obj.inner == 3
+    assert fields(Example)[0].properties == {"inner": True, "outer": True}
+
+    class SameName(Magic):
+        value: Property[
+            Property[int, {"a": True, "b": True}], {"a": "readonly"}
+        ]
+
+    fs = fields(SameName)[0]
+    assert fs.properties == {"a": "readonly", "b": True}
+
+
+def test_stacked_alias_hints_merge() -> None:
+    # Stacked Alias hints concatenate, keeping order and the first
+    # spelling of a repeated name, so the preferred public name is the
+    # first one written.
+    class Example(Magic):
+        name: Alias[Alias[int, ("label", "name")], ("title", "name")]
+
+    f = fields(Example)[0]
+    assert f.aliases == ("label", "name", "title")
+    assert f.public_name == "label"
+    assert Example(title=7).name == 7
+    assert Example(label=8).name == 8
+
+
+def test_stacked_metadata_merges() -> None:
+    class Example(Magic):
+        x: tx.Annotated[
+            int, Field(metadata={"a": 1}), Field(metadata={"b": 2})
+        ]
+
+    assert fields(Example)[0].metadata == {"a": 1, "b": 2}
+
+
+def test_whole_field_property_mode_stays_last_wins() -> None:
+    # A whole-field toggle is not a collection, so the outer replaces the
+    # inner rather than merging.
+    class Example(Magic):
+        value: Property[Property[int, "inner"], "all"]
+
+    assert fields(Example)[0].property == "all"
 
 
 def test_property_true_exposes_only_the_public_name() -> None:

@@ -107,6 +107,29 @@ def readonly_property(value: tx.Any) -> tx.Any:
     )
 
 
+def merge_alias(first: tx.Any, second: tx.Any) -> tx.Tuple[str, ...]:
+    """Concatenate two alias declarations into one ordered tuple.
+
+    Order is kept and the first spelling of a repeated name wins, so the
+    preferred public name stays first. Either side may be a single name.
+    """
+    names = list((first,) if isinstance(first, str) else first)
+    for name in (second,) if isinstance(second, str) else second:
+        if name not in names:
+            names.append(name)
+    return tuple(names)
+
+
+def merge_property(first: tx.Any, second: tx.Any) -> tx.Tuple[tx.Any, ...]:
+    """Combine two explicit property tables into one.
+
+    A name declared on both sides takes the second (outer) access mode.
+    """
+    merged = dict(first)
+    merged.update(second)
+    return tuple(merged.items())
+
+
 class InputAliases:
     """Resolve keywords before binding, hooks or polymorphic selection."""
 

@@ -39,7 +39,13 @@ __all__ = [
 ]
 import typing_extensions as tx
 
-from ._aliases import alias_option, property_option, readonly_property
+from ._aliases import (
+    alias_option,
+    merge_alias,
+    merge_property,
+    property_option,
+    readonly_property,
+)
 from ._constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
 from ._options import Options
 from ._resolve import Hints
@@ -364,6 +370,41 @@ class Field(SlotsBase):
                     field.doc = hint.documentation
         field.update(Field(name=name, type=type, default=default))
         return field
+
+    def update(self, other: tx.Self) -> None:
+        # The collection-valued slots accumulate when one field is
+        # declared more than once -- stacked annotations, or an annotation
+        # and a `field()` default: aliases concatenate, and property
+        # tables and metadata are unioned, rather than the later
+        # declaration replacing the earlier. Every other slot is last-wins.
+        # A whole-field toggle (`alias=True`, `property="all"`) is not a
+        # collection, so it stays last-wins too.
+        mine, theirs = self.alias, other.alias
+        alias = (
+            merge_alias(mine, theirs)
+            if isinstance(mine, (str, tuple))
+            and isinstance(theirs, (str, tuple))
+            else MISSING
+        )
+        mine, theirs = self.property, other.property
+        prop = (
+            merge_property(mine, theirs)
+            if isinstance(mine, tuple) and isinstance(theirs, tuple)
+            else MISSING
+        )
+        mine, theirs = self.metadata, other.metadata
+        meta = (
+            {**mine, **theirs}
+            if isinstance(mine, dict) and isinstance(theirs, dict)
+            else MISSING
+        )
+        super().update(other)
+        if alias is not MISSING:
+            self.alias = alias
+        if prop is not MISSING:
+            self.property = prop
+        if meta is not MISSING:
+            self.metadata = meta
 
     def copy(self) -> tx.Self:
         # A field is mutated in place during class building, so a copy

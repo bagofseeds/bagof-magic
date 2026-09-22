@@ -654,10 +654,12 @@ class Named(Magic, alias=True):
     name: ReadOnlyProperty[str, ("label", "title")]
 ```
 
-A single `Property` (or `ReadOnlyProperty`) hint describes all of a
-field's forwarding attributes. Stacking two hints does not merge them --
-the outer one replaces the inner, as elsewhere in the annotation family
--- so list several names in one mapping rather than one hint each.
+Stacked `Property` (or `ReadOnlyProperty`) hints accumulate: the outer
+adds its names to the inner rather than replacing them, and a name given
+on both takes the outer access mode. `Alias` hints stack the same way --
+they concatenate, keeping the first spelling of a repeated name -- and so
+does field `metadata`. A whole-field toggle (`property="all"`) is not a
+collection, so there the outer simply replaces the inner.
 
 The equivalent field declaration is:
 
