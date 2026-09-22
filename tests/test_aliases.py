@@ -667,9 +667,7 @@ def test_property_all_skips_names_already_taken() -> None:
 
         class Explicit(Magic):
             value: Property[int, "count"]
-
-            def count(self) -> str:
-                return "method"
+            count = object()
 
 
 def test_property_all_skips_double_underscore_alias() -> None:
