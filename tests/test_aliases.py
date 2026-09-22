@@ -239,6 +239,21 @@ def test_redeclaration_removes_old_properties_without_changing_base() -> None:
         Child(old=1)
 
 
+def test_subclass_own_attribute_shadows_inherited_property() -> None:
+    # Dropping the property in a redeclaration and defining that name in
+    # the class body keeps the class's own attribute, rather than masking
+    # it as a disabled property.
+    class Base(Magic):
+        value: Property[Alias[int, ("value", "old")], "old"]
+
+    class Child(Base):
+        value: int
+        old = 5
+
+    assert Base(old=1).old == 1
+    assert Child(1).old == 5
+
+
 def test_override_disables_inherited_implicit_property() -> None:
     class Base(Magic, property=True):
         _value: int

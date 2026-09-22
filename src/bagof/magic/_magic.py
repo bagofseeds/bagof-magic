@@ -3009,16 +3009,15 @@ def _dispatching(metacls: type) -> type:
         # with *it*, and never for its parent's.
         # Polymorphic selection reads the arguments before `__init__`
         # runs, so alternate input keywords have to reach their preferred
-        # names first. The map comes from the fields rather than a stored
-        # copy; a class with no alternate names needs no rewriting.
-        fields = getattr(cls, _FIELDS, None)
-        if fields is not None:
-            owner = next(b for b in cls.__mro__ if "__init__" in b.__dict__)
-            generated_init = "__init__" in owner.__dict__.get(_GENERATED, {})
-            if generated_init:
-                aliases = InputAliases(fields)
-                if aliases.multiple:
-                    kwargs = aliases.normalize(args, kwargs, cls.__name__)
+        # names first. Only a generated `__init__` does its own alias
+        # handling, and a class that has one always carries its fields, so
+        # the map is rebuilt from them; a class with no alternate names
+        # needs no rewriting.
+        owner = next(b for b in cls.__mro__ if "__init__" in b.__dict__)
+        if "__init__" in owner.__dict__.get(_GENERATED, {}):
+            aliases = InputAliases(getattr(cls, _FIELDS))
+            if aliases.multiple:
+                kwargs = aliases.normalize(args, kwargs, cls.__name__)
         found = cls.__dict__.get(_POLYMORPHS)
         if found is None:
             return build(cls, *args, **kwargs)
