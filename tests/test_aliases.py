@@ -11,11 +11,13 @@ import typing_extensions as tx
 from bagof.magic import (
     Alias,
     ClassVar,
+    ConvertTo,
     Field,
     InitVar,
     Magic,
     Property,
     ReadOnlyProperty,
+    Validate,
     asdict,
     field,
     fields,
@@ -527,6 +529,51 @@ def test_whole_field_property_mode_stays_last_wins() -> None:
         value: Property[Property[int, "inner"], "all"]
 
     assert fields(Example)[0].property == "all"
+
+
+def test_stacked_converters_chain() -> None:
+    # Stacked converters chain, the inner running first.
+    class Example(Magic):
+        x: ConvertTo[ConvertTo[int, lambda v: v + 1], lambda v: v * 10]
+
+    assert Example(0).x == 10  # (0 + 1) * 10
+
+
+def test_stacked_validators_chain() -> None:
+    # Stacked validators both run, the inner first.
+    seen = []
+
+    def low(value: int) -> int:
+        seen.append("low")
+        if value < 0:
+            raise ValueError("too low")
+        return value
+
+    def high(value: int) -> int:
+        seen.append("high")
+        if value > 100:
+            raise ValueError("too high")
+        return value
+
+    class Example(Magic):
+        x: Validate[Validate[int, low], high]
+
+    assert Example(5).x == 5
+    assert seen == ["low", "high"]
+    with pytest.raises(ValueError):
+        Example(-1)
+    with pytest.raises(ValueError):
+        Example(200)
+
+
+def test_type_derived_step_is_not_chained() -> None:
+    # A type-derived converter (`ConvertTo[int]`) is not yet a callable to
+    # chain when the class is built, so stacking it with an explicit one
+    # is last-wins.
+    class Example(Magic):
+        x: ConvertTo[ConvertTo[int], lambda v: ("wrapped", v)]
+
+    assert Example(5).x == ("wrapped", 5)
 
 
 def test_property_true_exposes_only_the_public_name() -> None:

@@ -83,6 +83,13 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
 ))
 
 
+def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
+    """Feed one callable's result into another: `first`, then `second`."""
+    def chained(value: tx.Any) -> tx.Any:
+        return second(first(value))
+    return chained
+
+
 @slots(
     'name',             # Field name
     'type',             # Field type (or type hint)
@@ -374,11 +381,13 @@ class Field(SlotsBase):
     def update(self, other: tx.Self) -> None:
         # The collection-valued slots accumulate when one field is
         # declared more than once -- stacked annotations, or an annotation
-        # and a `field()` default: aliases concatenate, and property
-        # tables and metadata are unioned, rather than the later
-        # declaration replacing the earlier. Every other slot is last-wins.
-        # A whole-field toggle (`alias=True`, `property="all"`) is not a
-        # collection, so it stays last-wins too.
+        # and a `field()` default: aliases concatenate, property tables and
+        # metadata are unioned, and a converter or validator declared on
+        # both is chained (the earlier one runs first) -- rather than the
+        # later declaration replacing the earlier. Every other slot is
+        # last-wins. A whole-field toggle (`alias=True`, `property="all"`)
+        # is not a collection, and a type-derived pipeline step (`True`)
+        # is not yet a callable to chain, so those stay last-wins too.
         mine, theirs = self.alias, other.alias
         alias = (
             merge_alias(mine, theirs)
@@ -398,6 +407,18 @@ class Field(SlotsBase):
             if isinstance(mine, dict) and isinstance(theirs, dict)
             else MISSING
         )
+        mine, theirs = self.converter, other.converter
+        converter = (
+            _chain(mine, theirs)
+            if callable(mine) and callable(theirs)
+            else MISSING
+        )
+        mine, theirs = self.validator, other.validator
+        validator = (
+            _chain(mine, theirs)
+            if callable(mine) and callable(theirs)
+            else MISSING
+        )
         super().update(other)
         if alias is not MISSING:
             self.alias = alias
@@ -405,6 +426,10 @@ class Field(SlotsBase):
             self.property = prop
         if meta is not MISSING:
             self.metadata = meta
+        if converter is not MISSING:
+            self.converter = converter
+        if validator is not MISSING:
+            self.validator = validator
 
     def copy(self) -> tx.Self:
         # A field is mutated in place during class building, so a copy

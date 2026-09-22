@@ -658,8 +658,10 @@ Stacked `Property` (or `ReadOnlyProperty`) hints accumulate: the outer
 adds its names to the inner rather than replacing them, and a name given
 on both takes the outer access mode. `Alias` hints stack the same way --
 they concatenate, keeping the first spelling of a repeated name -- and so
-does field `metadata`. A whole-field toggle (`property="all"`) is not a
-collection, so there the outer simply replaces the inner.
+does field `metadata`. Stacked `ConvertTo` or `Validate` callables chain,
+the inner running first. Everything else -- a default, a factory, a
+whole-field toggle like `property="all"` -- is last-wins, the outer
+replacing the inner.
 
 The equivalent field declaration is:
 
