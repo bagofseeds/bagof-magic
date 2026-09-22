@@ -62,6 +62,8 @@ def property_option(value: tx.Any) -> tx.Any:
     if value is MISSING or value is True or value is False:
         return value
     if isinstance(value, str):
+        if value == "all":
+            return "all"
         if value in ("readonly", "readwrite"):
             return _mode(value)
         return ((_property_name(value), True),)
@@ -88,11 +90,17 @@ def readonly_property(value: tx.Any) -> tx.Any:
     """Turn every enabled mode of a normalized property value read-only.
 
     Given the output of `property_option`, force each read/write mode to
-    "readonly" while leaving disabled names (`False`) untouched.
+    "readonly" while leaving disabled names (`False`) untouched. The
+    whole-field shorthands map across too: `True` and `"all"` become
+    their read-only forms.
     """
     if value is True:
         return "readonly"
-    if value is MISSING or value is False or value == "readonly":
+    if value == "all":
+        return "readonly-all"
+    if value is MISSING or value is False:
+        return value
+    if value in ("readonly", "readonly-all"):
         return value
     return tuple(
         (name, mode if mode is False else "readonly") for name, mode in value
@@ -200,10 +208,11 @@ def install_properties(
         name: field.name for field in fields.values() for name in field.aliases
     }
     for field in fields.values():
-        # `True`/`"readonly"` derives a property from every alias, so a
-        # name already taken is skipped rather than refused. Explicit
-        # names were asked for by hand, so a clash there is an error.
-        explicit = isinstance(field.property, tuple)
+        # `"all"` derives a property from every alias, so a name already
+        # taken is skipped rather than refused. Everything else -- an
+        # explicit list, or the public-name shorthand -- names its
+        # attributes, so a clash there is an error.
+        derived = field.property in ("all", "readonly-all")
         for name, mode in field.properties.items():
             if mode is False:
                 continue
@@ -213,8 +222,10 @@ def install_properties(
                     "a stored instance field, not a ClassVar or InitVar"
                 )
             if name == field.name:
-                # Only an explicit self-target reaches here; the derived
-                # names leave the stored attribute out.
+                # The public-name shorthand may already be the stored name;
+                # only an explicit self-target is an error.
+                if not isinstance(field.property, tuple):
+                    continue
                 raise TypeError(
                     f"{clsname}.{name}: a property cannot target itself"
                 )
@@ -229,7 +240,7 @@ def install_properties(
                 previous, (ForwardingProperty, RemovedProperty)
             )
             if taken or inherited_taken:
-                if not explicit:
+                if derived:
                     continue
                 if taken:
                     raise TypeError(

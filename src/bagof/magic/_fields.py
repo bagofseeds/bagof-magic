@@ -189,9 +189,9 @@ class Field(SlotsBase):
             Forwarding attributes. A name or sequence creates read/write
             properties. A mapping chooses True (or "readwrite"),
             "readonly", or False for each name. True or "readonly" alone
-            exposes every input alias the field accepts (each name bar the
-            stored attribute) with that access mode; a name already used
-            for something else is left alone.
+            exposes the preferred public name with that access mode. "all"
+            exposes every input alias the field accepts (bar the stored
+            attribute and any name already in use), read/write.
 
         Other Parameters
         ----------------
@@ -306,16 +306,20 @@ class Field(SlotsBase):
             return {}
         if isinstance(self.property, tuple):
             return dict(self.property)
-        # `True`/`"readonly"` forwards every input alias the field accepts,
-        # bar the stored attribute itself (already reachable) and any
-        # double-underscore name (which Python reserves and cannot be a
-        # property), at that access mode. A name already taken is left
-        # alone when the class is built.
-        return {
-            name: self.property
-            for name in self.aliases
-            if name != self.name and not name.startswith("__")
-        }
+        if self.property in ("all", "readonly-all"):
+            # Forward every input alias the field accepts, bar the stored
+            # attribute itself (already reachable) and any double-underscore
+            # name (which Python reserves). Read/write unless the read-only
+            # form asked otherwise; a name already taken is left alone when
+            # the class is built.
+            mode = "readonly" if self.property == "readonly-all" else True
+            return {
+                name: mode
+                for name in self.aliases
+                if name != self.name and not name.startswith("__")
+            }
+        # `True`/`"readonly"` exposes just the preferred public name.
+        return {self.public_name: self.property}
 
     @property
     def public_name(self) -> str:
@@ -656,7 +660,8 @@ class Property(AnnotatedField):
     Write ``Property[str, "label"]`` for read/write access, or
     ``Property[str, {"label": "readonly"}]`` for read-only access.
     A sequence gives every name read/write access. With no configuration,
-    expose every input alias the field accepts.
+    expose the preferred public name; ``Property[str, "all"]`` exposes
+    every input alias the field accepts.
     """
 
     __set_slots__ = {"property": True}
@@ -668,9 +673,9 @@ class ReadOnlyProperty(Property):
 
     Write ``ReadOnlyProperty[str, "label"]`` to read the field through
     ``label`` without allowing assignment to it. A sequence exposes every
-    name read-only. With no configuration, expose every input alias the
-    field accepts, read-only. It is the read-only counterpart of
-    ``Property``, so
+    name read-only. With no configuration, expose the preferred public
+    name read-only; ``ReadOnlyProperty[str, "all"]`` exposes every input
+    alias. It is the read-only counterpart of ``Property``, so
     ``ReadOnlyProperty[str, names]`` matches ``Property[str, names]`` but
     forbids writes.
     """

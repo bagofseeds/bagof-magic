@@ -490,10 +490,24 @@ def test_stacked_property_hints_do_not_merge() -> None:
     assert fields(Example)[0].properties == {"outer": True}
 
 
-def test_property_true_exposes_every_alias() -> None:
-    # `property=True` forwards every input name the field accepts, bar
-    # the stored attribute itself.
+def test_property_true_exposes_only_the_public_name() -> None:
+    # `property=True` (and "readonly") expose the preferred public name
+    # alone -- the other input aliases are not forwarded.
     class Example(Magic, property=True):
+        name: Alias[int, ("label", "name", "title")]
+
+    assert fields(Example)[0].properties == {"label": True}
+    obj = Example(title=1)
+    assert obj.name == obj.label == 1
+    assert not hasattr(obj, "title")
+    obj.label = 2
+    assert obj.name == 2
+
+
+def test_property_all_exposes_every_alias() -> None:
+    # `property="all"` forwards every input name the field accepts, bar
+    # the stored attribute itself.
+    class Example(Magic, property="all"):
         name: Alias[int, ("label", "name", "title")]
 
     assert fields(Example)[0].properties == {"label": True, "title": True}
@@ -502,19 +516,24 @@ def test_property_true_exposes_every_alias() -> None:
     obj.label = 2
     assert obj.name == obj.title == 2
 
-    class ReadOnly(Magic, property="readonly"):
-        name: Alias[int, ("label", "name", "title")]
 
-    ro = ReadOnly(title=1)
-    assert ro.label == ro.title == 1
+def test_read_only_property_all_is_read_only() -> None:
+    class Example(Magic):
+        name: ReadOnlyProperty[Alias[int, ("label", "name", "title")], "all"]
+
+    assert fields(Example)[0].properties == {
+        "label": "readonly", "title": "readonly"
+    }
+    obj = Example(title=1)
+    assert obj.label == obj.title == 1
     with pytest.raises(AttributeError):
-        ro.label = 2
+        obj.label = 2
 
 
-def test_property_true_skips_names_already_taken() -> None:
+def test_property_all_skips_names_already_taken() -> None:
     # An auto-derived property yields to a name the class already uses,
     # rather than refusing the class.
-    class WithMethod(Magic, property=True):
+    class WithMethod(Magic, property="all"):
         value: Alias[int, ("value", "count")]
 
         def count(self) -> str:
@@ -534,11 +553,11 @@ def test_property_true_skips_names_already_taken() -> None:
                 return "method"
 
 
-def test_property_true_skips_double_underscore_alias() -> None:
+def test_property_all_skips_double_underscore_alias() -> None:
     # A double-underscore input alias is a valid keyword but cannot be a
     # property, so the auto-expansion leaves it out instead of building an
     # attribute Python would reserve.
-    class Example(Magic, property=True):
+    class Example(Magic, property="all"):
         value: Alias[int, ("value", "__secret")]
 
     assert fields(Example)[0].properties == {}
