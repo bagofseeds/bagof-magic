@@ -81,6 +81,19 @@ Tests that exercise internals import them from the module that defines them
 - **`_FuncBuilder` compiles `__init__`** from generated source text, because a
   real signature (defaults, positional-only markers, keyword-only markers) can
   only be produced by `exec`. Everything else is a closure.
+- **A field's alternate input names are compiled into `__init__`**, not
+  handled by a wrapper around it. Each extra name a keyword-able field accepts
+  becomes a keyword-only parameter defaulting to the alias marker (`_ABSENT`,
+  `MISSING`); the generated body moves whichever was passed onto the preferred
+  name, refuses a field named twice, and restores the real default when none
+  was. `_show_real_signature` then hides those parameters and shows each
+  preferred name's real default in the marker's place, so the signature reads
+  as if the aliases were not there. This keeps aliased construction about as
+  cheap as unaliased — CPython binds the call once and the body adds only a
+  couple of `is` checks — where the old wrapper re-bound every call through a
+  dict. The runtime `InputAliases.normalize` remains only for polymorphic
+  dispatch, which has to read the arguments by their preferred names before
+  `__init__` runs.
 - **Every call to a converter, a validator or a factory is guarded**, in the
   generated `__init__` and in `__setattr__` alike, and its failure goes
   through `field_error` in `_errors.py` — which raises the same error again

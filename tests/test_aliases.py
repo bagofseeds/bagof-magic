@@ -115,6 +115,38 @@ def test_preferred_name_is_replacement_not_implicit_synonym() -> None:
     assert Example(title=None).name is None
 
 
+def test_aliased_field_with_default_shows_and_uses_it() -> None:
+    # The generated constructor bakes the alias handling in and hides the
+    # extra names, so the signature shows the field's own default and the
+    # alias fills it in when the preferred name is omitted.
+    class Example(Magic):
+        value: int = field(alias=("value", "count"), default=7)
+
+    assert str(inspect.signature(Example)) == "(value: int = 7) -> None"
+    assert Example().value == 7
+    assert Example(3).value == 3
+    assert Example(count=5).value == 5
+    with pytest.raises(TypeError, match="multiple values"):
+        Example(3, count=5)
+
+
+def test_aliased_field_before_required_field() -> None:
+    # An aliased field carries a marker rather than a written default, so a
+    # required field after it still reports itself missing rather than
+    # making the class refuse to build.
+    class Example(Magic):
+        first: Alias[int, ("first", "one")]
+        second: int
+
+    assert str(inspect.signature(Example)) == (
+        "(first: int, second: int) -> None"
+    )
+    assert (Example(1, 2).first, Example(1, 2).second) == (1, 2)
+    assert Example(one=1, second=2).second == 2
+    with pytest.raises(TypeError, match="missing a required argument"):
+        Example(1)
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

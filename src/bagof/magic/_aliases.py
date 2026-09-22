@@ -1,7 +1,6 @@
 """Normalize public names and install access paths to stored fields."""
 
 import keyword
-from functools import wraps
 
 import typing_extensions as tx
 
@@ -164,16 +163,6 @@ class InputAliases:
                 )
             result[target] = value
         return result
-
-    def wrap(self, func: tx.Callable, clsname: str) -> tx.Callable:
-        if not self.multiple:
-            return func
-
-        @wraps(func)
-        def init(instance: tx.Any, /, *args, **kwargs) -> None:
-            func(instance, *args, **self.normalize(args, kwargs, clsname))
-
-        return init
 
 
 class ForwardingProperty(property):
