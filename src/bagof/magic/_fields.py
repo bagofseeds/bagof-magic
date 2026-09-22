@@ -1,4 +1,6 @@
 __all__ = [
+    "Alias",
+    "Property",
     "Field",
     "field",
     "Default",
@@ -36,6 +38,7 @@ __all__ = [
 ]
 import typing_extensions as tx
 
+from ._aliases import alias_option, property_option
 from ._constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
 from ._options import Options
 from ._resolve import Hints
@@ -56,6 +59,8 @@ T = tx.TypeVar("T")
 #: `eq`, `order`, `hash` and `mapping` are absent because a field
 #: resolves those from its own values, not from its class.
 _OVERRIDABLE = {
+    "alias": ("alias",),
+    "property": ("property",),
     "convert": ("converter",),
     "factory": ("factory",),
     "frozen": ("frozen",),
@@ -91,6 +96,7 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
     'doc',              # Docstring for this field.
     'key',              # Field is a key in the dict-like interface.
     'alias',            # Alternative names for this field.
+    'property',         # Forwarding attribute names and access modes.
     '_declared',        # What the field asked for (bookkeeping for override).
 )
 class Field(SlotsBase):
@@ -171,10 +177,16 @@ class Field(SlotsBase):
         key : bool | str, default=`Options().mapping`
             Include this field in the dict-like interface. A string
             value is used as the key name.
-        alias : str, default=`name.lstrip("_")`
-            The name used in generated methods (constructor parameter,
-            repr output, dict key). Useful when the field name is not a
-            good public name, or when matching an external API.
+        alias : str | sequence[str] | bool, optional
+            Input name or ordered input names. The first is preferred in
+            signatures, repr and mapping keys. True adds enabled property
+            names after the default public name. False keeps the stored
+            name, including leading underscores.
+        property : str | sequence[str] | mapping | bool, default=False
+            Forwarding attributes. A name or sequence creates read/write
+            properties. A mapping chooses True (or "readwrite"),
+            "readonly", or False for each name. True or "readonly" alone
+            exposes the preferred public name with that access mode.
 
         Other Parameters
         ----------------
@@ -206,6 +218,10 @@ class Field(SlotsBase):
         if init is not MISSING:
             kwargs.setdefault("kw", init)
             kwargs.setdefault("positional", init)
+        if "alias" in kwargs:
+            kwargs["alias"] = alias_option(kwargs["alias"])
+        if "property" in kwargs:
+            kwargs["property"] = property_option(kwargs["property"])
         # set slots from keywords
         super().__init__(**kwargs)
 
@@ -264,13 +280,33 @@ class Field(SlotsBase):
         return self.factory is not False
 
     @property
-    def public_name(self) -> str:
-        """The public name of this field, used in generated methods."""
+    def aliases(self) -> tx.Tuple[str, ...]:
+        """Accepted input names, with the preferred public name first."""
         if self.alias is False:
-            return self.name
-        if self.alias is not MISSING:
+            return (self.name,)
+        if isinstance(self.alias, str):
+            return (self.alias,)
+        if isinstance(self.alias, tuple):
             return self.alias
-        return self.name.lstrip("_")
+        names = (self.name.lstrip("_"),)
+        if self.alias is True and isinstance(self.property, tuple):
+            names += tuple(name for name, mode in self.property
+                           if mode is not False and name not in names)
+        return names
+
+    @property
+    def properties(self) -> tx.Mapping[str, tx.Union[bool, str]]:
+        """Forwarding attribute names and their access modes, as a copy."""
+        if self.property is MISSING or self.property is False:
+            return {}
+        if isinstance(self.property, tuple):
+            return dict(self.property)
+        return {self.public_name: self.property}
+
+    @property
+    def public_name(self) -> str:
+        """The preferred public name, used in generated methods."""
+        return self.aliases[0]
 
     @property
     def public_key(self) -> tx.Optional[str]:
@@ -371,6 +407,10 @@ class Field(SlotsBase):
             raise ValueError(
                 "Cannot set both kw_only and positional_only to True"
             )
+        if self.alias is MISSING:
+            self.alias = options.alias
+        if self.property is MISSING:
+            self.property = False if self.var is True else options.property
         if self.doc is MISSING:
             self.doc = None
         if self.var is MISSING:
@@ -582,6 +622,30 @@ class InversedBoolAnnotatedField(BoolAnnotatedField):
     """Base for the negative half of a pair (`NoInit`, `NotKw`, ...)."""
 
     __set_value__ = False
+
+
+@slots
+class Alias(AnnotatedField):
+    """Accept a name or ordered sequence of names in the constructor.
+
+    Write ``Alias[str, ("label", "name")]`` to accept either keyword,
+    with ``label`` preferred. ``Alias[str]`` includes property names.
+    """
+
+    __set_slots__ = {"alias": True}
+
+
+@slots
+class Property(AnnotatedField):
+    """Expose forwarding attributes for a stored field.
+
+    Write ``Property[str, "label"]`` for read/write access, or
+    ``Property[str, {"label": "readonly"}]`` for read-only access.
+    A sequence gives every name read/write access. With no configuration,
+    expose the preferred public name.
+    """
+
+    __set_slots__ = {"property": True}
 
 
 @slots

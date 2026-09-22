@@ -72,6 +72,12 @@ validate_defaults : bool, default=True
 unresolved_hints : str, default="warn"
     What to do when a type hint names something still undefined the
     first time a field needs it. "warn", "raise" or "ignore".
+alias : str | sequence | bool, optional
+    Default input names. True includes property names; False keeps
+    leading underscores. The first name is preferred.
+property : str | sequence | mapping | bool, default=False
+    Default forwarding properties for stored instance fields. True
+    exposes the public name; "readonly" makes it read-only.
 mapping : bool, default=False
     Implement the Mapping protocol. Only a field holding a value is
     a key.
@@ -108,6 +114,7 @@ import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
 # internals
+from ._aliases import InputAliases, install_properties
 from ._arguments import *  # noqa: F401, F403
 from ._arguments import Arguments
 from ._arguments import __all__ as __all_arguments__
@@ -127,6 +134,7 @@ from ._constants import (
     _GENERIC_ORIGIN,
     _HAS_FACTORY,
     _HINTS,
+    _INPUT_ALIASES,
     _IS_DEFAULT,
     _ISINSTANCE,
     _MAGIC,
@@ -380,29 +388,18 @@ def _add_fields(
 
 
 def _check_public_names(clsname: str, fields: tx.Dict[str, Field]) -> None:
-    # Two fields cannot answer to one outside name.
-    #
-    # A field is known outside the class by its alias, or by its own name
-    # with any leading underscore removed. That one name is the
-    # constructor parameter, the key `repr()` shows, the key of the
-    # dict-like view, and the key `fields_dict`, `asdict` and `replace`
-    # speak -- so when two fields share it, only one of them is ever
-    # reachable and the other is silently unreachable under it. The class
-    # is refused here, whether or not the pair would meet in a signature,
-    # so that every accessor can key by that name and trust it.
+    # Every input spelling belongs to one field, including names inherited
+    # from different bases. Output methods use only the preferred name.
     seen = {}
     for name, field in fields.items():
-        public = field.public_name
-        if public in seen:
-            raise TypeError(
-                f"{clsname} has two fields, {seen[public]!r} and {name!r}, "
-                f"and both are known as {public!r} outside the class: that "
-                f"is the name the constructor takes and repr() shows. A "
-                f"field is known by its alias, or by its own name with any "
-                f"leading underscore removed. Rename one of the two fields, "
-                f"or give one of them an alias of its own."
-            )
-        seen[public] = name
+        for public in field.aliases:
+            if public in seen:
+                raise TypeError(
+                    f"{clsname} has two fields, {seen[public]!r} and "
+                    f"{name!r}, and both are known as {public!r} outside "
+                    "the class. Rename one or give it different aliases."
+                )
+            seen[public] = name
 
 
 def _check_public_keys(clsname: str, fields: tx.Dict[str, Field]) -> None:
@@ -1665,6 +1662,7 @@ def __pre_new__(
 
     # Remember all of the fields on our class (including bases).
     namespace[_FIELDS] = fields
+    namespace[_INPUT_ALIASES] = InputAliases(fields)
 
     # Was this class defined with an explicit __hash__?  Note that if
     # __eq__ is defined in this class, then python will automatically
@@ -1856,6 +1854,8 @@ def __pre_new__(
             co_name=magic_init.__name__
         )
         _show_real_signature(magic_init, sentinels)
+        magic_init = namespace[_INPUT_ALIASES].wrap(magic_init, clsname)
+        namespace[_MAGIC("init")] = magic_init
         if init_name and init_name not in namespace:
             namespace[init_name] = magic_init
             generated[init_name] = "init"
@@ -1871,6 +1871,7 @@ def __pre_new__(
             namespace[name] = _NEUTRAL["init"]
             generated[name] = "init"
 
+    install_properties(clsname, fields, namespace, base_mro)
     namespace[_GENERATED] = generated
 
     # Add attributes to class documentation
@@ -2220,6 +2221,8 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
         if default is not MISSING else
         f"{name} : {doctype}"
     )
+    if name == field.public_name and field.kw and len(field.aliases) > 1:
+        doc += "\n    Also accepts: " + ", ".join(field.aliases[1:]) + "."
     if field.doc:
         doc += "\n" + indent(dedent(field.doc).strip(), " " * 4)
     return doc
@@ -3001,6 +3004,12 @@ def _dispatching(metacls: type) -> type:
         # itself have to be one, has nothing here. The lookup is a
         # direct one: a subclass answers for the subclasses registered
         # with *it*, and never for its parent's.
+        aliases = getattr(cls, _INPUT_ALIASES, None)
+        if aliases is not None:
+            owner = next(b for b in cls.__mro__ if "__init__" in b.__dict__)
+            generated_init = "__init__" in owner.__dict__.get(_GENERATED, {})
+            if generated_init:
+                kwargs = aliases.normalize(args, kwargs, cls.__name__)
         found = cls.__dict__.get(_POLYMORPHS)
         if found is None:
             return build(cls, *args, **kwargs)
@@ -3180,6 +3189,13 @@ class MetaMagic(ABCMeta):
         What to do when a type hint names something still undefined
         the first time a field needs it. "warn" says so once, "raise"
         turns it into an error, "ignore" says nothing.
+    alias : str | sequence | bool, optional
+        Default input names for fields. True includes property names.
+        False keeps leading underscores. The first name is preferred.
+    property : str | sequence | mapping | bool, default=False
+        Default forwarding properties. True exposes the public name;
+        "readonly" makes it read-only. Explicit names may choose access
+        individually. Applies to stored instance fields.
     mapping : bool, default=False
         Implement the Mapping protocol. Only a field holding a value
         is a key.
@@ -3448,6 +3464,13 @@ class Magic(metaclass=MetaMagic):
         What to do when a type hint names something still undefined
         the first time a field needs it. "warn" says so once, "raise"
         turns it into an error, "ignore" says nothing.
+    alias : str | sequence | bool, optional
+        Default input names for fields. True includes property names.
+        False keeps leading underscores. The first name is preferred.
+    property : str | sequence | mapping | bool, default=False
+        Default forwarding properties. True exposes the public name;
+        "readonly" makes it read-only. Explicit names may choose access
+        individually. Applies to stored instance fields.
     mapping : bool, default=False
         Implement the Mapping protocol. Only a field holding a value
         is a key.

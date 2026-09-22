@@ -15,6 +15,7 @@ T = tx.TypeVar("T")
 
 # The name of an attribute on the class where we store the StructField
 # objects.  Also used to check if a class is a @magic.
+_INPUT_ALIASES = "__magic_input_aliases__"
 _FIELDS = '__magic_fields__'
 
 # The name of an attribute on the class that stores the parameters to

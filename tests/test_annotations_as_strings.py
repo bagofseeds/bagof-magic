@@ -29,6 +29,7 @@ from typing_extensions import Annotated, ForwardRef
 import bagof.magic._magic as m
 import bagof.magic._resolve as r
 from bagof.magic import (
+    Alias,
     Arguments,
     ClassVar,
     ConvertTo,
@@ -42,6 +43,7 @@ from bagof.magic import (
     NoInit,
     NoRepr,
     Options,
+    Property,
     Validate,
     fields_dict,
 )
@@ -690,3 +692,11 @@ class TestTypeParametersWrittenAsText:
         # `TextBox[int]` converts and validates just as the subclass does.
         assert fields_dict(TextBox[int])["item"].type is int
         assert TextBox[int]("1", ["2"]) == TextBox(1, [2])
+
+
+def test_alias_and_property_configuration_as_text() -> None:
+    class Aliased(Magic, alias=True):
+        value: Property[Alias[int, ["number", "value"]],  # noqa: F821, UP037
+                        {"other": "readonly"}]  # noqa: F821, UP037
+
+    assert Aliased(value=2).other == 2
