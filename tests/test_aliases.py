@@ -603,6 +603,24 @@ def test_property_all_exposes_every_alias() -> None:
     assert obj.name == obj.title == 2
 
 
+def test_read_only_property_forces_read_only_and_keeps_disabled() -> None:
+    # A read/write request through ReadOnlyProperty is forced read-only,
+    # and a disabled name stays off.
+    class Forced(Magic, alias=True):
+        _value: ReadOnlyProperty[int, "readwrite"]
+
+    obj = Forced(3)
+    assert obj.value == 3
+    with pytest.raises(AttributeError):
+        obj.value = 4
+
+    class Disabled(Magic):
+        value: ReadOnlyProperty[int, False]
+
+    assert fields(Disabled)[0].properties == {}
+    assert Disabled(3).value == 3
+
+
 def test_read_only_property_all_is_read_only() -> None:
     class Example(Magic):
         name: ReadOnlyProperty[Alias[int, ("label", "name", "title")], "all"]
