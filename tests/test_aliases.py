@@ -141,6 +141,8 @@ def test_duplicate_position_and_alias_before_hook() -> None:
     with pytest.raises(TypeError, match="multiple values"):
         Example(1, name=1)
     assert calls == []
+    Example(1)
+    assert len(calls) == 1
 
 
 def test_hooks_and_replace_use_preferred_names() -> None:
@@ -228,6 +230,8 @@ def test_redeclaration_removes_old_properties_without_changing_base() -> None:
     assert not hasattr(Child(1), "old")
     with pytest.raises(AttributeError):
         Child(1).old = 2
+    with pytest.raises(AttributeError):
+        del Child(1).old
     with pytest.raises(TypeError):
         Child(old=1)
 
@@ -301,9 +305,7 @@ def test_property_collisions() -> None:
 
         class Method(Magic):
             value: Property[int, "method"]
-
-            def method(self) -> None:
-                pass
+            method = object()
 
     with pytest.raises(TypeError, match="itself"):
 
@@ -315,6 +317,15 @@ def test_property_collisions() -> None:
         class OtherField(Magic):
             value: Property[int, "other"]
             other: int
+
+    class Base(Magic):
+        value: int
+        method = object()
+
+    with pytest.raises(TypeError, match="inherited attribute"):
+
+        class InheritedMethod(Base):
+            value: Property[int, "method"]
 
 
 @pytest.mark.parametrize("kind", [ClassVar, InitVar])
@@ -389,6 +400,9 @@ def test_removed_property_can_become_a_stored_field(slots: bool) -> None:
     obj.other = 3
     assert obj.first == 1
     assert Base(1).other == 1
+    if not slots:
+        with pytest.raises(AttributeError, match="has not been set"):
+            _ = object.__new__(Child).other
 
 
 def test_property_cannot_claim_other_fields_input_alias() -> None:
