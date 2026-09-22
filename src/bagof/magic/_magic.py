@@ -2666,6 +2666,31 @@ def _make_init(
     }, required, set(alias_params), alias_defaults
 
 
+def _compile_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
+    # With every shown field always set, `repr` reads each field directly
+    # rather than looping and guarding a `getattr` per field. A field
+    # shown only when it is not `None` keeps that one check; a field shown
+    # unconditionally has none. The label is the public name, the value
+    # the stored one, exactly as the looped version reports them.
+    lines = ["def __repr__(self):", "    parts = []"]
+    for field in fields.values():
+        label, name = field.public_name, field.name
+        append = f'parts.append("{label}=" + repr(self.{name}))'
+        if field.repr.hide_if_none:
+            lines.append(f"    if self.{name} is not None:")
+            lines.append(f"        {append}")
+        else:
+            lines.append(f"    {append}")
+    lines.append(
+        '    return self.__class__.__name__ + "(" + ", ".join(parts) + ")"'
+    )
+    namespace: tx.Dict[str, tx.Any] = {}
+    exec("\n".join(lines), namespace)
+    __repr__ = namespace["__repr__"]
+    __repr__.__qualname__ = f"{qualname}.__repr__"
+    return __repr__
+
+
 def _make_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     """Build `__repr__`, over the fields that are shown.
 
@@ -2676,6 +2701,8 @@ def _make_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     -- and a field can also ask to be left out for as long as its value
     is `None`.
     """
+    if all(_always_set(field) for field in fields.values()):
+        return _compile_repr(qualname, fields)
 
     def __repr__(self: tx.Self) -> str:
         params = []
@@ -2720,8 +2747,52 @@ def _comparison_class(cls: type) -> type:
     return cls.__dict__.get(_GENERIC_ORIGIN, cls)
 
 
-def _make_eq(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
+def _always_set(field: Field) -> bool:
+    # Whether every constructed instance holds this field: it is a
+    # constructor parameter, or it is given a default or a factory. A
+    # field that is none of these is only ever set by hand, so reading it
+    # can fail -- and the methods that read fields have to allow for that.
+    return (
+        field.positional or field.kw
+        or field.default is not MISSING or field.build
+    )
 
+
+def _compile_eq(qualname: str, names: tx.List[str]) -> tx.Callable:
+    # With every compared field always set, equality is the plain tuple
+    # comparison `dataclasses` compiles, reading each field directly
+    # rather than looping and guarding a `getattr` per field. The class
+    # check keeps a fast identity path in front of the generic-origin one
+    # that lets `Box[int](1)` equal `Box(1)`.
+    ours = "(" + "".join(f"self.{name}, " for name in names) + ")"
+    theirs = "(" + "".join(f"other.{name}, " for name in names) + ")"
+    namespace: tx.Dict[str, tx.Any] = {"_comparison_class": _comparison_class}
+    exec(
+        "def __eq__(self, other):\n"
+        "    if self is other:\n"
+        "        return True\n"
+        "    if other.__class__ is self.__class__ or (\n"
+        "        _comparison_class(other.__class__)\n"
+        "        is _comparison_class(self.__class__)\n"
+        "    ):\n"
+        f"        return {ours} == {theirs}\n"
+        "    return NotImplemented\n",
+        namespace,
+    )
+    __eq__ = namespace["__eq__"]
+    __eq__.__qualname__ = f"{qualname}.__eq__"
+    return __eq__
+
+
+def _make_eq(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
+    eq_fields = [field for field in fields.values() if field.eq]
+    if all(_always_set(field) for field in eq_fields):
+        return _compile_eq(qualname, [field.name for field in eq_fields])
+
+    # A field that is not always set is compared through `_stored`, which
+    # tells "holds a value" from "holds this value" -- two instances that
+    # differ in which fields have been set are different, whatever the
+    # values they do hold.
     def __eq__(self: tx.Self, other: tx.Any) -> bool:
         if self is other:
             return True
@@ -2739,6 +2810,34 @@ def _make_eq(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     return __eq__
 
 
+def _compile_order(
+    qualname: str, name: str, compare: tx.Callable, names: tx.List[str]
+) -> tx.Callable:
+    # With every ordered field always set, ordering is the tuple
+    # comparison `dataclasses` compiles, reading each field directly
+    # rather than looping and guarding a `getattr` per field.
+    ours = "(" + "".join(f"self.{field}, " for field in names) + ")"
+    theirs = "(" + "".join(f"other.{field}, " for field in names) + ")"
+    namespace: tx.Dict[str, tx.Any] = {
+        "_comparison_class": _comparison_class,
+        "compare": compare,
+    }
+    exec(
+        "def method(self, other):\n"
+        "    if other.__class__ is self.__class__ or (\n"
+        "        _comparison_class(other.__class__)\n"
+        "        is _comparison_class(self.__class__)\n"
+        "    ):\n"
+        f"        return compare({ours}, {theirs})\n"
+        "    return NotImplemented\n",
+        namespace,
+    )
+    method = namespace["method"]
+    method.__name__ = name
+    method.__qualname__ = f"{qualname}.{name}"
+    return method
+
+
 def _make_order(
     qualname: str, fields: tx.Dict[str, Field], slot: str
 ) -> tx.Callable:
@@ -2746,6 +2845,12 @@ def _make_order(
     # "ge". All four compare the same thing: the values of the fields
     # that take part in the ordering, as a tuple.
     name, compare = _ORDER_METHODS[slot]
+
+    order_fields = [field for field in fields.values() if field.order]
+    if all(_always_set(field) for field in order_fields):
+        return _compile_order(
+            qualname, name, compare, [field.name for field in order_fields]
+        )
 
     def ordered_values(obj: "Magic") -> tx.Tuple:
         """The values being compared, in field order.

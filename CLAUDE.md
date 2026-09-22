@@ -94,6 +94,18 @@ Tests that exercise internals import them from the module that defines them
   dict. The runtime `InputAliases.normalize` remains only for polymorphic
   dispatch, which has to read the arguments by their preferred names before
   `__init__` runs.
+- **`__eq__`, `__repr__` and the four order comparisons compile their
+  field reads** when every field they read is always set -- a constructor
+  parameter, or given a default or a factory. Then equality and ordering
+  are the plain tuple comparison `dataclasses` compiles, and `repr` reads
+  each field directly, all matching `dataclasses` for speed (see
+  `_compile_eq` / `_compile_repr` / `_compile_order`). A class with a field
+  that is only ever set by hand -- no parameter, no default -- keeps the
+  looped version, which reads each field through `_stored` so that "holds
+  no value" is told from "holds this value"; the fast path cannot, because
+  a direct read of an unset field raises. A forwarding property's accessors
+  are compiled the same way, to `self.<target>` rather than
+  `getattr(self, name)`.
 - **Every call to a converter, a validator or a factory is guarded**, in the
   generated `__init__` and in `__setattr__` alike, and its failure goes
   through `field_error` in `_errors.py` — which raises the same error again

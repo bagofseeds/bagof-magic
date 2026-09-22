@@ -178,6 +178,23 @@ class TestBasicStruct:
         assert A(1) != B(1)
         assert A(1).__eq__(B(1)) is NotImplemented
 
+    def test_eq_and_repr_with_a_hand_set_field(self) -> None:
+        # A field with no parameter and no default is not always set, so
+        # `__eq__` and `__repr__` fall back to reading each field through a
+        # presence check rather than the compiled fast path. Two instances
+        # that differ in which fields have been set are unequal, and a
+        # field with no value is left out of the repr.
+        class Point(Magic):
+            x: int
+            y: NoInit[int]
+
+        assert Point(1) == Point(1)
+        assert repr(Point(1)) == "Point(x=1)"
+        one, other = Point(1), Point(1)
+        one.y = 2
+        assert one != other
+        assert repr(one) == "Point(x=1, y=2)"
+
     def test_keyword_args(self) -> None:
         class Point(Magic):
             x: int
