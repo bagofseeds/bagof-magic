@@ -221,13 +221,21 @@ def __post_new__(cls: type) -> type:
     if getattr(getattr(cls, _OPTIONS, None), "polymorphic", False) == "strict":
         _arm_polymorph(cls, specs if registration is not None else None)
 
+    # A class that freezes, converts or validates a field -- or inherits a
+    # `__setattr__` that does -- needs one of its own; one that does none
+    # of those assigns straight through `object`, so it is left without,
+    # and `__init__` was compiled to assign directly (see
+    # `_direct_assignment`).
+    options = getattr(cls, _OPTIONS, None)
     fields = getattr(cls, _FIELDS, {})
-    fields = {name: field for name, field in fields.items() if not field.var}
-    __delattr__, __setattr__ = _make_assign(cls)
-    if "__setattr__" not in cls.__dict__:
-        cls.__setattr__ = __setattr__
-    if "__delattr__" not in cls.__dict__:
-        cls.__delattr__ = __delattr__
+    if options is None or not _direct_assignment(
+        options, fields, cls.__bases__
+    ):
+        __delattr__, __setattr__ = _make_assign(cls)
+        if "__setattr__" not in cls.__dict__:
+            cls.__setattr__ = __setattr__
+        if "__delattr__" not in cls.__dict__:
+            cls.__delattr__ = __delattr__
 
     return cls
 
@@ -1702,11 +1710,20 @@ def __pre_new__(
     )
 
     # Build __init__. The builder writes source, so binding the public
-    # name has to wait until `insert_fns` has compiled it (below).
+    # name has to wait until `insert_fns` has compiled it (below). A class
+    # that needs no `__setattr__` of its own assigns its fields directly,
+    # and `__post_new__` skips installing one -- the same decision, made
+    # the same way from the options, the fields and the bases. A
+    # hand-written `__setattr__` is kept and still bypassed at
+    # construction, so a class that has one never assigns directly.
+    direct_assign = _direct_assignment(options, fields, bases) and not (
+        "__setattr__" in namespace or "__delattr__" in namespace
+    )
     try:
         init_kwargs, sentinels, alias_params, alias_defaults = _make_init(
             fields, prepost, clsname, options,
             {fields[name].public_name for name in pinned},
+            direct_assign,
         )
     except _BadSignature as error:
         if init_name:
@@ -2251,12 +2268,46 @@ def _make_doc_elem(field: Field, name: tx.Optional[str] = None) -> str:
     return doc
 
 
+def _direct_assignment(
+    options: Options,
+    fields: tx.Mapping[str, Field],
+    bases: tx.Sequence[type],
+) -> bool:
+    # Whether the class can set its fields with a plain `self.x = value`
+    # and needs no `__setattr__` of its own. A class installs one to
+    # freeze a field, or to run a converter or a validator on assignment;
+    # without any of those, and with no base that installs one either, the
+    # generated method would only ever pass the value straight to
+    # `object`, and going through it -- both to bypass it in `__init__` and
+    # on every later assignment -- costs more than the plain store it
+    # guards. So a class like that skips it, and `__init__` assigns
+    # directly, the way `dataclasses` does.
+    if options.frozen:
+        return False
+    for field in fields.values():
+        if not field.var and (
+            field.frozen or field.convert or field.validate
+        ):
+            return False
+    for base in bases:
+        for ancestor in base.__mro__:
+            if ancestor is object:
+                continue
+            if (
+                "__setattr__" in ancestor.__dict__
+                or "__delattr__" in ancestor.__dict__
+            ):
+                return False
+    return True
+
+
 def _make_init(
     fields: tx.Dict[str, Field],
     prepost: tx.Mapping[str, bool],
     clsname: str,
     options: Options,
     pinned: tx.Container[str] = (),
+    direct_assign: bool = False,
 ) -> tx.Tuple[dict, tx.Set[str]]:
 
     # The body below is written in terms of these; each is carried
@@ -2270,6 +2321,16 @@ def _make_init(
         _HAS_FACTORY: _HasFactory,
     }
     positional_onlys, args, kw_onlys = {}, {}, {}
+
+    def _store(name: str, value: str) -> str:
+        # How a field's value is written onto the instance. A class with
+        # no `__setattr__` of its own assigns straight through, which
+        # `object`'s own store handles; one that has a `__setattr__`
+        # bypasses it -- its converting and validating have already run
+        # here, and must not run a second time.
+        if direct_assign:
+            return f"{SELF}.{name} = {value}"
+        return f"{_OBJECT}.__setattr__({SELF}, {name!r}, {value})"
 
     # A field that accepts more than one keyword name has each extra name
     # as a keyword-only parameter, and the alias handling is compiled into
@@ -2555,10 +2616,8 @@ def _make_init(
                 if splits and skip_validate else step
             )
         if not field.var:
-            # NOTE: we by pass the object's __setattr__ to avoid running
-            # through conversion and validation multiple times.
             body += dedent(f"""
-            {_OBJECT}.__setattr__({SELF}, {field.name!r}, {name})
+            {_store(field.name, name)}
             """)
         return body
 
@@ -2579,7 +2638,7 @@ def _make_init(
         locals[default] = field.factory if field.build else field.default
         if not (field.build or converter or validator):
             return dedent(f"""
-            {_OBJECT}.__setattr__({SELF}, {field.name!r}, {default})
+            {_store(field.name, default)}
             """)
         # Building, converting and validating are taken one at a time,
         # so that whichever of them fails can say what it was doing.
@@ -2603,7 +2662,7 @@ def _make_init(
                 field, "validate", value
             )
         return body + dedent(f"""
-        {_OBJECT}.__setattr__({SELF}, {field.name!r}, {value})
+        {_store(field.name, value)}
         """)
 
     def _make_required_elem(name: str) -> str:

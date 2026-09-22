@@ -106,6 +106,17 @@ Tests that exercise internals import them from the module that defines them
   a direct read of an unset field raises. A forwarding property's accessors
   are compiled the same way, to `self.<target>` rather than
   `getattr(self, name)`.
+- **A class installs `__setattr__` / `__delattr__` only when it needs
+  them** -- to freeze a field, or run a converter or a validator on
+  assignment (or because a base installs one). A class that does none of
+  those is left with `object`'s own, and its `__init__` assigns with a
+  plain `self.x = value` rather than `object.__setattr__(self, "x",
+  value)` -- so construction and later assignment both cost what they do
+  on a plain object, matching `dataclasses`. `_direct_assignment` makes
+  the call the same way in `__pre_new__` (to compile `__init__`) and in
+  `__post_new__` (to skip installing). A hand-written `__setattr__` is
+  always kept, and `__init__` still bypasses it, so it is never run at
+  construction.
 - **Every call to a converter, a validator or a factory is guarded**, in the
   generated `__init__` and in `__setattr__` alike, and its failure goes
   through `field_error` in `_errors.py` — which raises the same error again

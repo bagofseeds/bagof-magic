@@ -3912,6 +3912,32 @@ class TestUserDefinedAssignment:
         with pytest.raises(AttributeError, match="frozen"):
             F(1).x = 2
 
+    def test_user_setattr_kept_when_class_also_converts(self) -> None:
+        # A class that converts a field would generate a `__setattr__`,
+        # but a hand-written one still wins. Construction converts and
+        # bypasses it; a later assignment goes through the user's method,
+        # which here does not convert.
+        class S(Magic, convert=True):
+            x: int
+
+            def __setattr__(self, name: str, value: object) -> None:
+                object.__setattr__(self, name, value)
+
+        assert S("1").x == 1
+        s = S(0)
+        s.x = "2"
+        assert s.x == "2"
+
+    def test_user_delattr_kept_when_class_is_frozen(self) -> None:
+        class D(Magic, frozen=True):
+            x: int = 0
+
+            def __delattr__(self, name: str) -> None:
+                raise RuntimeError("no deleting")
+
+        with pytest.raises(RuntimeError, match="no deleting"):
+            del D(1).x
+
 class TestPublicName:
     """A field whose parameter name differs from its own name."""
 
