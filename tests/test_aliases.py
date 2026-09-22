@@ -130,6 +130,20 @@ def test_aliased_field_with_default_shows_and_uses_it() -> None:
         Example(3, count=5)
 
 
+def test_aliased_field_with_unconverted_default_shows_value() -> None:
+    # A field whose default skips conversion carries it behind a marker;
+    # when the field is also aliased, the signature still shows the plain
+    # value, and the default stays unconverted while a passed value is
+    # converted.
+    class Example(Magic, convert=True, convert_defaults=False):
+        value: int = field(alias=("value", "count"), default="5")
+
+    assert str(inspect.signature(Example)) == "(value: int = '5') -> None"
+    assert Example().value == "5"
+    assert Example(count="7").value == 7
+    assert Example("9").value == 9
+
+
 def test_aliased_field_before_required_field() -> None:
     # An aliased field carries a marker rather than a written default, so a
     # required field after it still reports itself missing rather than
