@@ -77,7 +77,7 @@ alias : str | sequence | bool, optional
     leading underscores. The first name is preferred.
 property : str | sequence | mapping | bool, default=False
     Default forwarding properties for stored instance fields. True
-    exposes the public name; "readonly" makes it read-only.
+    exposes every input alias; "readonly" makes them read-only.
 mapping : bool, default=False
     Implement the Mapping protocol. Only a field holding a value is
     a key.
@@ -3201,8 +3201,8 @@ class MetaMagic(ABCMeta):
         Default input names for fields. True includes property names.
         False keeps leading underscores. The first name is preferred.
     property : str | sequence | mapping | bool, default=False
-        Default forwarding properties. True exposes the public name;
-        "readonly" makes it read-only. Explicit names may choose access
+        Default forwarding properties. True exposes every input alias;
+        "readonly" makes them read-only. Explicit names may choose access
         individually. Applies to stored instance fields.
     mapping : bool, default=False
         Implement the Mapping protocol. Only a field holding a value
@@ -3476,8 +3476,8 @@ class Magic(metaclass=MetaMagic):
         Default input names for fields. True includes property names.
         False keeps leading underscores. The first name is preferred.
     property : str | sequence | mapping | bool, default=False
-        Default forwarding properties. True exposes the public name;
-        "readonly" makes it read-only. Explicit names may choose access
+        Default forwarding properties. True exposes every input alias;
+        "readonly" makes them read-only. Explicit names may choose access
         individually. Applies to stored instance fields.
     mapping : bool, default=False
         Implement the Mapping protocol. Only a field holding a value

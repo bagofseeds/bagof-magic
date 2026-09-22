@@ -488,3 +488,59 @@ def test_stacked_property_hints_do_not_merge() -> None:
     assert obj.outer == 3
     assert not hasattr(obj, "inner")
     assert fields(Example)[0].properties == {"outer": True}
+
+
+def test_property_true_exposes_every_alias() -> None:
+    # `property=True` forwards every input name the field accepts, bar
+    # the stored attribute itself.
+    class Example(Magic, property=True):
+        name: Alias[int, ("label", "name", "title")]
+
+    assert fields(Example)[0].properties == {"label": True, "title": True}
+    obj = Example(title=1)
+    assert obj.name == obj.label == obj.title == 1
+    obj.label = 2
+    assert obj.name == obj.title == 2
+
+    class ReadOnly(Magic, property="readonly"):
+        name: Alias[int, ("label", "name", "title")]
+
+    ro = ReadOnly(title=1)
+    assert ro.label == ro.title == 1
+    with pytest.raises(AttributeError):
+        ro.label = 2
+
+
+def test_property_true_skips_names_already_taken() -> None:
+    # An auto-derived property yields to a name the class already uses,
+    # rather than refusing the class.
+    class WithMethod(Magic, property=True):
+        value: Alias[int, ("value", "count")]
+
+        def count(self) -> str:
+            return "method"
+
+    obj = WithMethod(5)
+    assert obj.value == 5
+    assert obj.count() == "method"
+
+    # An explicit property targeting a taken name is still an error.
+    with pytest.raises(TypeError, match="conflicts"):
+
+        class Explicit(Magic):
+            value: Property[int, "count"]
+
+            def count(self) -> str:
+                return "method"
+
+
+def test_property_true_skips_double_underscore_alias() -> None:
+    # A double-underscore input alias is a valid keyword but cannot be a
+    # property, so the auto-expansion leaves it out instead of building an
+    # attribute Python would reserve.
+    class Example(Magic, property=True):
+        value: Alias[int, ("value", "__secret")]
+
+    assert fields(Example)[0].properties == {}
+    assert "__secret" not in Example.__dict__
+    assert Example(__secret=3).value == 3

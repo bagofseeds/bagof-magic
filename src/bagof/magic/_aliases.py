@@ -200,6 +200,10 @@ def install_properties(
         name: field.name for field in fields.values() for name in field.aliases
     }
     for field in fields.values():
+        # `True`/`"readonly"` derives a property from every alias, so a
+        # name already taken is skipped rather than refused. Explicit
+        # names were asked for by hand, so a clash there is an error.
+        explicit = isinstance(field.property, tuple)
         for name, mode in field.properties.items():
             if mode is False:
                 continue
@@ -209,26 +213,29 @@ def install_properties(
                     "a stored instance field, not a ClassVar or InitVar"
                 )
             if name == field.name:
-                # The implicit public-name shorthand may already be stored.
-                if not isinstance(field.property, tuple):
-                    continue
+                # Only an explicit self-target reaches here; the derived
+                # names leave the stored attribute out.
                 raise TypeError(
                     f"{clsname}.{name}: a property cannot target itself"
                 )
-            if (
+            taken = (
                 name in fields
                 or name in desired
                 or name in namespace
                 or input_owners.get(name, field.name) != field.name
-            ):
-                raise TypeError(
-                    f"{clsname}: property {name!r} conflicts with an "
-                    "existing field, property or class attribute"
-                )
+            )
             previous = inherited.get(name, MISSING)
-            if previous is not MISSING and not isinstance(
+            inherited_taken = previous is not MISSING and not isinstance(
                 previous, (ForwardingProperty, RemovedProperty)
-            ):
+            )
+            if taken or inherited_taken:
+                if not explicit:
+                    continue
+                if taken:
+                    raise TypeError(
+                        f"{clsname}: property {name!r} conflicts with an "
+                        "existing field, property or class attribute"
+                    )
                 raise TypeError(
                     f"{clsname}: property {name!r} conflicts with an "
                     "inherited attribute"

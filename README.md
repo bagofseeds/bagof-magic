@@ -674,12 +674,14 @@ names in declaration order. With no properties it keeps the default name.
 `alias=False` preserves leading underscores. `Field.aliases` always returns
 a tuple, and `Field.public_name` is its first element.
 
-`property=True` exposes the preferred public name as a read/write property;
-`property="readonly"` exposes it read-only. If that name is already the
-stored name, no extra property is needed. To expose an attribute literally
-called `readonly` or `readwrite`, use a sequence or mapping. Explicit
-properties cannot target themselves, other fields, or existing methods.
-Properties are for stored instance fields, not ClassVars or InitVars.
+`property=True` exposes every input name the field accepts as a read/write
+property; `property="readonly"` exposes them read-only. The stored name
+itself is left out (it is already the attribute), and any name already used
+for a field, method or other attribute is skipped rather than clashing. To
+expose an attribute literally called `readonly` or `readwrite`, use a
+sequence or mapping. Explicit properties (a name, sequence or mapping)
+cannot target themselves, other fields, or existing methods. Properties are
+for stored instance fields, not ClassVars or InitVars.
 
 Both options can be class settings. Inherited fields keep their settings
 unless `override=True` (or `override="alias"` / `override="property"`) asks
@@ -811,7 +813,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `factory` | `False` | build every missing default from its type |
 | `mutable_default` | `"factory"` | give each instance its own copy of `x: list = []`; or `"raise"`, or `"allow"` |
 | `alias` | default public name | input names; `True` includes enabled property names, `False` keeps underscores |
-| `property` | `False` | forwarding attributes; `True` or `"readonly"` exposes the public name |
+| `property` | `False` | forwarding attributes; `True` or `"readonly"` exposes every input alias |
 | `mapping` | `False` | behave like a dictionary; a subclass inherits the methods and cannot turn them off |
 | `override` | `False` | apply this class's settings to inherited fields too |
 | `polymorphic` | `False` | build one of this class's subclasses, chosen from the arguments; or `"strict"`, which refuses to build this class when none of them matches |
