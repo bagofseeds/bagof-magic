@@ -308,13 +308,75 @@ with nothing wrapping `__call__`. `Box[int](1)` equals `Box(1)`, because
 `__eq__`/order compare against the class as it was written -- the origin
 kept in `_GENERIC_ORIGIN` -- not the parameterised one, matching what
 `dataclasses` and `pydantic` both do. Still out of scope, and refused with
-a clear error rather than built wrong: subscripting a `polymorphic` class
-(dispatch and parameterisation together is a larger feature) and a
-variadic/`ParamSpec` generic (the substitution engine pairs one argument
-to one variable). Pickling leans on the same trick pydantic uses -- the
+a clear error rather than built wrong: a variadic/`ParamSpec` generic (the
+substitution engine pairs one argument to one variable). Pickling leans on
+the same trick pydantic uses -- the
 built class is made findable under its name on its module, since pickle
 saves a class (and an instance's class) by name and a metaclass
 `__reduce__` is never consulted for a class object.
+
+### Dispatch and parameterisation together
+
+`Signal[int](kind="inverse", ...)` has to do both things at once: choose
+the subclass the arguments call for, and hand it back with `T` filled in
+-- `Inverse[int]`, not `Inverse`. The two features meet in one place, the
+registry a parameterised class carries (`_Parameterised` in
+`_polymorph.py`), and everything else is left alone: `__call__` reads it
+the way it reads any other registry, and `select` never learns that
+parameterisation exists.
+
+Three things it has to get right:
+
+- **What is registered with the origin, as it stands now.** A subclass
+  registered after `Signal[int]` was built is still one of its
+  candidates, so the entries are read through `Signal`'s registry on
+  each call rather than copied in at build time. The origin publishes
+  its entries in a single assignment, so holding on to the tuple is
+  enough to tell that nothing has registered since -- and the merge is
+  published before the tuple it was made from, so a reader that finds
+  them unchanged finds the merge made.
+- **Where each constrained field arrives, worked out against the
+  parameterised class.** Dispatch reads the arguments through each
+  field's converter, and on `Signal[int]` that converter is the one
+  `int` gives -- so `Signal[int](grade="3")` matches `on={"grade": 3}`
+  where `Signal(grade="3")` does not.
+- **Which subclass can stand for which type arguments.** `fill_in` in
+  `_generics.py` reads what a target fills the origin's parameters in
+  with -- through `base_arguments`, which walks `__orig_bases__` up to
+  the origin composing substitutions -- and matches that against the
+  arguments asked for. A variable takes them (`class Inverse(Signal[T])`
+  becomes `Inverse[int]`); a type of its own has to be them (`class
+  Half(Pair[T, int])` stands for `Pair[str, int]` and not for
+  `Pair[str, bool]`); anything left over is not a candidate at all. A
+  target with no parameters is handed back as it is, so a plain
+  `class Plain(Signal, on=...)` still works.
+
+**Nothing registers with a parameterisation.** `_polymorphic_base`
+skips a class built by filling parameters in, and `register_polymorph`
+called on one hands the registration to its origin -- so
+`class Only(Signal[str], on=...)` registers with `Signal`, and the
+parameters it was *written with* are what say that `Signal[str]` builds
+it and `Signal[int]` does not. That keeps one registry per class the
+author wrote, and with it the rule that the two spellings agree:
+`Signal(...) == Signal[int](...)` holds for a subclass written against
+`Signal[int]` too, which it would not if only the parameterised
+spelling could reach it. It also keeps `_Polymorph.rank` comparable,
+since every entry's depth is measured from the same owner; a target
+answered for by a parameterised class (`Inverse[int]` standing for
+`Inverse`) keeps the rank its registration was given, because it is the
+same claim.
+
+Two things that follow, and are tested:
+
+- **A class is never registered as a parameterisation of its own
+  owner.** `Signal.register_polymorph(Signal[int], ...)` is refused:
+  `Signal[int]` would be chosen, would dispatch again, and would
+  recurse until the stack ran out.
+- **What is left out is named.** A subclass excluded for standing for
+  other type arguments is registered and imported, so the
+  "none has yet: the module has not been imported" report would send
+  the reader the wrong way. `select` carries the left-out entries
+  alongside the candidates for exactly that message.
 
 ## Conventions specific to this repo (do not regress)
 

@@ -172,6 +172,8 @@ from ._options import __all__ as __all_options__
 from ._polymorph import *  # noqa: F401, F403
 from ._polymorph import __all__ as __all_polymorph__
 from ._polymorph import arm as _arm_polymorph
+from ._polymorph import arm_parameterised as _arm_parameterised
+from ._polymorph import as_written as _as_written
 from ._polymorph import check as _check_invariant
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
@@ -213,6 +215,15 @@ def __post_new__(cls: type) -> type:
     if registration is not None:
         polymorphic_base, specs, priority = registration
         _register_polymorph(polymorphic_base, cls, specs, priority)
+
+    # A class built by filling in a generic's type parameters chooses
+    # between the same subclasses the class it came from does, each
+    # with its parameters filled in the same way.
+    origin = cls.__dict__.get(_GENERIC_ORIGIN)
+    if origin is not None and getattr(
+        getattr(cls, _OPTIONS, None), "polymorphic", False
+    ):
+        _arm_parameterised(cls, origin, cls.__dict__[_GENERIC_ARGS])
 
     # A strict class is armed whether or not anything has registered
     # with it yet, since "nobody has registered" is the case the
@@ -1064,6 +1075,13 @@ def _polymorphic_base(mro: tx.Tuple[type, ...]) -> tx.Optional[type]:
     # subclass registers with that one rather than with the root, so
     # each level narrows the choice by one step.
     for base in mro:
+        # A class built by filling in type parameters is skipped: it is
+        # not a level anyone wrote. `class Deep(Chord[int], on=...)`
+        # registers with `Chord`, and the filled-in parameters it was
+        # written with are what say that `Chord[int]` builds it and
+        # `Chord[str]` does not.
+        if _GENERIC_ORIGIN in base.__dict__:
+            continue
         if getattr(getattr(base, _OPTIONS, None), "polymorphic", False):
             return base
     return None
@@ -3515,6 +3533,10 @@ class MetaMagic(ABCMeta):
         `class IntBox(Box[int])` does. A subscription that leaves a type
         variable free (`Pair[int, S]`), or a class with no type parameters
         to fill, is handed back as the ordinary typing alias.
+
+        A class that chooses which subclass to build still does: the
+        subclass is chosen from the arguments, and comes back with the
+        same parameters filled in.
         """
         # A `__class_getitem__` written in the class body wins, the same
         # way a hand-written method always beats a generated one.
@@ -3557,15 +3579,6 @@ class MetaMagic(ABCMeta):
             for parameter in cls.__parameters__
         ):
             return alias
-
-        options = getattr(cls, _OPTIONS, None)
-        if options is not None and options.polymorphic:
-            raise TypeError(
-                f"{cls.__name__} chooses which subclass to build from its "
-                f"arguments, and filling in its type parameters at the same "
-                f"time is not supported yet. Parameterise the subclass you "
-                f"want instead."
-            )
 
         return _parameterised_class(cls, alias, arguments)
 
@@ -3657,13 +3670,16 @@ class MetaMagic(ABCMeta):
             raise TypeError(
                 f"{cls.__name__} does not build its subclasses, so nothing "
                 f"can be registered with it. Add polymorphic=True to it -- "
-                f"`class {cls.__name__}(Magic, polymorphic=True)`."
+                f"`class {_as_written(cls)}(Magic, polymorphic=True)`."
             )
         wanted = dict(on or {})
         wanted.update(constraints)
-        specs = _specifications(cls, getattr(target, "__name__", target),
+        # A class built by filling in type parameters registers with the
+        # one it came from, the same way a class statement does.
+        owner = cls.__dict__.get(_GENERIC_ORIGIN, cls)
+        specs = _specifications(owner, getattr(target, "__name__", target),
                                 wanted)
-        _register_polymorph(cls, target, specs, priority)
+        _register_polymorph(owner, target, specs, priority)
         return target
 
 

@@ -33,6 +33,7 @@ from bagof.magic import (
     NoPolymorphError,
     PolymorphError,
     asdict,
+    field,
     magic,
     replace,
 )
@@ -53,6 +54,19 @@ class MinorChord(Chord, on={"mode": "minor"}):
 
 
 class HarmonicMinor(MinorChord, on={"root": "A"}):
+    pass
+
+
+_T = tx.TypeVar("_T")
+_S = tx.TypeVar("_S")
+
+
+class Signal(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+    kind: str
+    value: _T
+
+
+class Inverse(Signal[_T], on={"kind": "inverse"}):
     pass
 
 
@@ -1152,3 +1166,429 @@ class TestOptions:
             pass
 
         assert type(Root(kind="k")) is Leaf
+
+
+# ======================================================================
+# A generic class that chooses its subclass
+# ======================================================================
+
+
+class TestGenericPolymorphic:
+    """`Signal[int](...)` chooses a subclass and fills its parameter in."""
+
+    def test_it_builds_the_subclass_with_the_parameter_filled_in(
+        self
+    ) -> None:
+        made = Signal[int](kind="inverse", value="7")
+        assert type(made) is Inverse[int]
+        assert made.value == 7
+
+    def test_the_unparameterised_class_still_dispatches(self) -> None:
+        made = Signal(kind="inverse", value="7")
+        assert type(made) is Inverse
+        # `T` stands for nothing in particular, so nothing converts.
+        assert made.value == "7"
+
+    def test_it_equals_the_unparameterised_spelling(self) -> None:
+        assert Signal[int](kind="inverse", value="7") == Inverse(
+            kind="inverse", value=7
+        )
+
+    def test_a_subclass_registered_afterwards_is_found(self) -> None:
+        # The parameterisation reads what is registered when it is
+        # called, not what was registered when it was built.
+        built = Signal[int]
+
+        class Late(Signal[_T], on={"kind": "late"}):
+            pass
+
+        assert type(built(kind="late", value="3")) is Late[int]
+
+    def test_a_subclass_that_is_not_generic_is_built_as_it_is(self) -> None:
+        class Plain(Signal, on={"kind": "plain"}):
+            pass
+
+        assert type(Signal[int](kind="plain", value="2")) is Plain
+
+    def test_a_subclass_that_fills_the_parameter_in_itself(self) -> None:
+        class Named(Signal[str], on={"kind": "named"}):
+            pass
+
+        assert type(Signal[str](kind="named", value="x")) is Named
+
+    def test_it_is_not_a_candidate_for_another_parameterisation(self) -> None:
+        # `Named` is a `Signal[str]`, so `Signal[int]` cannot build it:
+        # it builds itself instead.
+        class Named(Signal[str], on={"kind": "named"}):
+            pass
+
+        assert type(Signal[int](kind="named", value=1)) is Signal[int]
+
+    def test_a_subclass_written_against_a_parameterisation(self) -> None:
+        # It registers with `Signal`, and the parameters it was written
+        # with are what say which parameterisations can build it.
+        class OnlyInt(Signal[int], on={"kind": "only"}):
+            pass
+
+        assert type(Signal[int](kind="only", value="4")) is OnlyInt
+        assert type(Signal(kind="only", value=4)) is OnlyInt
+        assert type(Signal[str](kind="only", value="4")) is Signal[str]
+
+    def test_the_two_spellings_build_the_same_class(self) -> None:
+        class Either(Signal[int], on={"kind": "either"}):
+            pass
+
+        assert Signal(kind="either", value=1) == Signal[int](
+            kind="either", value=1
+        )
+
+    def test_a_deeper_subclass_wins_where_both_match(self) -> None:
+        class Refined(Inverse[_T], on={"value": 5}):
+            pass
+
+        assert type(Signal[int](kind="inverse", value="5")) is Refined[int]
+        assert type(Signal[int](kind="inverse", value="6")) is Inverse[int]
+
+    def test_register_polymorph_reaches_the_parameterisations(self) -> None:
+        class Asked(Signal[_T]):
+            pass
+
+        Signal.register_polymorph(Asked, kind="asked")
+        assert type(Signal[int](kind="asked", value="8")) is Asked[int]
+
+    def test_one_of_two_parameters_filled_in_by_the_subclass(self) -> None:
+        class Pair(Magic, tx.Generic[_T, _S], polymorphic=True, convert=True):
+            kind: str
+            left: _T
+            right: _S
+
+        class Half(Pair[_T, int], on={"kind": "half"}):
+            pass
+
+        made = Pair[str, int](kind="half", left="a", right="2")
+        assert type(made) is Half[str]
+        assert made.right == 2
+        # `Half` says `right` is an `int`, so it cannot stand for this.
+        assert type(Pair[str, bool](kind="half", left="a", right=0)) is (
+            Pair[str, bool]
+        )
+
+    def test_the_value_is_read_through_the_filled_in_converter(self) -> None:
+        # Dispatch goes on the value the instance will really hold, so
+        # the constraint is matched against the converted one.
+        class Level(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            grade: _T
+
+        class Three(Level[_T], on={"grade": 3}):
+            pass
+
+        assert type(Level[int](grade="3")) is Three[int]
+        # Without the parameter filled in there is nothing to convert
+        # to, so the string is matched as it was passed.
+        assert type(Level(grade="3")) is Level
+
+    def test_an_abstract_generic_base(self) -> None:
+        class Shape(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str
+            size: _T
+
+            @abstractmethod
+            def area(self) -> tx.Any:
+                ...
+
+        class Square(Shape[_T], on={"kind": "square"}):
+            def area(self) -> tx.Any:
+                return self.size * self.size
+
+        assert Shape[int](kind="square", size="3").area() == 9
+        with pytest.raises(NoPolymorphError, match="is abstract"):
+            Shape[int](kind="round", size=1)
+
+    def test_an_instance_round_trips(self) -> None:
+        made = Signal[int](kind="inverse", value=1)
+        assert pickle.loads(pickle.dumps(made)) == made
+        assert copy.deepcopy(made) == made
+
+    def test_replace_keeps_the_parameterised_class(self) -> None:
+        made = Signal[int](kind="inverse", value="1")
+        assert type(replace(made, value="2")) is Inverse[int]
+
+    def test_the_signature_is_the_constructors(self) -> None:
+        assert list(signature(Signal[int]).parameters) == ["kind", "value"]
+
+    def test_a_parameterisation_made_before_anything_registered(self) -> None:
+        class Fresh(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str
+            value: _T
+
+        built = Fresh[int]
+        assert type(built(kind="x", value="1")) is Fresh[int]
+
+        class First(Fresh[_T], on={"kind": "first"}):
+            pass
+
+        assert type(built(kind="first", value="2")) is First[int]
+
+    def test_it_works_with_slots_and_frozen(self) -> None:
+        class Node(Magic, tx.Generic[_T], polymorphic=True, convert=True,
+                   slots=True, frozen=True):
+            kind: str
+            value: _T
+
+        class Leaf(Node[_T], on={"kind": "leaf"}):
+            pass
+
+        made = Node[int](kind="leaf", value="5")
+        assert type(made) is Leaf[int]
+        assert not hasattr(made, "__dict__")
+        assert asdict(made) == {"kind": "leaf", "value": 5}
+
+    def test_a_parameter_nested_in_a_hint(self) -> None:
+        class Many(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str
+            items: tx.List[_T]
+
+        class Some(Many[_T], on={"kind": "some"}):
+            pass
+
+        made = Many[int](kind="some", items=["1", "2"])
+        assert type(made) is Some[int]
+        assert made.items == [1, 2]
+
+    def test_an_alternate_input_name_still_reaches_the_choice(self) -> None:
+        class Sorting(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str = field(alias="sort")
+            value: _T
+
+        class Sorted(Sorting[_T], on={"kind": "s"}):
+            pass
+
+        made = Sorting[int](sort="s", value="9")
+        assert type(made) is Sorted[int]
+        assert made.value == 9
+
+    def test_two_that_match_equally_well_say_what_to_write(self) -> None:
+        # The names in the advice are the ones a class statement can be
+        # written with, not `One[int]`.
+        class Amb(Magic, tx.Generic[_T], polymorphic=True):
+            kind: str
+            value: _T
+
+        class One(Amb[_T], on={"kind": "k"}):
+            pass
+
+        class Two(Amb[_T], on={"kind": "k"}):
+            pass
+
+        with pytest.raises(AmbiguousPolymorphError) as raised:
+            Amb[int](kind="k", value=1)
+        assert "One[int], Two[int]" in str(raised.value)
+        assert "class One(Amb, on={...}, priority=1)" in str(raised.value)
+
+    def test_a_subclass_that_is_not_generic_keeps_its_own_types(self) -> None:
+        # It is built as it was written, so `value` is still `_T` and
+        # there is nothing to convert to.
+        class Loose(Signal, on={"kind": "loose"}):
+            pass
+
+        made = Signal[int](kind="loose", value="1")
+        assert type(made) is Loose
+        assert made.value == "1"
+        assert isinstance(made, Signal)
+        assert not isinstance(made, Signal[int])
+
+    def test_a_subclass_that_takes_a_parameter_of_its_own(self) -> None:
+        # `_S` is a variable the subscription says nothing about, so
+        # there is nothing to fill it in with.
+        class Extra(Signal[_T], tx.Generic[_T, _S], on={"kind": "extra"}):
+            pass
+
+        assert type(Signal[int](kind="extra", value="1")) is Extra
+
+    def test_any_stands_for_every_filling_in(self) -> None:
+        class Whatever(Signal[tx.Any], on={"kind": "whatever"}):
+            pass
+
+        assert type(Signal[int](kind="whatever", value="1")) is Whatever
+
+    def test_a_parameter_used_twice(self) -> None:
+        class Pair(Magic, tx.Generic[_T, _S], polymorphic=True, convert=True):
+            kind: str
+            left: _T
+            right: _S
+
+        class Same(Pair[_T, _T], on={"kind": "same"}):
+            pass
+
+        assert type(Pair[int, int](kind="same", left="1", right="2")) is (
+            Same[int]
+        )
+        assert type(Pair[int, str](kind="same", left=1, right="2")) is (
+            Pair[int, str]
+        )
+
+    def test_a_parameter_nested_in_what_a_subclass_fills_in(self) -> None:
+        class Nest(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str
+            item: _T
+
+        class Listed(Nest[tx.List[_T]], on={"kind": "listed"}):
+            pass
+
+        made = Nest[tx.List[int]](kind="listed", item=["1"])
+        assert type(made) is Listed[int]
+        assert made.item == [1]
+        assert type(Nest[int](kind="listed", item=1)) is Nest[int]
+
+    def test_a_callable_signature_mentioning_the_parameter(self) -> None:
+        class Call(Magic, tx.Generic[_T], polymorphic=True):
+            kind: str
+            fn: tx.Callable[[_T], _T]
+
+        class Caller(Call[_T], on={"kind": "call"}):
+            pass
+
+        assert type(Call[int](kind="call", fn=abs)) is Caller[int]
+
+    def test_a_subclass_with_a_class_getitem_of_its_own(self) -> None:
+        # It answers the subscription with something that is not a
+        # class, so it is built as it was written.
+        class Odd(Signal[_T], on={"kind": "odd"}):
+            def __class_getitem__(cls, item: tx.Any) -> str:
+                return "not a class"
+
+        assert type(Signal[int](kind="odd", value="1")) is Odd
+
+    def test_a_specialisation_beats_the_generic_subclass(self) -> None:
+        class Root(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str
+            item: _T
+
+        class Any_(Root[_T], on={"kind": "r"}):
+            pass
+
+        class Ints(Root[int], on={"kind": "r"}):
+            pass
+
+        # `Ints` sits one step further down, so it wins where both fit.
+        assert type(Root[int](kind="r", item="1")) is Ints
+        assert type(Root[str](kind="r", item="1")) is Any_[str]
+
+    def test_a_grandchild_through_a_parameterised_parent(self) -> None:
+        class Leaf(Inverse[int], on={"value": 5}):
+            pass
+
+        assert type(Signal[int](kind="inverse", value="5")) is Leaf
+        assert type(Signal[str](kind="inverse", value="5")) is Inverse[str]
+
+    def test_nothing_eligible_builds_the_class_itself(self) -> None:
+        # Without `polymorphic="strict"`, a class with no candidate
+        # left builds itself, as it does when nothing matches.
+        class Root(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str
+            item: _T
+
+        class OnlyStr(Root[str], on={"kind": "one"}):
+            pass
+
+        assert type(Root[int](kind="one", item=1)) is Root[int]
+
+    def test_a_class_built_by_dispatch_pickles(self) -> None:
+        made = Signal[int](kind="inverse", value="1")
+        assert pickle.loads(pickle.dumps(made)) == made
+
+
+class TestGenericPolymorphicRegistering:
+    """`register_polymorph` where type parameters are in play."""
+
+    def test_a_parameterisation_of_the_class_itself_is_refused(self) -> None:
+        class Root(Magic, tx.Generic[_T], polymorphic=True):
+            kind: str
+            item: _T
+
+        with pytest.raises(TypeError, match="type parameters filled in"):
+            Root.register_polymorph(Root[int], kind="loop")
+
+    def test_a_parameterised_subclass_can_be_registered(self) -> None:
+        class Root(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str
+            item: _T
+
+        class Sub(Root[_T]):
+            pass
+
+        Root.register_polymorph(Sub[int], kind="s")
+        assert type(Root(kind="s", item=1)) is Sub[int]
+        assert type(Root[int](kind="s", item="1")) is Sub[int]
+        assert type(Root[str](kind="s", item="1")) is Root[str]
+
+    def test_registering_on_a_parameterisation_reaches_the_origin(
+        self
+    ) -> None:
+        class Root(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str
+            item: _T
+
+        class Sub(Root[_T]):
+            pass
+
+        Root[int].register_polymorph(Sub, kind="s")
+        assert type(Root[int](kind="s", item="1")) is Sub[int]
+        assert type(Root(kind="s", item=1)) is Sub
+
+
+class TestGenericPolymorphicStrict:
+    """`polymorphic="strict"`, with the type parameter filled in."""
+
+    def test_nothing_matching_is_refused(self) -> None:
+        class Root(Magic, tx.Generic[_T], polymorphic="strict", convert=True):
+            kind: str
+            value: _T
+
+        class One(Root[_T], on={"kind": "one"}):
+            pass
+
+        assert type(Root[int](kind="one", value="1")) is One[int]
+        with pytest.raises(NoPolymorphError) as raised:
+            Root[int](kind="two", value=1)
+        # The subclasses it considered are named as it can build them.
+        assert "One[int]" in str(raised.value)
+
+    def test_a_registered_subclass_stays_buildable(self) -> None:
+        class Root(Magic, tx.Generic[_T], polymorphic="strict", convert=True):
+            kind: str
+            value: _T
+
+        class One(Root[_T], on={"kind": "one"}):
+            pass
+
+        assert One[int](kind="one", value="1").value == 1
+
+    def test_a_subclass_left_out_is_named_rather_than_blamed_on_imports(
+        self
+    ) -> None:
+        # It is registered and imported; it just stands for other type
+        # arguments. Saying "not imported" would send the reader the
+        # wrong way.
+        class Root(Magic, tx.Generic[_T], polymorphic="strict", convert=True):
+            kind: str
+            value: _T
+
+        class OnlyStr(Root[str], on={"kind": "one"}):
+            pass
+
+        with pytest.raises(NoPolymorphError) as raised:
+            Root[int](kind="one", value=1)
+        assert "OnlyStr" in str(raised.value)
+        assert "not been imported" not in str(raised.value)
+
+    def test_it_refuses_a_value_it_does_not_stand_for(self) -> None:
+        class Root(Magic, tx.Generic[_T], polymorphic="strict", convert=True):
+            kind: str
+            value: _T
+
+        class One(Root[_T], on={"kind": "one"}):
+            pass
+
+        with pytest.raises(PolymorphError, match="contradicts it"):
+            One[int](kind="other", value=1)

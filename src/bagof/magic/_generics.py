@@ -17,9 +17,16 @@ together keeps every shape working the same way: a nested hint
 (``Annotated[T, Field(alias="why")]``, whose metadata is kept), a
 callable signature (``Callable[[T], T]``), and a base that fills one
 parameter of two (``Pair[int, S]``, which leaves ``S`` standing).
+
+The same reading answers a second question, for a class that chooses
+which subclass to build: given ``Box[int]``, which of the subclasses
+registered with ``Box`` can stand for it, and what each of them becomes.
+``base_arguments`` reads what a subclass filled ``Box``'s parameters in
+with, and ``fill_in`` matches that against the ones asked for -- a
+variable takes them, a type of its own has to be them.
 """
 
-__all__ = ["substitute", "type_arguments"]
+__all__ = ["base_arguments", "fill_in", "substitute", "type_arguments"]
 
 import typing_extensions as tx
 
@@ -72,3 +79,104 @@ def substitute(hint: tx.Any, arguments: tx.Dict[tx.Any, tx.Any]) -> tx.Any:
     if all(value is p for value, p in zip(values, parameters)):
         return hint
     return hint[values if len(values) > 1 else values[0]]
+
+
+def base_arguments(cls: type, base: type) -> tx.Optional[tx.Tuple]:
+    """
+    What `cls` fills `base`'s type parameters in with, as it was written.
+
+    A tuple as long as `base.__parameters__`: a concrete type where
+    `cls` filled one in (`class Sub(Box[int])`), and a variable of
+    `cls`'s own where it passed one through (`class Sub(Box[T])`).
+    `None` when `cls` does not inherit from `base`.
+    """
+    if cls is base:
+        return tuple(getattr(base, "__parameters__", ()))
+    # From the class's own dict: `__orig_bases__` is an ordinary
+    # attribute, so a class that fills nothing in would otherwise be
+    # handed its parent's bases and read as having filled them in.
+    written = cls.__dict__.get("__orig_bases__", cls.__bases__)
+    for entry in written:
+        origin = tx.get_origin(entry) or entry
+        if not (isinstance(origin, type) and issubclass(origin, base)):
+            continue
+        upper = base_arguments(origin, base)
+        if upper is None:
+            continue
+        parameters = getattr(origin, "__parameters__", ())
+        values = tx.get_args(entry)
+        filled = (
+            dict(zip(parameters, values))
+            if len(values) == len(parameters)
+            else {}
+        )
+        return tuple(substitute(hint, filled) for hint in upper)
+    return None
+
+
+def fill_in(
+    target: type, base: type, arguments: tx.Tuple
+) -> tx.Optional[type]:
+    """
+    `target` with `base`'s type parameters standing for `arguments`.
+
+    `None` when `target` cannot stand for them, because it fills one of
+    them in with a type of its own that they contradict -- `class
+    Sub(Box[str])` where `Box[int]` was asked for. A target with no
+    parameters left to fill, or one whose own are not all named by the
+    subscription, is handed back as it is.
+    """
+    written = base_arguments(target, base)
+    if written is None or len(written) != len(arguments):
+        return None
+    stands_for = {}
+    for hint, argument in zip(written, arguments):
+        if not _matches(hint, argument, stands_for):
+            return None
+    parameters = getattr(target, "__parameters__", ())
+    if not parameters:
+        return target
+    values = tuple(stands_for.get(p, p) for p in parameters)
+    if any(value is p for value, p in zip(values, parameters)):
+        # A variable of its own that the subscription says nothing
+        # about: there is nothing to fill it in with.
+        return target
+    filled = target[values if len(values) > 1 else values[0]]
+    # A class of its own written in the class body answers the
+    # subscription, and may hand back anything at all. What it gave is
+    # not something to build, so the target is used as it was written.
+    return filled if isinstance(filled, type) else target
+
+
+def _matches(hint: tx.Any, argument: tx.Any, stands_for: dict) -> bool:
+    # Whether `hint`, as a base wrote one of its type arguments, can
+    # stand for `argument` -- recording what each variable in it would
+    # then stand for. A variable takes the argument; anything else has
+    # to be that argument, or be built the same way out of parts that
+    # each match.
+    if isinstance(hint, tx.TypeVar):
+        return stands_for.setdefault(hint, argument) == argument
+    if isinstance(hint, list):
+        # The argument list of a callable signature, which `get_args`
+        # hands back as a list rather than as a typing form.
+        return (
+            isinstance(argument, list)
+            and len(hint) == len(argument)
+            and all(
+                _matches(inner, given, stands_for)
+                for inner, given in zip(hint, argument)
+            )
+        )
+    if hint is tx.Any or argument is tx.Any:
+        # `Box[Any]` is `Box` with anything in it, so it stands for
+        # every filling-in and every filling-in stands for it.
+        return True
+    if not getattr(hint, "__parameters__", ()):
+        return hint == argument
+    origin = tx.get_origin(hint)
+    if origin is None or origin is not tx.get_origin(argument):
+        return False
+    inner, given = tx.get_args(hint), tx.get_args(argument)
+    return len(inner) == len(given) and all(
+        _matches(one, other, stands_for) for one, other in zip(inner, given)
+    )

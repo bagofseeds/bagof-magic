@@ -36,6 +36,13 @@ each of them arrives -- which position in `__init__`, whether it may be
 passed by name, what it defaults to, what converts it. `_Discriminant`
 holds that, and `_read` uses it, so dispatch costs a couple of dict
 lookups per constrained field rather than binding a signature.
+
+A class with its type parameters filled in -- `Chord[int]` -- answers
+all three through `_Parameterised`, a view of the registrations its
+origin carries. Nothing registers with it: a subclass of `Chord[int]`
+registers with `Chord`, and the view decides which of those
+registrations `Chord[int]` can build and hands each back with the same
+parameters filled in.
 """
 
 __all__ = [
@@ -52,12 +59,14 @@ from bagof.validators import Validator
 from ._constants import (
     _FIELDS,
     _GENERATED,
+    _GENERIC_ORIGIN,
     _OPTIONS,
     _POLYMORPHS,
     _REGISTRATION,
     MISSING,
     MaybeMissing,
 )
+from ._generics import fill_in
 
 # ----------------------------------------------------------------------
 # What can go wrong
@@ -388,6 +397,19 @@ class _Polymorph:
             depth,
         )
 
+    def standing_for(self, target: type) -> "_Polymorph":
+        """This registration, with `target` answering for it instead.
+
+        The rank is kept: `Sub[int]` stands for the same claim `Sub`
+        registered, and sits at the same place in the hierarchy as far
+        as the choice is concerned.
+        """
+        made = _Polymorph.__new__(_Polymorph)
+        made.target = target
+        made.specs = self.specs
+        made.rank = self.rank
+        return made
+
     def matches(self, values: tx.Mapping[str, tx.Any]) -> bool:
         for spec in self.specs:
             value = values[spec.name]
@@ -408,12 +430,14 @@ class _Registry:
     __slots__ = ("dispatch", "invariant", "strict", "required")
 
     def __init__(self, strict: bool, required: bool) -> None:
-        #: The registered subclasses, and where each constrained field
-        #: arrives, as one value. Rebuilt whole and stored in a single
-        #: assignment, so a construction on another thread reads either
-        #: the state before a registration or the state after it, never
-        #: entries whose fields the reader has no place to look up.
-        self.dispatch = ((), ())
+        #: The registered subclasses, where each constrained field
+        #: arrives, and the ones left out -- as one value. Rebuilt
+        #: whole and stored in a single assignment, so a construction
+        #: on another thread reads either the state before a
+        #: registration or the state after it, never entries whose
+        #: fields the reader has no place to look up. Only a
+        #: parameterised class leaves any out.
+        self.dispatch = ((), (), ())
         #: This class's own registration, read back on the way in, so
         #: that building it directly with a contradicting value can be
         #: refused. Only kept under `polymorphic="strict"`.
@@ -426,8 +450,165 @@ class _Registry:
         #: whole point of having been registered.
         self.required = required
 
+    def add(
+        self,
+        owner: type,
+        target: type,
+        specs: tx.Tuple[_Spec, ...],
+        priority: int,
+    ) -> None:
+        """Have `owner` build `target` for the arguments `specs` describe."""
+        entry = _Polymorph(
+            target, specs, priority, target.__mro__.index(owner)
+        )
+        entries = _replacing(self.dispatch[0], entry)
+        self.dispatch = (
+            entries, discriminants(owner, _constrained(entries)), ()
+        )
 
-def registry(cls: type) -> _Registry:
+
+def _replacing(
+    entries: tx.Tuple[_Polymorph, ...], entry: _Polymorph
+) -> tx.Tuple[_Polymorph, ...]:
+    # `entries` with `entry` added, and any earlier registration of the
+    # same class dropped. A class registering a second time -- a
+    # reloaded module, a decorator applied twice -- replaces its entry
+    # rather than adding one that would then tie with itself. Same name
+    # in the same module is the same registration, whether or not it is
+    # the same object.
+    same = (entry.target.__module__, entry.target.__qualname__)
+    kept = [
+        other for other in entries
+        if (other.target.__module__, other.target.__qualname__) != same
+    ]
+    kept.append(entry)
+    return tuple(kept)
+
+
+def _constrained(entries: tx.Iterable[_Polymorph]) -> tx.List[str]:
+    # Every field any of these registrations mentions, in the order
+    # they were first mentioned.
+    names = []
+    for entry in entries:
+        for spec in entry.specs:
+            if spec.name not in names:
+                names.append(spec.name)
+    return names
+
+
+def _setting(cls: type) -> tx.Tuple[bool, bool]:
+    # What this class's own `polymorphic` setting asks of its registry.
+    strict = getattr(
+        getattr(cls, _OPTIONS, None), "polymorphic", False
+    ) == "strict"
+    return strict, strict and _REGISTRATION not in cls.__dict__
+
+
+class _Parameterised:
+    """The registry of a class built by filling a generic's parameters in.
+
+    `Box[int]` chooses between the subclasses registered with `Box` --
+    including the ones registered after it was built -- and answers for
+    each with its own parameters filled in the same way, so `Box[int]`
+    hands back a `Sub[int]`. A subclass that fills them in differently,
+    `class Sub(Box[str], on=...)` where `Box[int]` was asked for, is
+    left out, and is named in the error when nothing matches.
+
+    It stands in for a `_Registry` and is read the same way. Nothing is
+    registered here: it is a view of the origin's registrations, as
+    they stand at the call.
+    """
+
+    __slots__ = ("cls", "origin", "arguments", "invariant", "strict",
+                 "required", "inherited", "view")
+
+    def __init__(
+        self,
+        cls: type,
+        origin: type,
+        arguments: tx.Tuple,
+        strict: bool,
+        required: bool,
+    ) -> None:
+        self.cls = cls
+        self.origin = origin
+        self.arguments = arguments
+        self.invariant = None
+        self.strict = strict
+        self.required = required
+        #: The origin's entries this view was made from, and the view
+        #: itself. The origin publishes its entries in a single
+        #: assignment, so holding on to that tuple is enough to tell
+        #: that nothing has registered since.
+        self.inherited = None
+        self.view = None
+
+    @property
+    def dispatch(self) -> tx.Tuple:
+        found = self.origin.__dict__.get(_POLYMORPHS)
+        inherited = found.dispatch[0] if found is not None else ()
+        if inherited is self.inherited:
+            return self.view
+        entries, left_out = [], []
+        for entry in inherited:
+            target = fill_in(entry.target, self.origin, self.arguments)
+            if target is None:
+                # It stands for other type arguments than these.
+                left_out.append(entry)
+                continue
+            entries.append(
+                entry if target is entry.target else entry.standing_for(target)
+            )
+        entries = tuple(entries)
+        # Where each constrained field arrives is worked out against this
+        # class, whose fields carry the filled-in types -- so a value is
+        # converted the way the instance will really hold it.
+        view = (
+            entries,
+            discriminants(self.cls, _constrained(entries)),
+            tuple(left_out),
+        )
+        # The view is published before the entries it was made from, so
+        # that a reader that finds them unchanged finds the view made.
+        self.view = view
+        self.inherited = inherited
+        return view
+
+
+def arm_parameterised(
+    cls: type, origin: type, arguments: tx.Tuple
+) -> None:
+    """Have `cls` choose between the subclasses `origin` chooses between.
+
+    `cls` is `origin` with its type parameters filled in with
+    `arguments`. It is given a registry of its own, reading the
+    origin's, rather than sharing it: where each constrained field
+    arrives has to be worked out against the filled-in fields.
+    """
+    found = origin.__dict__.get(_POLYMORPHS)
+    if found is None:
+        strict, required = _setting(cls)
+    else:
+        # Not `cls`'s own reading of the setting: `Sub[int]` has to
+        # stay as buildable as `Sub` is, and only `Sub` carries the
+        # registration that says so.
+        strict, required = found.strict, found.required
+    made = _Parameterised(cls, origin, arguments, strict, required)
+    if found is not None and found.invariant is not None:
+        specs = found.invariant[0]
+        made.invariant = (
+            specs, discriminants(cls, [spec.name for spec in specs])
+        )
+    setattr(cls, _POLYMORPHS, made)
+
+
+#: Either kind of registry: the one an ordinary polymorphic class
+#: carries, and the one a class built by filling in type parameters
+#: carries. They are read the same way.
+_Registries = tx.Union[_Registry, _Parameterised]
+
+
+def registry(cls: type) -> _Registries:
     """This class's own registry, made if it has none yet.
 
     Never an inherited one: a subclass answers for the subclasses
@@ -435,10 +616,7 @@ def registry(cls: type) -> _Registry:
     """
     found = cls.__dict__.get(_POLYMORPHS)
     if found is None:
-        strict = getattr(
-            getattr(cls, _OPTIONS, None), "polymorphic", False
-        ) == "strict"
-        found = _Registry(strict, strict and _REGISTRATION not in cls.__dict__)
+        found = _Registry(*_setting(cls))
         setattr(cls, _POLYMORPHS, found)
     return found
 
@@ -477,38 +655,37 @@ def register(
             f"{owner.__name__} cannot be registered against itself: it is "
             f"already what a call to it builds when nothing else matches."
         )
+    if target.__dict__.get(_GENERIC_ORIGIN) is owner:
+        raise TypeError(
+            f"{target.__name__} is {owner.__name__} with its type "
+            f"parameters filled in, not one of the subclasses it chooses "
+            f"between. {owner.__name__} already builds it for those type "
+            f"arguments: register the subclass you want it to build "
+            f"instead."
+        )
     if not isinstance(priority, int) or isinstance(priority, bool):
         raise TypeError(
             f"the priority of {target.__name__} is {priority!r}, and a "
             f"priority is a whole number: the subclass with the highest "
             f"one wins when two match equally well."
         )
-    entry = _Polymorph(
-        target, specs, priority, target.__mro__.index(owner)
-    )
-    found = registry(owner)
-    entries, _ = found.dispatch
-    # A class registering a second time -- a reloaded module, a
-    # decorator applied twice -- replaces its entry rather than adding
-    # one that would then tie with itself. Same name in the same module
-    # is the same registration, whether or not it is the same object.
-    same = (target.__module__, target.__qualname__)
-    entries = [
-        kept for kept in entries
-        if (kept.target.__module__, kept.target.__qualname__) != same
-    ]
-    entries.append(entry)
-    names = []
-    for kept in entries:
-        for spec in kept.specs:
-            if spec.name not in names:
-                names.append(spec.name)
-    found.dispatch = (tuple(entries), discriminants(owner, names))
+    registry(owner).add(owner, target, specs, priority)
 
 
 # ----------------------------------------------------------------------
 # Choosing
 # ----------------------------------------------------------------------
+
+
+def as_written(cls: type) -> str:
+    """The name of `cls` as the author of the class wrote it.
+
+    A class built by filling in type parameters is named `Box[int]`,
+    which says what was built but is not a name anything can be
+    declared under -- so a message telling someone what to write names
+    `Box`.
+    """
+    return cls.__dict__.get(_GENERIC_ORIGIN, cls).__name__
 
 
 def _written(values: tx.Mapping[str, tx.Any]) -> str:
@@ -523,14 +700,14 @@ def _written(values: tx.Mapping[str, tx.Any]) -> str:
 
 def select(
     cls: type,
-    found: _Registry,
+    found: _Registries,
     args: tx.Tuple[tx.Any, ...],
     kwargs: tx.Dict[str, tx.Any],
 ) -> tx.Optional[type]:
     """
     Which subclass of `cls` to build, or `None` to build `cls` itself.
     """
-    entries, where = found.dispatch
+    entries, where, left_out = found.dispatch
     values = read(where, args, kwargs)
     candidates = [entry for entry in entries if entry.matches(values)]
     if not candidates:
@@ -540,8 +717,10 @@ def select(
         # being made.
         abstract = getattr(cls, "__abstractmethods__", None)
         if found.strict or abstract:
-            raise NoPolymorphError(_nothing_matched(cls, entries, values,
-                                                    bool(abstract)))
+            raise NoPolymorphError(
+                _nothing_matched(cls, entries, left_out, values,
+                                 bool(abstract))
+            )
         return None
     best = max(candidates, key=lambda entry: entry.rank)
     tied = [
@@ -557,8 +736,8 @@ def select(
             f"{cls.__name__}({_written(values)}) matches {names} equally "
             f"well, and there is nothing to choose between them. Say which "
             f"one wins by giving it a higher priority -- "
-            f"`class {best.target.__name__}({cls.__name__}, on={{...}}, "
-            f"priority=1)`."
+            f"`class {as_written(best.target)}({as_written(cls)}, "
+            f"on={{...}}, priority=1)`."
         )
     return best.target
 
@@ -566,6 +745,7 @@ def select(
 def _nothing_matched(
     cls: type,
     entries: tx.Tuple[_Polymorph, ...],
+    left_out: tx.Tuple[_Polymorph, ...],
     values: tx.Mapping[str, tx.Any],
     abstract: bool,
 ) -> str:
@@ -576,7 +756,20 @@ def _nothing_matched(
         f"{cls.__name__} only builds one of the subclasses registered "
         f"with it"
     )
+    # A subclass written for other type arguments than the ones asked
+    # for is registered, and still cannot be built here -- so saying
+    # nothing about it would send the reader looking for an import that
+    # has already happened.
+    standing_elsewhere = ", ".join(
+        sorted(entry.target.__name__ for entry in left_out)
+    )
     if not entries:
+        if left_out:
+            return (
+                f"{why}, and the ones that have registered stand for "
+                f"other type arguments than {cls.__name__} was asked "
+                f"for: {standing_elsewhere}."
+            )
         # Nothing has registered, so there are no constrained fields
         # and nothing to say about the arguments.
         return (
@@ -584,16 +777,22 @@ def _nothing_matched(
             f"you expect has not been imported."
         )
     considered = "\n".join(f"  - {entry}" for entry in entries)
+    aside = (
+        f"\n{standing_elsewhere} stand for other type arguments than "
+        f"{cls.__name__} was asked for, and were left out."
+        if left_out else ""
+    )
     return (
         f"{why}, and none of them matches {_written(values)}. It "
-        f"considered:\n{considered}\nIf the one you expected is not in "
-        f"that list, the module it is written in has not been imported."
+        f"considered:\n{considered}{aside}\nIf the one you expected is "
+        f"not in that list, the module it is written in has not been "
+        f"imported."
     )
 
 
 def check(
     cls: type,
-    found: _Registry,
+    found: _Registries,
     args: tx.Tuple[tx.Any, ...],
     kwargs: tx.Dict[str, tx.Any],
 ) -> None:
