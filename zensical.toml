@@ -9,9 +9,9 @@ nav = [
     {"Options" = "intro/settings.md"},
     {"Fields" = "intro/fields.md"},
     {"Conversion and validation" = "intro/conversion.md"},
-    {"Extras" = "intro/extras.md"},
     {"Polymorphism" = "intro/polymorphism.md"},
     {"Aliases and properties" = "intro/aliases.md"},
+    {"Extras" = "intro/extras.md"},
   ]},
   {"Comparison" = "comparison.md"},
   {"API" = [
