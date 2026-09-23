@@ -22,6 +22,7 @@ import typing_extensions as tx
 from bagof.converters.exceptions import ConversionError
 
 # locals
+import bagof.magic._generics as g
 from bagof.magic import (
     AmbiguousPolymorphError,
     ClassVar,
@@ -1601,3 +1602,77 @@ class TestGenericPolymorphicStrict:
 
         with pytest.raises(PolymorphError, match="contradicts it"):
             One[int](kind="other", value=1)
+
+
+# ======================================================================
+# Reading what a subclass fills a generic base's parameters in with
+# ======================================================================
+
+
+class TestReadingATargetsTypeArguments:
+    """`base_arguments` and `fill_in`, which decide the candidates.
+
+    A `polymorphic` class reaches these through dispatch; they are
+    exercised directly here for the answers that dispatch cannot reach
+    on its own.
+    """
+
+    def test_a_class_that_does_not_inherit_from_the_base(self) -> None:
+        class Box(Magic, tx.Generic[_T]):
+            item: _T
+
+        assert g.base_arguments(int, Box) is None
+        assert g.fill_in(int, Box, (int,)) is None
+
+    def test_a_base_that_is_not_the_generic_one_comes_first(self) -> None:
+        class Mixin:
+            pass
+
+        class Box(Magic, tx.Generic[_T]):
+            item: _T
+
+        class Sub(Mixin, Box[_T]):
+            pass
+
+        assert g.base_arguments(Sub, Box) == (_T,)
+        assert g.fill_in(Sub, Box, (int,)) is Sub[int]
+
+    def test_a_base_registered_rather_than_inherited(self) -> None:
+        # `Magic` classes are abstract base classes, so a class can be
+        # made a subclass of one without inheriting from it. There is
+        # no chain of bases to read type arguments off, and no way to
+        # fill any in.
+        class Box(Magic, tx.Generic[_T]):
+            item: _T
+
+        class Registered:
+            pass
+
+        Box.register(Registered)
+        assert issubclass(Registered, Box)
+        assert g.base_arguments(Registered, Box) is None
+        assert g.fill_in(Registered, Box, (int,)) is None
+
+        # And one of those sitting in front of the real base is
+        # stepped over rather than answered for.
+        class Sub(Registered, Box[_T]):
+            pass
+
+        assert g.fill_in(Sub, Box, (int,)) is Sub[int]
+
+    def test_a_callable_signature_as_a_type_argument(self) -> None:
+        # `get_args` hands a callable's parameters back as a list, not
+        # as a typing form, so they are matched one by one.
+        class Box(Magic, tx.Generic[_T]):
+            item: _T
+
+        class Takes(Box[tx.Callable[[_T], _T]]):
+            pass
+
+        assert g.fill_in(Takes, Box, (tx.Callable[[int], int],)) is (
+            Takes[int]
+        )
+        # A different number of parameters, and a parameter that does
+        # not match, are both refused.
+        assert g.fill_in(Takes, Box, (tx.Callable[[int, int], int],)) is None
+        assert g.fill_in(Takes, Box, (int,)) is None
