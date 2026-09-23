@@ -30,7 +30,16 @@ SOURCES = [
 ]
 
 #: Hand-written pages, relative to the repository root.
-PAGES = ["README.md", "docs/comparison.md"]
+PAGES = [
+    "README.md",
+    "docs/comparison.md",
+    "docs/settings.md",
+    "docs/fields.md",
+    "docs/conversion.md",
+    "docs/extras.md",
+    "docs/polymorphism.md",
+    "docs/aliases.md",
+]
 
 
 class _Checker(doctest.OutputChecker):

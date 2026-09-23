@@ -4,7 +4,15 @@ extra_css = ["stylesheets/extra.css"]
 
 nav = [
   {"Bag of" = "https://bagofseeds.github.io/bagof/"},
-  {"Magic" = "index.md"},
+  {"Magic" = [
+    "index.md",
+    {"Settings" = "settings.md"},
+    {"Field annotations" = "fields.md"},
+    {"Conversion and validation" = "conversion.md"},
+    {"Extras" = "extras.md"},
+    {"Building subclasses" = "polymorphism.md"},
+    {"Aliases and properties" = "aliases.md"},
+  ]},
   {"Comparison" = "comparison.md"},
   {"API" = [
     "api/index.md",
