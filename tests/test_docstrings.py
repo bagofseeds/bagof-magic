@@ -33,12 +33,12 @@ SOURCES = [
 PAGES = [
     "README.md",
     "docs/comparison.md",
-    "docs/settings.md",
-    "docs/fields.md",
-    "docs/conversion.md",
-    "docs/extras.md",
-    "docs/polymorphism.md",
-    "docs/aliases.md",
+    "docs/intro/settings.md",
+    "docs/intro/fields.md",
+    "docs/intro/conversion.md",
+    "docs/intro/extras.md",
+    "docs/intro/polymorphism.md",
+    "docs/intro/aliases.md",
 ]
 
 

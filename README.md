@@ -140,12 +140,12 @@ Python 3.8 and later.
 Early. The API is settling, and things may still move. Issues and ideas are
 welcome at [bagofseeds/bagof-magic][issues].
 
-[settings]: https://bagofseeds.github.io/bagof-magic/settings/
-[fields]: https://bagofseeds.github.io/bagof-magic/fields/
-[conversion]: https://bagofseeds.github.io/bagof-magic/conversion/
-[polymorphic]: https://bagofseeds.github.io/bagof-magic/polymorphism/
-[aliases]: https://bagofseeds.github.io/bagof-magic/aliases/
-[extras]: https://bagofseeds.github.io/bagof-magic/extras/
+[settings]: https://bagofseeds.github.io/bagof-magic/intro/settings/
+[fields]: https://bagofseeds.github.io/bagof-magic/intro/fields/
+[conversion]: https://bagofseeds.github.io/bagof-magic/intro/conversion/
+[polymorphic]: https://bagofseeds.github.io/bagof-magic/intro/polymorphism/
+[aliases]: https://bagofseeds.github.io/bagof-magic/intro/aliases/
+[extras]: https://bagofseeds.github.io/bagof-magic/intro/extras/
 [converters]: https://bagofseeds.github.io/bagof-converters/
 [validators]: https://bagofseeds.github.io/bagof-validators/
 [attrs]: https://www.attrs.org

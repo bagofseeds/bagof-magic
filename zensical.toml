@@ -6,12 +6,12 @@ nav = [
   {"Bag of" = "https://bagofseeds.github.io/bagof/"},
   {"Magic" = [
     "index.md",
-    {"Settings" = "settings.md"},
-    {"Field annotations" = "fields.md"},
-    {"Conversion and validation" = "conversion.md"},
-    {"Extras" = "extras.md"},
-    {"Building subclasses" = "polymorphism.md"},
-    {"Aliases and properties" = "aliases.md"},
+    {"Settings" = "intro/settings.md"},
+    {"Field annotations" = "intro/fields.md"},
+    {"Conversion and validation" = "intro/conversion.md"},
+    {"Extras" = "intro/extras.md"},
+    {"Building subclasses" = "intro/polymorphism.md"},
+    {"Aliases and properties" = "intro/aliases.md"},
   ]},
   {"Comparison" = "comparison.md"},
   {"API" = [
