@@ -6056,12 +6056,22 @@ class TestFillingAParameterAtTheCallSite:
         with pytest.raises(TypeError, match="already has its type parameters"):
             ConvertingBox[int][str]
 
-    def test_a_polymorphic_generic_is_refused_for_now(self) -> None:
-        class Base(Magic, tx.Generic[_T], polymorphic="strict"):
-            kind: _T
+    def test_a_polymorphic_generic_chooses_a_parameterised_subclass(
+        self
+    ) -> None:
+        # The two features meet: the subclass is chosen from the
+        # arguments, and is handed back with the same parameter filled
+        # in. `tests/test_polymorphism.py` covers the choice itself.
+        class Base(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            kind: str
+            value: _T
 
-        with pytest.raises(TypeError, match="chooses which subclass"):
-            Base[int]
+        class Leaf(Base[_T], on={"kind": "leaf"}):
+            pass
+
+        made = Base[int](kind="leaf", value="1")
+        assert type(made) is Leaf[int]
+        assert made.value == 1
 
     def test_a_class_body_class_getitem_still_wins(self) -> None:
         class Box(Magic, tx.Generic[_T]):

@@ -542,6 +542,36 @@ Diminished(root='B', mode='dim', variant='natural')
 Registering later only changes what is built later. Existing instances are
 untouched.
 
+### A class that takes a type parameter
+
+Choosing a subclass and filling a type parameter in work together. The
+subclass is chosen from the arguments, and comes back with the parameter
+filled in the same way:
+
+```python
+from typing import Generic, TypeVar
+from bagof.magic import Magic
+
+V = TypeVar("V")
+
+class Signal(Magic, Generic[V], polymorphic=True, convert=True):
+    kind: str
+    value: V
+
+class Inverse(Signal[V], on={"kind": "inverse"}):
+    pass
+```
+
+```pycon
+>>> Signal[int](kind="inverse", value="7")
+Inverse[int](kind='inverse', value=7)
+>>> Signal(kind="inverse", value="7")
+Inverse(kind='inverse', value='7')
+```
+
+`value` is `V` on `Signal`, so nothing converts it; `Signal[int]` makes it
+an `int` on the subclass it builds.
+
 ### The two settings
 
 `polymorphic="strict"` refuses to build the class itself. It names the
