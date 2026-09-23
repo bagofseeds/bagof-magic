@@ -14,6 +14,7 @@ import pickle
 import re
 from abc import abstractmethod
 from inspect import Parameter, Signature, signature
+from typing import Any as TypingAny
 
 # dependencies
 import pytest
@@ -1405,11 +1406,19 @@ class TestGenericPolymorphic:
 
         assert type(Signal[int](kind="extra", value="1")) is Extra
 
-    def test_any_stands_for_every_filling_in(self) -> None:
-        class Whatever(Signal[tx.Any], on={"kind": "whatever"}):
+    @pytest.mark.parametrize("any_", [tx.Any, TypingAny])
+    def test_any_stands_for_every_filling_in(self, any_: tx.Any) -> None:
+        # Both spellings mean the same thing, and before Python 3.11
+        # they are not the same object.
+        class Root(Magic, tx.Generic[_T], polymorphic=True):
+            kind: str
+            value: _T
+
+        class Whatever(Root[any_], on={"kind": "whatever"}):
             pass
 
-        assert type(Signal[int](kind="whatever", value="1")) is Whatever
+        assert type(Root[int](kind="whatever", value=1)) is Whatever
+        assert type(Root[str](kind="whatever", value="1")) is Whatever
 
     def test_a_parameter_used_twice(self) -> None:
         class Pair(Magic, tx.Generic[_T, _S], polymorphic=True, convert=True):

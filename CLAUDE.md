@@ -349,7 +349,12 @@ Three things it has to get right:
   Half(Pair[T, int])` stands for `Pair[str, int]` and not for
   `Pair[str, bool]`); anything left over is not a candidate at all. A
   target with no parameters is handed back as it is, so a plain
-  `class Plain(Signal, on=...)` still works.
+  `class Plain(Signal, on=...)` still works. `Any` is a wildcard both
+  ways, and `_is_any` asks by identity *and* by repr: before 3.11
+  `typing_extensions` provides its own `Any` so that it can be
+  subclassed, and it is not `typing.Any` -- so a hint written with the
+  ordinary spelling would go unrecognised on exactly the interpreters
+  CI covers at the old end.
 
 **Nothing registers with a parameterisation.** `_polymorphic_base`
 skips a class built by filling parameters in, and `register_polymorph`

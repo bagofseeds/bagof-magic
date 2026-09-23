@@ -167,7 +167,7 @@ def _matches(hint: tx.Any, argument: tx.Any, stands_for: dict) -> bool:
                 for inner, given in zip(hint, argument)
             )
         )
-    if hint is tx.Any or argument is tx.Any:
+    if _is_any(hint) or _is_any(argument):
         # `Box[Any]` is `Box` with anything in it, so it stands for
         # every filling-in and every filling-in stands for it.
         return True
@@ -180,3 +180,12 @@ def _matches(hint: tx.Any, argument: tx.Any, stands_for: dict) -> bool:
     return len(inner) == len(given) and all(
         _matches(one, other, stands_for) for one, other in zip(inner, given)
     )
+
+
+def _is_any(hint: tx.Any) -> bool:
+    # Before Python 3.11 there are two `Any` objects -- `typing`'s, and
+    # the one `typing_extensions` provides so that it can be subclassed
+    # -- and they are not the same object. A hint may be written with
+    # either, and both mean the same thing, so neither identity alone
+    # answers this.
+    return hint is tx.Any or repr(hint) == "typing.Any"
