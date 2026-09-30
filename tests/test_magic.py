@@ -4445,8 +4445,8 @@ class TestOrderRequiresEq:
         assert not C(1, 0) < C(1, 9)
 
 
-class TestInitFalseIsAnEscapeHatch:
-    """`init=False` must not be blocked by the generated signature."""
+class TestInitFalseKeepsAHandWrittenInit:
+    """`init=False` keeps a hand-written `__init__`, whatever the order."""
 
     def test_a_non_default_after_a_default(self) -> None:
         class D(Magic, init=False):
@@ -4725,6 +4725,49 @@ class TestARequiredFieldAfterADefault:
         assert str(signature(C)) == "(y: int) -> None"
         built = C(4)
         assert (built.x, built.y) == (0, 4)
+
+    def test_the_first_missing_argument_is_the_one_named(self) -> None:
+        # Two are missing; the one named is the first the caller left
+        # out, not the first alphabetically.
+        class Pair(Magic):
+            x: int = 0
+            z: int
+            a: int
+
+        with pytest.raises(
+            TypeError, match=r"^Pair\(\) missing a required argument: 'z'$"
+        ):
+            Pair(1)
+
+    def test_the_hooks_never_see_a_missing_argument(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int = 0
+            y: int
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append((arguments.x, arguments.y))
+
+        with pytest.raises(TypeError, match="missing a required argument"):
+            C(5)
+        assert seen == []
+        C(5, 6)
+        assert seen == [(5, 6)]
+
+    def test_a_parameterised_generic(self) -> None:
+        T = tx.TypeVar("T")
+
+        class Box(Magic, tx.Generic[T]):
+            tag: int = 0
+            item: T
+
+        with pytest.raises(
+            TypeError,
+            match=r"^Box\[int\]\(\) missing a required argument: 'item'$",
+        ):
+            Box[int](5)
+        assert Box[int](0, 1) == Box(0, 1)
 
 
 class TestACompliantSignatureIsUnchanged:

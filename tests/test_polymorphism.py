@@ -946,6 +946,30 @@ class TestDispatchAfterADefault:
         ):
             base(1)
 
+    def test_delegating_to_a_class_that_holds_the_discriminant(self) -> None:
+        # The subclass does not take `mode`, so the call is re-spelt by
+        # name before it is handed on; a field still missing after that
+        # is named against the class that was built.
+        class Chord(Magic, polymorphic=True):
+            tag: int = 0
+            mode: str
+            root: str
+            extra: int = 1
+            more: int
+
+        class Major(Chord, on={"mode": "major"}):
+            mode: tx.ClassVar[str] = "major"
+
+        built = Chord(1, "major", "A", 2, 3)
+        assert type(built) is Major
+        assert (built.tag, built.root, built.extra, built.more) == (
+            1, "A", 2, 3
+        )
+        with pytest.raises(
+            TypeError, match=r"^Major\(\) missing a required argument: 'more'$"
+        ):
+            Chord(1, "major", "A")
+
 
 # ======================================================================
 # Pinning, beside a default that skips a step

@@ -2787,7 +2787,13 @@ def _make_init(
     # nothing a default would have built or unwrapped can fail first
     # and report something else instead.
     body = [_make_alias_prelude(field) for field in aliased]
-    body += [_make_required_elem(name) for name in sorted(required)]
+    # In parameter order, so the one reported is the first the caller
+    # left out.
+    body += [
+        _make_required_elem(field.public_name)
+        for field in parameters
+        if field.public_name in required
+    ]
     body += [_make_unpack_elem(field) for field in parameters]
     if _PRE_INIT_NAME in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
