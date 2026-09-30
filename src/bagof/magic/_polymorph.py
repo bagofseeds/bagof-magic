@@ -126,7 +126,7 @@ class _Spec:
     """One `field: constraint` pair of a registration."""
 
     __slots__ = ("name", "matches", "precision", "value", "text",
-                 "narrowed", "validate", "members", "parts")
+                 "narrowed", "validate", "members", "parts", "pin")
 
     def __init__(
         self,
@@ -139,6 +139,7 @@ class _Spec:
         validate: tx.Optional[tx.Callable[[tx.Any], tx.Any]],
         members: tx.Optional[tx.Tuple[tx.Any, ...]] = None,
         parts: tx.Optional[tx.Tuple["_Spec", ...]] = None,
+        pin: MaybeMissing[str] = MISSING,
     ) -> None:
         self.name = name
         self.matches = matches
@@ -168,6 +169,11 @@ class _Spec:
         #: constraint reaching the combination along two branches of
         #: the hierarchy counts once.
         self.parts = (self,) if parts is None else parts
+        #: The `pin_discriminant` of the class that wrote this
+        #: constraint, which says how a class that inherits it pins the
+        #: field when the field does not say itself. `MISSING` on a
+        #: combination, whose parts each carry their own.
+        self.pin = pin
 
 
 def _is_hint(spec: tx.Any) -> bool:
@@ -236,7 +242,7 @@ def _shape(
     return (lambda value: value == spec), _EXACT, spec, repr(spec)
 
 
-def _specification(name: str, spec: tx.Any) -> _Spec:
+def _specification(name: str, spec: tx.Any, pin: str = "pin") -> _Spec:
     """Read one value of an `on={...}` mapping."""
     matches, precision, value, text = _shape(spec)
     return _Spec(
@@ -249,6 +255,7 @@ def _specification(name: str, spec: tx.Any) -> _Spec:
         _constraint_validator(spec, matches, text),
         tuple(sorted(spec, key=repr))
         if isinstance(spec, (set, frozenset)) else None,
+        pin=pin,
     )
 
 
@@ -317,9 +324,13 @@ def _constraint_validator(
 
 
 def specifications(
-    clsname: str, on: tx.Mapping[str, tx.Any]
+    clsname: str, on: tx.Mapping[str, tx.Any], pin: str = "pin"
 ) -> tx.Tuple[_Spec, ...]:
-    """Read a whole `on={...}` mapping."""
+    """Read a whole `on={...}` mapping.
+
+    `pin` is the `pin_discriminant` of the class the mapping describes,
+    kept on each constraint for the classes that inherit it.
+    """
     if not isinstance(on, tx.Mapping):
         raise TypeError(
             f"on= takes a mapping of field names to the values "
@@ -327,7 +338,9 @@ def specifications(
             f"and was given {on!r}. Write on=None to leave {clsname} "
             f"out of the choice altogether."
         )
-    return tuple(_specification(name, spec) for name, spec in on.items())
+    return tuple(
+        _specification(name, spec, pin) for name, spec in on.items()
+    )
 
 
 def check_fields(

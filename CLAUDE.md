@@ -447,13 +447,59 @@ does not.
 - **Pinning and narrowing apply to the composed specs.** A diamond's
   fields are merged the `dataclasses` way, so each is a copy of *one*
   parent's -- the MRO-first parent that has it -- and carries that
-  parent's pin and narrowing but not the other's. So the registration
-  block pins a composed spec unless the class said it itself or the
-  field's non-factory default already satisfies it, under the class's
-  *own* `pin_discriminant`; and `_narrow_discriminants` chains each
-  written part a field does not already enforce, which
-  `Field._narrowed_by` records and every copy carries. In a chain the
-  specs are the class's own, so neither changes anything there.
+  parent's pin and narrowing but not the other's. `_pin_plan` decides,
+  per spec, how the field is stored, which written parts narrow it, and
+  whether to apply the storage even to a field that already holds it:
+  - **The mode.** The field's own `pin` slot (`Pin[T, mode]`,
+    `Narrow[T]`, `NoPin[T]`) wins, for every part and on every class,
+    since a field travels into subclasses as a copy and an option does
+    not. Otherwise each written part carries its writer's
+    `pin_discriminant` as `_Spec.pin`, stamped by `specifications` (a
+    hand registration stamps the target's), and it survives `conjoin`
+    in `parts`. Storage comes from the first part that names one exact
+    value -- the class's own parts first, then the others in MRO order,
+    since `conjoin` lists own specs first and then the targets in MRO
+    order -- and from the first part (own, else MRO) when none does. A
+    part that allows several values pins nothing, so its mode is never
+    seen on its own class and must not decide a diamond's storage over
+    the parent that does pin. Narrowing is per part. So a diamond
+    stores an inherited field the way the parent that pins it does,
+    not the way the diamond's inherited option says; in a chain every
+    part is the class's own, so nothing changes there.
+  - **Already applied.** A spec the class says itself is always
+    applied. An inherited one is skipped when the copy already holds
+    it stored that way (`_stored_as`: a fitting non-factory default,
+    and for "classvar" a pseudo-field too -- a default that merely
+    fits is not yet a class attribute). `_narrow_discriminant` chains
+    each part the field does not already enforce, which
+    `Field._narrowed_by` records and every copy carries; when only
+    some parts narrow, the type is the one those parts alone
+    `conjoin` to.
+  - **A field the class writes out itself** is left as written unless
+    the new annotation gives a `pin`, which is then applied. A written
+    default the constraint turns down is refused
+    (`_check_written_default`) when the mode would pin an exact value
+    or narrow -- the pin would replace the default, or the validator
+    would reject it on every call that leaves the field out -- rather
+    than one of the two being dropped quietly. "keep" and a constraint
+    with no single value leave the default alone, so it stands. The
+    check sees the default as written: `__pre_new__` records it (and
+    whether a factory was written) in `written` before a mutable
+    default is turned into a factory, which would otherwise hide it.
+    A written factory is refused when the mode pins an exact value,
+    since the pin replaces it; it is never run to see what it builds.
+  - **A default is checked as an instance holds it.** `_as_held` runs
+    it through the field's converter when the class converts its
+    defaults -- the value dispatch reads, and the one `__init__`
+    stores -- in `_holds`, `_check_written_default` and case (iii) of
+    `_check_discriminants`. A `_Deferred` converter is not called
+    (the first call settles it for good, and the name may not exist
+    yet), and one that raises leaves the value as written, for
+    `__init__` to report.
+  - A `pin` value is checked where the field is declared, whether or
+    not anything ever matches on it; `_pin_action` reads it, with
+    `True`/`False` for "pin"/"keep" and nothing else that is not a
+    string.
 - **Rank is measured on the whole claim.** A chain class registers only
   its own specs (the classes above have checked theirs by the time it
   is reached), while a diamond registers the combination -- so a

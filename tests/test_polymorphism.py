@@ -26,6 +26,13 @@ from bagof.validators import ValueValidationError
 import bagof.magic._generics as g
 import bagof.magic._polymorph as p
 from bagof.magic import (
+    CLASSVAR,
+    CLASSVAR_NARROW,
+    KEEP,
+    KEEP_NARROW,
+    NARROW,
+    PIN,
+    PIN_NARROW,
     AmbiguousPolymorphError,
     ClassVar,
     ConvertTo,
@@ -33,8 +40,11 @@ from bagof.magic import (
     KwOnly,
     Magic,
     MetaMagic,
+    Narrow,
     NoInit,
+    NoPin,
     NoPolymorphError,
+    Pin,
     PolymorphError,
     PositionalOnly,
     asdict,
@@ -3074,6 +3084,28 @@ class TestIntermediateAndDiamond:
     def test_a_default_that_already_fits_is_left_alone(self) -> None:
         class R(Magic, polymorphic=True):
             a: str = ""
+            b: float = 1.0
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": 1}):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        # `b` already holds a value SB's constraint accepts, stored the
+        # way SB stores it, so it is not pinned a second time: the
+        # diamond keeps the default as SA inherited it.
+        assert type(SAB().b) is float
+        assert SAB().b == 1
+
+    def test_a_default_that_fits_is_still_stored_as_its_parent_does(
+        self
+    ) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
             b: str = "y"
 
         class SA(R, on={"a": "x"}):
@@ -3082,13 +3114,15 @@ class TestIntermediateAndDiamond:
         class SB(R, on={"b": "y"}, pin_discriminant="classvar"):
             pass
 
-        class SAB(SA, SB, pin_discriminant="classvar"):
+        class SAB(SA, SB):
             pass
 
-        # `b` already holds "y" as SA inherited it, so it is not made a
-        # class attribute a second way.
-        assert "b" in asdict(SAB())
-        assert SAB().b == "y"
+        # `b` already holds "y" as SA inherited it, but as an instance
+        # field. SB, which matches on it, keeps it as a class attribute,
+        # and so does the diamond -- whatever SAB's own option says.
+        assert "b" not in asdict(SB())
+        assert "b" not in asdict(SAB())
+        assert SAB.b == SAB().b == "y"
 
     def test_swapped_parents_pin_the_same(self) -> None:
         class Axis(Magic, polymorphic=True):
@@ -3419,3 +3453,603 @@ class TestRegisterPolymorphRecord:
         Root.register_polymorph(Sub[int], kind="s")
         assert _REGISTRATION not in Sub[int].__dict__
         assert _REGISTRATION not in Sub.__dict__
+
+
+# ======================================================================
+# A field's own pin
+# ======================================================================
+
+
+class TestFieldPin:
+    """`Pin[...]` on a field decides, over any `pin_discriminant`."""
+
+    @staticmethod
+    def _stored(cls: type, name: str) -> str:
+        # How a field ended up: "classvar", or an instance field with
+        # ("pin") or without ("keep") the value its class stands for as
+        # its default.
+        found = getattr(cls, _FIELDS)[name]
+        if found.var:
+            return "classvar"
+        record = cls.__dict__.get(_REGISTRATION, ((), ()))
+        values = [spec.value for spec in record[1] if spec.name == name]
+        return "pin" if values and found.default == values[0] else "keep"
+
+    # -- precedence -------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "annotation, option, storage, narrowed",
+        [
+            (Pin[str, "classvar"], "pin", "classvar", False),
+            (Pin[str], "classvar", "pin", False),
+            (Pin[str, True], "keep", "pin", False),
+            (NoPin[str], "narrow", "keep", False),
+            (Pin[str, False], "classvar+narrow", "keep", False),
+            (Narrow[str], "keep", "pin", True),
+            (Pin[str, "keep+narrow"], "classvar", "keep", True),
+        ],
+    )
+    def test_the_field_beats_the_class_option(
+        self, annotation: tx.Any, option: str, storage: str, narrowed: bool
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: annotation = "major"
+
+        class Minor(Tune, on={"mode": "minor"}, pin_discriminant=option):
+            pass
+
+        assert self._stored(Minor, "mode") == storage
+        mode = getattr(Minor, _FIELDS)["mode"]
+        assert (mode.type == tx.Literal["minor"]) is narrowed
+        assert type(Tune(mode="minor")) is Minor
+
+    def test_the_class_option_fills_in_when_the_field_says_nothing(
+        self
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: str = "major"
+            key: Pin[str, "classvar"] = ""  # noqa: F821
+
+        class Minor(
+            Tune, on={"mode": "minor", "key": "a"},
+            pin_discriminant="narrow",
+        ):
+            pass
+
+        assert self._stored(Minor, "mode") == "pin"
+        assert self._stored(Minor, "key") == "classvar"
+        # The class narrows `mode`; `key` says "classvar", with no
+        # narrowing, so another value is accepted and dropped.
+        with pytest.raises(ValueValidationError):
+            Minor(mode="dorian")
+        assert Minor(key="b") == Minor()
+
+    def test_a_subclass_option_does_not_override_the_field(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: Pin[str, "classvar"] = "major"  # noqa: F821
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        class Harmonic(Minor, on={"root": "A"}, pin_discriminant="keep"):
+            pass
+
+        class Melodic(Tune, on={"mode": "melodic"}, pin_discriminant="pin"):
+            pass
+
+        assert Minor.mode == "minor"
+        assert Melodic.mode == "melodic"
+        assert "mode" not in asdict(Harmonic())
+        assert self._stored(Harmonic, "root") == "keep"
+
+    # -- the bottom of a diamond ------------------------------------------
+
+    def test_a_diamond_stores_each_field_as_the_parent_matching_it(
+        self
+    ) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}, pin_discriminant="narrow"):
+            pass
+
+        class SB(R, on={"b": "y"}, pin_discriminant="classvar"):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        # `b` is SB's: a class attribute, and another value is accepted
+        # and dropped.
+        assert self._stored(SB, "b") == self._stored(SAB, "b") == "classvar"
+        assert SAB.b == "y"
+        assert SAB(b="z") == SAB()
+        assert "b" not in asdict(SAB())
+        # `a` is SA's: pinned, narrowed, and another value is refused.
+        assert self._stored(SAB, "a") == "pin"
+        assert getattr(SAB, _FIELDS)["a"].type == tx.Literal["x"]
+        with pytest.raises(ValueValidationError):
+            SAB(a="q")
+        assert type(R(a="x", b="y")) is SAB
+
+    def test_a_diamond_stores_a_field_as_the_parent_that_pins_it(
+        self
+    ) -> None:
+        # A set has nothing to pin, so SB's "classvar" is never seen on
+        # SB itself; SC is the one that pins `b`, and decides how it is
+        # stored whichever parent comes first.
+        class R(Magic, polymorphic=True):
+            b: str = ""
+            c: str = ""
+
+        class SB(R, on={"b": {"x", "y"}}, pin_discriminant="classvar"):
+            pass
+
+        class SC(R, on={"b": "x", "c": "k"}):
+            pass
+
+        class SBC(SB, SC):
+            pass
+
+        class SCB(SC, SB):
+            pass
+
+        assert self._stored(SB, "b") == "keep"
+        assert self._stored(SBC, "b") == self._stored(SCB, "b") == "pin"
+        assert SBC().b == SCB().b == "x"
+
+    def test_the_diamonds_own_option_is_for_what_it_says(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+            c: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": "y"}):
+            pass
+
+        class SAB(SA, SB, on={"c": "z"}, pin_discriminant="classvar+narrow"):
+            pass
+
+        # What the parents stand for is applied their way...
+        assert self._stored(SAB, "a") == self._stored(SAB, "b") == "pin"
+        assert getattr(SAB, _FIELDS)["b"].type is str
+        assert SAB(b="q").b == "q"
+        # ...and what the diamond says itself, its own way.
+        assert self._stored(SAB, "c") == "classvar"
+        with pytest.raises(ValueValidationError):
+            SAB(c="q")
+
+    def test_a_field_pin_overrides_both_parents_of_a_diamond(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: Pin[str] = ""
+
+        class SA(R, on={"a": "x"}, pin_discriminant="classvar"):
+            pass
+
+        class SB(R, on={"b": "y"}, pin_discriminant="classvar+narrow"):
+            pass
+
+        class SAB(SA, SB, on={"b": "y"}, pin_discriminant="classvar"):
+            pass
+
+        for cls in (SB, SAB):
+            assert self._stored(cls, "b") == "pin"
+            assert getattr(cls, _FIELDS)["b"].type is str
+            assert asdict(cls())["b"] == "y"
+        assert self._stored(SAB, "a") == "classvar"
+
+    def test_parents_that_both_match_one_field(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"a": {"x", "y"}, "b": "y"}, pin_discriminant="narrow"):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        # `a` is stored the way SA, the first parent matching it, stores
+        # it, and narrowed only by what SB -- which narrows -- stands for.
+        a = getattr(SAB, _FIELDS)["a"]
+        assert self._stored(SAB, "a") == "pin"
+        assert a.type == tx.Literal["x", "y"]
+        assert SAB().a == "x"
+        assert SAB(a="y").a == "y"
+        with pytest.raises(ValueValidationError):
+            SAB(a="z")
+
+    def test_a_class_registered_by_hand_brings_its_own_option(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, pin_discriminant="classvar"):
+            pass
+
+        R.register_polymorph(SB, b="y")
+
+        class SAB(SA, SB):
+            pass
+
+        assert self._stored(SAB, "b") == "classvar"
+        assert SAB.b == "y"
+
+    # -- the annotations ---------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "annotation, type_, storage, refuses, shown",
+        [
+            (Pin[str], str, "pin", False, "Minor(root='C', mode='minor')"),
+            (Pin[str, True], str, "pin", False,
+             "Minor(root='C', mode='minor')"),
+            (Pin[str, "classvar+narrow"], tx.Literal["minor"], "classvar",
+             True, "Minor(root='C')"),
+            (Narrow[str], tx.Literal["minor"], "pin", True,
+             "Minor(root='C', mode='minor')"),
+            (NoPin[str], str, "keep", False,
+             "Minor(root='C', mode='major')"),
+            (Pin[str, False], str, "keep", False,
+             "Minor(root='C', mode='major')"),
+        ],
+    )
+    def test_each_annotation_does_what_it_says(
+        self,
+        annotation: tx.Any,
+        type_: tx.Any,
+        storage: str,
+        refuses: bool,
+        shown: str,
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: annotation = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        mode = getattr(Minor, _FIELDS)["mode"]
+        assert mode.type == type_
+        assert self._stored(Minor, "mode") == storage
+        assert repr(Minor()) == shown
+        if refuses:
+            with pytest.raises(ValueValidationError):
+                Minor(mode="dorian")
+        else:
+            assert Minor(mode="dorian").mode == "dorian"
+
+    def test_the_annotations_lower_to_a_field_pin(self) -> None:
+        assert repr(Pin[int]) .endswith("[int, Pin(pin='pin')]")
+        assert repr(Pin[int, "classvar"]).endswith(
+            "[int, Pin(pin='classvar')]"
+        )
+        assert repr(Pin[int, True]).endswith("[int, Pin(pin=True)]")
+        assert repr(Narrow[int]).endswith("[int, Narrow(pin='narrow')]")
+        assert repr(NoPin[int]).endswith("[int, NoPin(pin=False)]")
+        assert repr(field(pin="keep")) == "Field(pin='keep')"
+        # Anything after the type and the mode stays as metadata.
+        assert tx.get_args(Narrow[int, "note"])[2] == "note"
+
+    @pytest.mark.parametrize("given", ["maybe", 1, 0, None, ["pin"]])
+    def test_an_unknown_mode_is_refused(self, given: tx.Any) -> None:
+        wrong = f"must be .*, True or False, not {re.escape(repr(given))}"
+        with pytest.raises(ValueError, match=f"pin on Tune.mode {wrong}"):
+            class Tune(Magic):
+                mode: Pin[str, given] = ""
+        with pytest.raises(ValueError, match=f"pin on Tune.mode {wrong}"):
+            class Tune(Magic):  # noqa: F811
+                mode: str = field(default="", pin=given)
+
+    def test_a_pin_on_a_field_nothing_matches_on_does_nothing(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: Pin[str, "classvar+narrow"] = "C"  # noqa: F821
+            mode: str = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        for cls in (Tune, Minor):
+            assert cls(root="D").root == "D"
+            assert self._stored(cls, "root") == "keep"
+            assert getattr(cls, _FIELDS)["root"].type is str
+
+    # -- a field the subclass writes out itself ----------------------------
+
+    def test_a_redeclaration_without_a_pin_is_left_as_written(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: Pin[str, "classvar+narrow"] = "major"  # noqa: F821
+
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: str = "aeolian"
+
+        assert self._stored(Minor, "mode") == "keep"
+        assert Minor().mode == "aeolian"
+        assert Minor(mode="dorian").mode == "dorian"
+
+    def test_a_redeclaration_with_a_pin_is_pinned(self) -> None:
+        class Tune(Magic, polymorphic=True, pin_discriminant="keep"):
+            root: str = "C"
+            mode: str = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: Pin[str, "classvar+narrow"]  # noqa: F821
+
+        class Aeolian(Tune, on={"mode": "aeolian"}):
+            mode: Narrow[str] = "aeolian"
+
+        assert self._stored(Minor, "mode") == "classvar"
+        assert Minor.mode == "minor"
+        with pytest.raises(ValueValidationError):
+            Minor(mode="dorian")
+        assert self._stored(Aeolian, "mode") == "pin"
+        assert Aeolian().mode == "aeolian"
+        with pytest.raises(ValueValidationError):
+            Aeolian(mode="dorian")
+
+    @pytest.mark.parametrize(
+        "annotation, fix",
+        [
+            (Pin[str], "Leave the default out -- the pin gives"),
+            (Pin[str, "classvar"], "Leave the default out -- the pin gives"),
+            # "keep" gives no value, so the fix is a default that fits.
+            (Pin[str, "keep+narrow"], "Give it a default Minor stands for"),
+        ],
+    )
+    def test_a_redeclared_pin_with_another_default_is_refused(
+        self, annotation: tx.Any, fix: str
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: str = "major"
+
+        with pytest.raises(TypeError, match=fix):
+            class Minor(Tune, on={"mode": "minor"}):
+                mode: annotation = "dorian"
+
+    def test_a_narrowed_set_is_not_told_the_pin_gives_a_value(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            mode: str = "major"
+
+        with pytest.raises(TypeError) as caught:
+            class Modal(Tune, on={"mode": {"dorian", "lydian"}}):
+                mode: Narrow[str] = "ionian"
+        assert "Give it a default Modal stands for" in str(caught.value)
+        assert "the pin gives" not in str(caught.value)
+
+    @pytest.mark.parametrize("mutable", ["factory", "allow"])
+    def test_a_mutable_default_is_checked_as_written(
+        self, mutable: str
+    ) -> None:
+        # A mutable default is turned into a factory before the pin is
+        # applied; the check still sees the value that was written.
+        class Config(Magic, polymorphic=True):
+            cfg: dict = field(factory=dict)
+            tags: list = field(factory=list)
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Pinned(
+                Config, on={"cfg": {"a": 1}}, mutable_default=mutable
+            ):
+                cfg: Pin[dict] = {"a": 2}
+
+        with pytest.raises(TypeError, match="Give it a default"):
+            class Kept(Config, on={"tags": ["a"]}, mutable_default=mutable):
+                tags: Pin[list, "keep+narrow"] = ["b"]  # noqa: F821
+
+        class Same(Config, on={"cfg": {"a": 1}}, mutable_default=mutable):
+            cfg: Pin[dict] = {"a": 1}
+
+        assert Same().cfg == {"a": 1}
+
+    def test_a_redeclared_pin_with_a_factory_is_refused(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            mode: str = "major"
+
+        with pytest.raises(TypeError, match="it also has a factory"):
+            class Minor(Tune, on={"mode": "minor"}):
+                mode: Pin[str] = field(factory=lambda: "dorian")
+
+        # "keep" leaves the factory to build the value, and a set has no
+        # one value to replace it with.
+        class Kept(Tune, on={"mode": "minor"}):
+            mode: NoPin[str] = field(factory=lambda: "dorian")
+
+        class Modal(Tune, on={"mode": {"dorian", "lydian"}}):
+            mode: Pin[str] = field(factory=lambda: "dorian")
+
+        assert Kept().mode == Modal().mode == "dorian"
+
+    def test_a_default_is_checked_as_it_is_converted(self) -> None:
+        # The default an instance holds is the converted one, and that is
+        # what dispatch matches: `"1"` stands for 1 when the class
+        # converts its defaults, and is refused when it does not.
+        class Count(Magic, polymorphic=True, convert=True):
+            n: int = 0
+
+        class One(Count, on={"n": 1}):
+            n: Pin[int] = "1"
+
+        assert One().n == 1
+        assert type(Count(n="1")) is One
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Raw(Count, on={"n": 1}, convert_defaults=False):
+                n: Pin[int] = "1"
+
+        class Plain(Magic, polymorphic=True):
+            n: int = 0
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Two(Plain, on={"n": 2}):
+                n: Pin[int] = "2"
+
+    def test_a_converted_default_already_holds_the_value(self) -> None:
+        # A subclass that does not take the field, and leaves it as it
+        # is, has to hold the value already -- and a default that
+        # converts to it does.
+        class Count(Magic, polymorphic=True, convert=True):
+            m: int = 0
+
+        class Four(Count, on={"m": 4}, pin_discriminant="keep"):
+            m: NoInit[int] = "4"
+
+        assert type(Count(m=4)) is Four
+        assert Four().m == 4
+
+        with pytest.raises(TypeError, match="holds '4', which is not 4"):
+            class Raw(
+                Count, on={"m": 4}, pin_discriminant="keep",
+                convert_defaults=False,
+            ):
+                m: NoInit[int] = "4"
+
+    def test_a_converter_that_turns_the_default_down_is_left_to_init(
+        self
+    ) -> None:
+        class Count(Magic, polymorphic=True, convert=True):
+            n: int = 0
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Bad(Count, on={"n": 1}):
+                n: Pin[int] = "one"
+
+    def test_a_default_named_before_its_type_is_not_converted_early(
+        self
+    ) -> None:
+        # Converting would look the name up now, and keep what it found.
+        class Count(Magic, polymorphic=True, convert=True):
+            n: "Later" = 0  # noqa: F821
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class One(Count, on={"n": 1}):
+                n: Pin["Later"] = "1"  # noqa: F821
+
+    @pytest.mark.parametrize(
+        "constant, text",
+        [
+            (PIN, "pin"),
+            (CLASSVAR, "classvar"),
+            (KEEP, "keep"),
+            (NARROW, "narrow"),
+            (PIN_NARROW, "pin+narrow"),
+            (CLASSVAR_NARROW, "classvar+narrow"),
+            (KEEP_NARROW, "keep+narrow"),
+        ],
+    )
+    def test_each_mode_has_a_constant(self, constant: str, text: str) -> None:
+        assert constant == text
+        assert tx.get_args(Pin[str, constant])[1].pin == text
+
+        class Shape(Magic, polymorphic=True):
+            kind: str = ""
+
+        class Circle(Shape, on={"kind": "circle"}, pin_discriminant=constant):
+            pass
+
+        class Square(Shape, on={"kind": "square"}, pin_discriminant=text):
+            pass
+
+        assert self._stored(Circle, "kind") == self._stored(Square, "kind")
+
+    def test_an_inherited_pin_is_applied_to_a_default_that_fits(
+        self
+    ) -> None:
+        # The field already holds the value its subclass stands for, but
+        # its own `pin` still counts it as pinned -- which is what lets a
+        # required parameter follow it.
+        class Tune(Magic, polymorphic=True):
+            mode: Pin[str] = "minor"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        assert "mode" in getattr(Minor, _PINNED)
+
+    def test_a_redeclared_pin_that_changes_nothing_keeps_its_default(
+        self
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: str = "major"
+
+        # "keep" asks for nothing, and a set has no one value to pin.
+        class Kept(Tune, on={"mode": "kept"}):
+            mode: NoPin[str] = "dorian"
+
+        class Modal(Tune, on={"mode": {"dorian", "lydian"}}):
+            mode: Pin[str] = "ionian"
+
+        assert Kept().mode == "dorian"
+        assert Modal().mode == "ionian"
+
+    # -- surviving the rest of the builder ---------------------------------
+
+    def test_a_pin_survives_generic_filling(self) -> None:
+        class Box(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            item: _T
+            kind: Pin[str, "classvar"] = ""  # noqa: F821
+
+        class One(Box[_T], on={"kind": "one"}):
+            pass
+
+        class IntTwo(Box[int], on={"kind": "two"}):
+            pass
+
+        assert getattr(Box[int], _FIELDS)["kind"].pin == "classvar"
+        assert One.kind == One[int].kind == "one"
+        built = Box[int](kind="one", item="3")
+        assert type(built) is One[int]
+        assert built.item == 3
+        assert "kind" not in asdict(built)
+        assert IntTwo.kind == "two"
+        assert type(Box(item=1, kind="two")) is IntTwo
+
+    def test_a_generic_discriminant_narrows_to_its_constraint(self) -> None:
+        class Box(Magic, tx.Generic[_T], polymorphic=True):
+            kind: Narrow[_T] = None
+
+        class One(Box[_T], on={"kind": "one"}):
+            pass
+
+        for cls in (One, One[str]):
+            assert getattr(cls, _FIELDS)["kind"].type == tx.Literal["one"]
+            with pytest.raises(ValueValidationError):
+                cls(kind="two")
+
+    def test_a_pin_survives_override(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: Pin[str, "classvar+narrow"] = "major"  # noqa: F821
+
+        class Loose(Tune, override=True, pin_discriminant="keep"):
+            pass
+
+        class Minor(Loose, on={"mode": "minor"}):
+            pass
+
+        assert getattr(Loose, _FIELDS)["mode"].pin == "classvar+narrow"
+        assert Minor.mode == "minor"
+        with pytest.raises(ValueValidationError):
+            Minor(mode="dorian")
+
+        class Fancy(Minor, override=True):
+            pass
+
+        assert Fancy.mode == "minor"
+        with pytest.raises(ValueValidationError):
+            Fancy(mode="dorian")

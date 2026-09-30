@@ -114,6 +114,8 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | `ClassVar[T]` | shared by every instance | -- |
 | `InitVar[T]` | passed in, used, not kept | -- |
 | `Doc[T, "..."]` | describe the field | -- |
+| `Pin[T, mode]` | how a subclass that matches on it keeps it (see [polymorphism](polymorphism.md#pinning-one-field)) | `NoPin` |
+| `Narrow[T]` | `Pin[T, "narrow"]`: pinned, and narrowed to what the subclass stands for | `NoPin` |
 
 Each annotation sets exactly what its name says, and that wins over the
 class setting: on a `kw_only=True` class, `x: Positional[int]` can still

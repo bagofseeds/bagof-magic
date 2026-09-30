@@ -40,11 +40,15 @@ from bagof.magic import (
     InitVar,
     KwOnly,
     Magic,
+    Narrow,
     NoInit,
+    NoPin,
     NoRepr,
     Options,
+    Pin,
     Property,
     Validate,
+    asdict,
     fields_dict,
 )
 
@@ -211,6 +215,43 @@ class TestAnnotationFamily:
         assert Model.__magic_fields__["payload"].type is dict
         assert Model.__magic_fields__["mapping"].type is dict
         assert Model(1).dict() == {"payload": 1}
+
+    def test_a_fields_pin_applies(self) -> None:
+        class Shape(Magic, polymorphic=True, pin_discriminant="keep"):
+            kind: Pin[str, "classvar"] = ""  # noqa: F821, UP037
+            size: Narrow[str] = ""
+            edge: NoPin[str] = ""
+            fill: Pin[str, True] = ""
+
+        class Square(
+            Shape,
+            on={"kind": "square", "size": "big", "edge": "sharp",
+                "fill": "solid"},
+            pin_discriminant="classvar",
+        ):
+            pass
+
+        found = fields_dict(Shape)
+        assert found["kind"].pin == "classvar"
+        assert found["fill"].pin is True
+        assert Square.kind == "square"
+        assert asdict(Square()) == {
+            "size": "big", "edge": "", "fill": "solid"
+        }
+        assert fields_dict(Square)["size"].type == tx.Literal["big"]
+        with pytest.raises(Exception, match="expected a value that is"):
+            Square(size="small")
+
+    def test_a_pin_on_an_unavailable_type_still_applies(self) -> None:
+        class Shape(Magic, polymorphic=True):
+            kind: Pin[decimal.Decimal, "classvar"] = None  # noqa: F821, UP037
+
+        class Square(Shape, on={"kind": 4}):
+            pass
+
+        assert isinstance(fields_dict(Shape)["kind"].type, ForwardRef)
+        assert Square.kind == 4
+        assert "kind" not in asdict(Square())
 
 
 # ======================================================================
