@@ -2934,3 +2934,80 @@ class TestConjoin:
         assert merged.validate("x") == "x"
         with pytest.raises(ValueValidationError, match="expected"):
             merged.validate("y")
+
+
+class TestRegisterPolymorphRecord:
+    """What registering by hand leaves behind on the class registered."""
+
+    @pytest.fixture
+    def base(self) -> type:
+        class Root(Magic, polymorphic=True):
+            kind: str = ""
+            flavour: str = ""
+
+        return Root
+
+    def test_a_strict_leaf_registered_by_hand_can_be_built(self) -> None:
+        class Strict(Magic, polymorphic="strict"):
+            kind: str = ""
+
+        class Dim(Strict):
+            pass
+
+        Strict.register_polymorph(Dim, kind="dim")
+        assert type(Strict(kind="dim")) is Dim
+        assert type(Dim(kind="dim")) is Dim
+        with pytest.raises(PolymorphError, match="contradicts"):
+            Dim(kind="other")
+
+    def test_a_later_subclass_registers_with_the_class_by_hand(
+        self, base: type
+    ) -> None:
+        class Inner(base):
+            pass
+
+        base.register_polymorph(Inner, kind="k")
+
+        class Deeper(Inner, on={"flavour": "f"}):
+            pass
+
+        # Inner is reached from the root, so Deeper need not climb past it.
+        assert Deeper.__dict__[_REGISTRATION][0] == (Inner,)
+        assert type(base(kind="k", flavour="f")) is Deeper
+        assert type(base(flavour="f")) is base
+
+    def test_it_only_registers_where_it_is_called(self, base: type) -> None:
+        class Middle(base, on={"kind": "k"}):
+            pass
+
+        class Leaf(Middle):
+            pass
+
+        Middle.register_polymorph(Leaf, flavour="f")
+        assert Leaf.__dict__[_REGISTRATION][0] == (Middle,)
+        assert all(
+            entry.target is not Leaf
+            for entry in base.__dict__[_POLYMORPHS].dispatch[0]
+        )
+        assert type(base(kind="k", flavour="f")) is Leaf
+
+    def test_a_class_statement_registration_is_kept(self, base: type) -> None:
+        class Middle(base, on={"kind": "k"}):
+            pass
+
+        class Leaf(Middle, on={"flavour": "f"}):
+            pass
+
+        base.register_polymorph(Leaf, kind="k", flavour="f")
+        assert Leaf.__dict__[_REGISTRATION][0] == (Middle,)
+
+    def test_a_parameterisation_carries_no_record(self) -> None:
+        class Root(Magic, tx.Generic[_T], polymorphic=True):
+            kind: str = ""
+
+        class Sub(Root[_T]):
+            pass
+
+        Root.register_polymorph(Sub[int], kind="s")
+        assert _REGISTRATION not in Sub[int].__dict__
+        assert _REGISTRATION not in Sub.__dict__

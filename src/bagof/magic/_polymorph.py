@@ -964,6 +964,35 @@ def arm(cls: type, specs: tx.Optional[tx.Tuple[_Spec, ...]]) -> None:
         )
 
 
+def mark_registered(
+    owner: type,
+    target: type,
+    specs: tx.Tuple[_Spec, ...],
+    priority: int,
+) -> None:
+    """Record on `target` that it was registered by hand with `owner`.
+
+    A class statement's `on=` leaves this record behind itself; a
+    registration made afterwards has to write it. Two things read it: a
+    later subclass of `target`, which then knows `target` is reached from
+    above and registers with it rather than climbing past it; and a
+    strict `target`, which stops refusing to be built on its own -- being
+    built is the whole point of having been registered -- and refuses a
+    direct call that contradicts what it was registered for instead.
+
+    A class that already carries a record keeps it, and a class built by
+    filling in type parameters is left alone: its origin is the one
+    registered.
+    """
+    if _REGISTRATION in target.__dict__ or _GENERIC_ORIGIN in target.__dict__:
+        return
+    setattr(target, _REGISTRATION, ((owner,), specs, priority))
+    found = target.__dict__.get(_POLYMORPHS)
+    if found is not None and found.strict:
+        found.required = False
+        arm(target, specs)
+
+
 def register(
     owner: type,
     target: type,

@@ -183,6 +183,7 @@ from ._polymorph import check as _check_invariant
 from ._polymorph import check_fields as _check_spec_fields
 from ._polymorph import conjoin as _conjoin
 from ._polymorph import delegate as _delegate_polymorph
+from ._polymorph import mark_registered as _mark_registered
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
 from ._polymorph import specifications as _specifications
@@ -3907,7 +3908,11 @@ class MetaMagic(ABCMeta):
             _check_discriminants(
                 target.__name__, owner, getattr(target, _FIELDS), specs
             )
+        # Only with `owner`: the hand path registers exactly where it is
+        # called. The record it leaves on `target` is what lets a later
+        # subclass of `target` register with it.
         _register_polymorph(owner, target, specs, priority)
+        _mark_registered(owner, target, specs, priority)
         return target
 
 
