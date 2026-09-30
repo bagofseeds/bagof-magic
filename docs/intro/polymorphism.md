@@ -170,6 +170,31 @@ A pinned value is a default the class author wrote. It is converted,
 validated and copied per instance, exactly as `mode: str = "minor"` would
 be. `convert_defaults` and `validate_defaults` apply to it the same way.
 
+Add `+narrow` to any of the three (or write `"narrow"` on its own, which
+means `"pin+narrow"`) to also narrow the field to what the subclass stands
+for. An exact value becomes `Literal["minor"]`, a set of values becomes a
+`Literal` of them, and a type is used as it is; a regular expression or a
+callable narrows nothing. On top of the type, a validator is added that
+turns down any other value, chained after whatever converting or validating
+the field already does, so the base's own checks still run:
+
+```python
+class LocrianChord(Chord, on={"mode": "locrian"}, pin_discriminant="narrow"):
+    pass
+```
+
+```pycon
+>>> LocrianChord(root="A").mode
+'locrian'
+>>> LocrianChord(root="A", mode="dorian")
+Traceback (most recent call last):
+ValueValidationError: ...
+```
+
+`"keep+narrow"` is the useful combination when a field already has a
+default the constraint accepts, or a set of values it may take: the storage
+is left alone and only the check is added.
+
 ```python
 class SusChord(Chord, on={"mode": "sus"}, pin_discriminant="classvar"):
     pass
@@ -188,11 +213,18 @@ SusChord(root='B', variant='natural')
     dispatched back to the same subclass. Use `"pin"` whenever the values
     have to survive a round trip through a config file or a database.
 
-Writing the class attribute yourself, `mode: ClassVar[str] = "minor"`, is
-refused. The error explains why: the base passes `mode` on to whatever it
-builds, so a subclass whose constructor does not take it would break.
-`pin_discriminant="classvar"` is that spelling, done so that both calls
-keep working.
+You can also write the class attribute yourself, `mode: ClassVar[str] =
+"minor"`. What happens then depends on whether the subclass still takes the
+field. If it takes `mode`, the value it is handed reaches a parameter that
+accepts it. If it does not take `mode` but holds a value the constraint
+calls for, the base leaves `mode` out of the call that builds it -- so both
+`Chord(root="A", mode="minor")` and the subclass work, and the subclass
+called directly does not take `mode` at all. Only when the subclass neither
+takes `mode` nor holds a value the constraint accepts is it refused, since
+then the base could only pass `mode` to a constructor that would reject it.
+`pin_discriminant="classvar"` is the spelling that keeps the field a
+parameter while storing it once, so both calls keep working without writing
+the attribute out.
 
 Pickling and copying rebuild through the class an instance already has.
 Neither goes back through the dispatch.

@@ -165,7 +165,7 @@ from ._constants import (
 )
 from ._errors import field_error
 from ._fields import *  # noqa: F401, F403
-from ._fields import _OVERRIDABLE, Field, _stored
+from ._fields import _OVERRIDABLE, Field, _chain, _stored
 from ._fields import __all__ as __all_fields__
 from ._fields import field as _field
 from ._generics import substitute as _substitute
@@ -179,6 +179,7 @@ from ._polymorph import arm as _arm_polymorph
 from ._polymorph import arm_parameterised as _arm_parameterised
 from ._polymorph import as_written as _as_written
 from ._polymorph import check as _check_invariant
+from ._polymorph import delegate as _delegate_polymorph
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
 from ._polymorph import specifications as _specifications
@@ -1111,26 +1112,91 @@ def _check_discriminants(
     fields: dict,
     specs: tx.Sequence,
 ) -> None:
-    # A field the class it registers with takes, and it does not, is a
-    # field it can never be handed. The base passes the arguments it
-    # was given straight through, so the call the caller wrote would
-    # fail inside the delegation, naming a class they never mentioned.
+    # Whether the class it registers with can actually build this one,
+    # for each field it stands for. Three cases:
+    #
+    #   (i)  it still takes the field, so whatever the base is handed
+    #        reaches a parameter that accepts it;
+    #   (ii) it does not take the field but holds a value that satisfies
+    #        the constraint (a class attribute, or a non-init default),
+    #        so the base drops the field when it delegates;
+    #   (iii) it neither takes the field nor holds an acceptable value,
+    #        so the call the caller wrote would fail inside the
+    #        delegation, naming a class they never mentioned.
     base_fields = getattr(polymorphic_base, _FIELDS)
     for spec in specs:
         field = fields[spec.name]
-        if field.init or not base_fields[spec.name].init:
+        base_field = base_fields[spec.name]
+        # (i)
+        if field.init:
             continue
+        # The base does not pass the field on, so there is nothing to
+        # drop and nothing that can go wrong.
+        if not base_field.init:
+            continue
+        # The base does pass it on, and this class refuses it -- so the
+        # base has to leave it out of the delegated call, which it can
+        # only do by name.
+        if not base_field.kw:
+            raise TypeError(
+                f"{clsname} registers on {spec.name!r}, does not take "
+                f"{spec.name!r} when it is built, and {spec.name!r} is "
+                f"positional-only on {polymorphic_base.__name__} -- so "
+                f"{polymorphic_base.__name__} cannot leave it out of the "
+                f"call that builds {clsname}. Keep {spec.name!r} a "
+                f"parameter of {clsname} (the default "
+                f"pin_discriminant='pin' does that), or make it not "
+                f"positional-only on {polymorphic_base.__name__}."
+            )
+        # (ii) A factory default is not built here to check it, exactly
+        # as dispatch does not build it to read it; any value the class
+        # actually holds has to satisfy the constraint.
+        if field.build:
+            continue
+        if field.default is not MISSING and spec.matches(field.default):
+            continue
+        # (iii)
+        held = (
+            f"holds {field.default!r}, which is not {spec.text}"
+            if field.default is not MISSING
+            else "holds no value of its own"
+        )
         raise TypeError(
             f"{clsname} registers on {spec.name!r}, and does not take "
-            f"{spec.name!r} when it is built -- so "
-            f"{polymorphic_base.__name__}({spec.name}=...), which builds "
-            f"{clsname} and passes on what it was given, would fail. To "
-            f"keep {spec.name!r} out of the instances without closing "
-            f"the door on it, write "
-            f"pin_discriminant='classvar' on {clsname} and leave the "
-            f"field to it: the value becomes a class attribute, and the "
-            f"argument is still accepted and dropped."
+            f"{spec.name!r} when it is built -- so it stands for "
+            f"{spec.name}={spec.text} but {held}. Either give {spec.name!r} "
+            f"a value that is {spec.text}, or write "
+            f"pin_discriminant='classvar' on {clsname} and leave the field "
+            f"to it: the value becomes a class attribute, and the argument "
+            f"is accepted and dropped."
         )
+
+
+def _narrow_discriminants(
+    fields: dict,
+    declared: tx.Container[str],
+    specs: tx.Sequence,
+) -> None:
+    # Narrow each constrained field to what its class stands for, and
+    # make it enforce it. The field's annotation becomes the value (or
+    # set of values, or type) the registration named, and a validator
+    # for the same constraint is added -- chained after any converter or
+    # validator the field already carries, never in place of it, so a
+    # base's own checking still runs. A field the subclass writes out
+    # itself is left exactly as written, as it is for pinning.
+    for spec in specs:
+        field = fields[spec.name]
+        if field.name in declared:
+            continue
+        if spec.narrowed is not MISSING:
+            field.type = spec.narrowed
+        added = spec.validate
+        if added is None:
+            continue
+        if callable(field.validator):
+            field.validator = _chain(field.validator, added)
+        else:
+            field.validator = added
 
 
 def _pin_discriminants(
@@ -1679,11 +1745,20 @@ def __pre_new__(
             specs,
             0 if priority is MISSING else priority,
         )
-        if options.pin_discriminant != "keep":
+        storage, narrow = _PIN_ACTIONS[options.pin_discriminant]
+        if storage != "keep":
             pinned.update(_pin_discriminants(
                 fields, namespace, cls_annotations, specs,
-                options.pin_discriminant, options.mutable_default,
+                storage, options.mutable_default,
             ))
+        if narrow:
+            _narrow_discriminants(fields, cls_annotations, specs)
+        # A discriminant this class redeclares with a default of its own
+        # is pinned too, as far as the signature is concerned: a required
+        # parameter behind it needs the same sentinel a registration's
+        # own pin gives. The filter below keeps only the ones that end up
+        # with a default, so the names that carry none fall away.
+        pinned.update(spec.name for spec in specs)
         _check_discriminants(clsname, polymorphic_base, fields, specs)
 
     # A subclass that declares the field again, with no default of its
@@ -3320,12 +3395,15 @@ def _dispatching(metacls: type) -> type:
             _check_invariant(cls, found, args, kwargs)
         if not (found.dispatch[0] or found.required):
             return build(cls, *args, **kwargs)
-        target = _select_polymorph(cls, found, args, kwargs)
-        if target is None:
+        entry = _select_polymorph(cls, found, args, kwargs)
+        if entry is None:
             return build(cls, *args, **kwargs)
         # The subclass is built the same way it would be if it had been
-        # named directly, so a subclass of *it* gets its turn too.
-        return target(*args, **kwargs)
+        # named directly, so a subclass of *it* gets its turn too. A
+        # subclass that does not take one of its discriminants has the
+        # call re-spelled around it; every other one is handed the call
+        # verbatim.
+        return _delegate_polymorph(cls, entry, args, kwargs)
 
     made.__call__ = __call__
     _DISPATCHERS[metacls] = made
