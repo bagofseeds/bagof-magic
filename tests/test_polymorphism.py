@@ -742,15 +742,40 @@ class TestPinDiscriminant:
         with pytest.raises(TypeError, match="missing"):
             Stricter(root="A")
 
-    def test_a_hand_written_classvar_discriminant_is_refused(
+    def test_a_hand_written_classvar_that_holds_the_value_is_allowed(
         self, base: type
     ) -> None:
-        # The base passes `mode` straight through, so a subclass whose
-        # constructor does not take it could only be reached by a call
-        # that then fails inside the delegation.
-        with pytest.raises(TypeError, match="pin_discriminant='classvar'"):
+        # The subclass does not take `mode`, but it holds the value the
+        # constraint calls for, so the base drops `mode` when it
+        # delegates rather than passing on an argument the subclass
+        # refuses.
+        class Minor(base, on={"mode": "minor"}):
+            mode: ClassVar[str] = "minor"
+
+        assert Minor.mode == "minor"
+        assert type(base(root="A", mode="minor")) is Minor
+        assert asdict(base(root="A", mode="minor")) == {"root": "A"}
+        # The subclass, called directly, never took `mode`.
+        with pytest.raises(TypeError, match="unexpected keyword"):
+            Minor(root="A", mode="minor")
+
+    def test_a_hand_written_classvar_that_holds_a_wrong_value_is_refused(
+        self, base: type
+    ) -> None:
+        with pytest.raises(TypeError, match="holds 'major', which is not"):
             class Minor(base, on={"mode": "minor"}):
-                mode: ClassVar[str] = "minor"
+                mode: ClassVar[str] = "major"
+
+    def test_a_discriminant_that_is_neither_taken_nor_held_is_refused(
+        self
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        with pytest.raises(TypeError, match="holds no value of its own"):
+            class Minor(Tune, on={"mode": "minor"}):
+                mode: NoInit[str]
 
     def test_a_discriminant_the_base_does_not_take_either_is_fine(
         self
@@ -1676,3 +1701,353 @@ class TestReadingATargetsTypeArguments:
         # not match, are both refused.
         assert g.fill_in(Takes, Box, (tx.Callable[[int, int], int],)) is None
         assert g.fill_in(Takes, Box, (int,)) is None
+
+
+# ======================================================================
+# Narrowing a discriminant, and the seven pin_discriminant values
+# ======================================================================
+
+
+class TestPinDiscriminantValues:
+    """All seven spellings, and how each reads as (storage, narrow)."""
+
+    @pytest.fixture
+    def base(self) -> type:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        return Tune
+
+    @pytest.mark.parametrize(
+        "action",
+        [
+            "pin", "classvar", "keep",
+            "narrow", "pin+narrow", "classvar+narrow", "keep+narrow",
+        ],
+    )
+    def test_every_value_is_accepted(self, base: type, action: str) -> None:
+        class Minor(base, on={"mode": "minor"}, pin_discriminant=action):
+            pass
+
+        # Whatever the storage, the subclass is chosen for the value.
+        assert type(base(root="A", mode="minor")) is Minor
+
+    def test_an_unknown_value_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="pin_discriminant must be"):
+            class Bad(Magic, polymorphic=True, pin_discriminant="huge"):
+                x: int
+
+    def test_pin_and_bare_narrow_both_pin(self, base: type) -> None:
+        class Pinned(base, on={"mode": "minor"}, pin_discriminant="narrow"):
+            pass
+
+        # "narrow" is "pin+narrow": the value is pinned as a default.
+        assert Pinned(root="A").mode == "minor"
+        assert asdict(Pinned(root="A")) == {"root": "A", "mode": "minor"}
+
+    def test_keep_narrow_leaves_storage_but_still_checks(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "dorian"
+
+        class Modal(
+            Tune, on={"mode": {"dorian", "lydian"}},
+            pin_discriminant="keep+narrow",
+        ):
+            pass
+
+        # keep: the field is not pinned, so its own default stands (and
+        # the default is one the constraint accepts)...
+        assert Modal(root="A").mode == "dorian"
+        # ...but the validator is still added.
+        with pytest.raises(Exception, match="not a valid"):
+            Modal(root="A", mode="ionian")
+
+
+class TestNarrowTypes:
+    """`narrow` narrows the annotation the field carries."""
+
+    @pytest.fixture
+    def base(self) -> type:
+        class Value(Magic, polymorphic=True):
+            v: TypingAny = None
+            root: str = "r"
+
+        return Value
+
+    def _annotation(self, cls: type, name: str) -> object:
+        return signature(cls).parameters[name].annotation
+
+    def test_an_exact_value_becomes_a_literal(self, base: type) -> None:
+        class One(base, on={"v": "a"}, pin_discriminant="narrow"):
+            pass
+
+        assert self._annotation(One, "v") == tx.Literal["a"]
+
+    def test_a_set_becomes_a_literal_of_its_members(self, base: type) -> None:
+        class Vowel(base, on={"v": {"a", "e"}}, pin_discriminant="narrow"):
+            pass
+
+        # Order within a set is not defined, so compare as a set.
+        annotation = self._annotation(Vowel, "v")
+        assert tx.get_origin(annotation) is tx.Literal
+        assert set(tx.get_args(annotation)) == {"a", "e"}
+
+    def test_a_type_is_used_as_it_is(self, base: type) -> None:
+        class Whole(base, on={"v": int}, pin_discriminant="narrow"):
+            pass
+
+        assert self._annotation(Whole, "v") is int
+
+    def test_a_non_literal_value_leaves_the_type_alone(
+        self, base: type
+    ) -> None:
+        class Pair(base, on={"v": (1, 2)}, pin_discriminant="narrow"):
+            pass
+
+        # A tuple is not a value a `Literal` can hold, so the field keeps
+        # what it was declared with.
+        assert self._annotation(Pair, "v") is TypingAny
+
+    def test_a_pattern_leaves_the_type_alone(self, base: type) -> None:
+        class Word(
+            base, on={"v": re.compile(r"[a-z]+")}, pin_discriminant="narrow"
+        ):
+            pass
+
+        assert self._annotation(Word, "v") is TypingAny
+
+    def test_a_callable_leaves_the_type_alone(self, base: type) -> None:
+        class Big(base, on={"v": lambda x: True}, pin_discriminant="narrow"):
+            pass
+
+        assert self._annotation(Big, "v") is TypingAny
+
+    def test_a_narrowed_literal_survives_generic_filling(self) -> None:
+        # Narrowing to a `Literal` leaves nothing for a type variable to
+        # stand in for, so filling the base's parameters in is a no-op on
+        # the discriminant.
+        class Box(Magic, tx.Generic[_T], polymorphic=True):
+            kind: str
+            item: _T
+
+        class One(Box[_T], on={"kind": "one"}, pin_discriminant="narrow"):
+            pass
+
+        assert signature(One).parameters["kind"].annotation == tx.Literal[
+            "one"
+        ]
+        assert type(Box[int](kind="one", item=1)) is One[int]
+        assert One[int](item=2).kind == "one"
+
+
+class TestNarrowValidation:
+    """`narrow` rejects a value the constraint would not have matched."""
+
+    @pytest.fixture
+    def base(self) -> type:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        return Tune
+
+    def test_an_off_value_is_rejected_naming_the_field(
+        self, base: type
+    ) -> None:
+        class Minor(base, on={"mode": "minor"}, pin_discriminant="narrow"):
+            pass
+
+        with pytest.raises(Exception, match="Minor.mode"):
+            Minor(root="A", mode="major")
+
+    def test_the_matching_value_is_accepted(self, base: type) -> None:
+        class Minor(base, on={"mode": "minor"}, pin_discriminant="narrow"):
+            pass
+
+        assert Minor(root="A", mode="minor").mode == "minor"
+
+    def test_a_set_constraint_is_enforced(self, base: type) -> None:
+        class Modal(
+            base, on={"mode": {"dorian", "lydian"}},
+            pin_discriminant="keep+narrow",
+        ):
+            pass
+
+        assert Modal(root="A", mode="dorian").mode == "dorian"
+        with pytest.raises(Exception, match="not a valid"):
+            Modal(root="A", mode="ionian")
+
+    def test_a_base_validator_is_kept_and_chained(self) -> None:
+        seen = []
+
+        def even(value: int) -> int:
+            seen.append(value)
+            if value % 2:
+                raise ValueError("odd")
+            return value
+
+        class Nums(Magic, polymorphic=True):
+            kind: str
+            n: tx.Annotated[int, field(validate=even)] = 0
+
+        class Small(Nums, on={"n": {0, 2}}, pin_discriminant="keep+narrow"):
+            pass
+
+        # The base's validator still runs (it records what it saw)...
+        assert Small(kind="s", n=2).n == 2
+        assert seen == [2]
+        # ...and the added one turns down a value the base would accept.
+        with pytest.raises(Exception, match="not a valid"):
+            Small(kind="s", n=4)
+
+    def test_a_base_converter_is_kept_under_narrow(self) -> None:
+        class Srv(Magic, polymorphic=True, convert=True):
+            kind: str
+            port: int = 0
+
+        class Http(Srv, on={"kind": "http"}, pin_discriminant="keep+narrow"):
+            pass
+
+        # The inherited converter still coerces the value...
+        server = Http(kind="http", port="80")
+        assert server.port == 80 and isinstance(server.port, int)
+        # ...and the discriminant is still enforced.
+        with pytest.raises(Exception, match="not a valid"):
+            Http(kind="ftp", port="21")
+
+
+class TestRedefinedDiscriminantSignature:
+    """A discriminant redefined with a default no longer trips the
+    trailing-required check."""
+
+    def test_a_literal_redefinition_with_a_default_is_built(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            mode: str
+            root: str
+
+        # `mode` is redeclared with a default, and `root` (required)
+        # follows it -- which Python's syntax cannot spell, but a pinned
+        # discriminant can leave behind.
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: tx.Literal["minor"] = "minor"
+
+        assert Minor(root="A").root == "A"
+        assert list(signature(Minor).parameters) == ["mode", "root"]
+
+    def test_a_doc_only_redefinition_with_a_default_is_built(self) -> None:
+        from bagof.magic import Doc
+
+        class Tune(Magic, polymorphic=True):
+            mode: str
+            root: str
+
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: Doc[str, "the mode"] = "minor"  # noqa: F722
+
+        assert Minor(root="A").root == "A"
+
+    def test_two_hand_written_fields_without_on_still_refused(self) -> None:
+        # No registration, so nothing is pinned and the ordinary rule
+        # applies.
+        class First(Magic, polymorphic=True):
+            a: int = 0
+
+        with pytest.raises(SyntaxError, match="without a default"):
+            class Second(First):
+                b: int
+
+
+class TestCaseBDelegation:
+    """The base drops a discriminant the subclass does not take."""
+
+    @pytest.fixture
+    def base(self) -> type:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        return Tune
+
+    def test_a_dropped_discriminant_by_keyword(self, base: type) -> None:
+        class Minor(base, on={"mode": "minor"}):
+            mode: ClassVar[str] = "minor"
+
+        assert type(base(root="A", mode="minor")) is Minor
+        assert Minor.mode == "minor"
+
+    def test_a_dropped_discriminant_by_position(self, base: type) -> None:
+        class Minor(base, on={"mode": "minor"}):
+            mode: ClassVar[str] = "minor"
+
+        # `root` is first, `mode` second: a positional call still lands
+        # on `Minor` and drops `mode`.
+        assert type(base("A", "minor")) is Minor
+
+    def test_positional_and_keyword_agree_when_dropped(
+        self, base: type
+    ) -> None:
+        class Minor(base, on={"mode": "minor"}):
+            mode: ClassVar[str] = "minor"
+
+        assert type(base("A", "minor")) is type(base(root="A", mode="minor"))
+
+    def test_the_direct_call_refuses_the_dropped_argument(
+        self, base: type
+    ) -> None:
+        class Minor(base, on={"mode": "minor"}):
+            mode: ClassVar[str] = "minor"
+
+        with pytest.raises(TypeError, match="unexpected keyword"):
+            Minor(root="A", mode="minor")
+
+    def test_a_non_init_default_is_held(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: NoInit[str] = "minor"
+
+        assert type(Tune(root="A", mode="minor")) is Minor
+        assert Minor(root="A").mode == "minor"
+
+    def test_naming_twice_in_a_dropped_call_is_refused(self) -> None:
+        # `root` is positional and by keyword: giving it both ways at
+        # once is refused, naming the base.
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: ClassVar[str] = "minor"
+
+        with pytest.raises(TypeError, match="multiple values"):
+            Tune("A", root="B", mode="minor")
+
+    def test_a_verbatim_class_keeps_the_fast_path(self, base: type) -> None:
+        # A subclass that still takes its discriminant is handed the call
+        # verbatim, so the ordinary spellings all keep working.
+        class Minor(base, on={"mode": "minor"}):
+            pass
+
+        assert type(base(root="A", mode="minor")) is Minor
+        assert type(base("A", "minor")) is Minor
+        assert Minor(root="A").mode == "minor"
+
+    def test_a_grandchild_redispatches_through_a_dropped_parent(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+            style: str = "plain"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: ClassVar[str] = "minor"
+
+        class Fancy(Minor, on={"style": "fancy"}):
+            pass
+
+        built = Tune(root="A", mode="minor", style="fancy")
+        assert type(built) is Fancy
+        assert built.style == "fancy" and built.root == "A"
