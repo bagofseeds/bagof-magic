@@ -471,6 +471,14 @@ does not.
     default is turned into a factory, which would otherwise hide it.
     A written factory is refused when the mode pins an exact value,
     since the pin replaces it; it is never run to see what it builds.
+  - **A default is checked as an instance holds it.** `_as_held` runs
+    it through the field's converter when the class converts its
+    defaults -- the value dispatch reads, and the one `__init__`
+    stores -- in `_holds`, `_check_written_default` and case (iii) of
+    `_check_discriminants`. A `_Deferred` converter is not called
+    (the first call settles it for good, and the name may not exist
+    yet), and one that raises leaves the value as written, for
+    `__init__` to report.
   - A `pin` value is checked where the field is declared, whether or
     not anything ever matches on it; `_pin_action` reads it, with
     `True`/`False` for "pin"/"keep" and nothing else that is not a

@@ -190,7 +190,7 @@ from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
 from ._polymorph import specifications as _specifications
 from ._resolve import POLICIES as _HINT_POLICIES
-from ._resolve import Hints
+from ._resolve import Hints, _Deferred
 from ._utils import _get_origin, rebuild_cls
 
 __all__ += __all_arguments__
@@ -1215,22 +1215,45 @@ def _says(spec: tx.Any, own: tx.Sequence) -> bool:
     return any(part is mine for part in spec.parts for mine in own)
 
 
-def _holds(field: Field, spec: tx.Any) -> bool:
+def _as_held(field: Field, value: tx.Any, converts: bool) -> tx.Any:
+    # What a default becomes on an instance, so that it is checked
+    # against a constraint the way dispatch reads it: through the
+    # field's converter, when the class converts its defaults
+    # (`converts`). A converter for a type still written as a name is
+    # not called -- the name may be defined further down the module, and
+    # whatever the first call finds is kept -- and one that turns the
+    # value down leaves it as written, for `__init__` to report.
+    if value is MISSING or not converts or not field.convert:
+        return value
+    converter = field.converter
+    if isinstance(converter, _Deferred):
+        return value
+    try:
+        return converter(value)
+    except Exception:
+        return value
+
+
+def _holds(field: Field, spec: tx.Any, converts: bool) -> bool:
     # Whether a field's own default already satisfies `spec`. A default
     # built by a factory is not built here to find out.
     return (
         field.default is not MISSING
         and not field.build
-        and spec.matches(field.default)
+        and spec.matches(_as_held(field, field.default, converts))
     )
 
 
-def _stored_as(field: Field, spec: tx.Any, storage: str) -> bool:
+def _stored_as(
+    field: Field, spec: tx.Any, storage: str, converts: bool
+) -> bool:
     # Whether an inherited field already holds what `spec` stands for,
     # the way `storage` says to hold it -- as the parent it was copied
     # from left it. A default that happens to fit is not yet a class
     # attribute, so under "classvar" the field has to be one already.
-    return _holds(field, spec) and (storage != "classvar" or field.var is True)
+    return _holds(field, spec, converts) and (
+        storage != "classvar" or field.var is True
+    )
 
 
 def _pin_plan(
@@ -1240,6 +1263,7 @@ def _pin_plan(
     own: tx.Sequence,
     declared: tx.Container[str],
     written: tx.Mapping[str, tx.Tuple[tx.Any, bool]],
+    converts: bool,
 ) -> tx.Tuple[str, tx.Tuple, bool]:
     # How this class applies `spec` to the field it constrains: how the
     # field is stored ("pin", "classvar" or "keep"), which written parts
@@ -1266,7 +1290,8 @@ def _pin_plan(
         narrowing = spec.parts if narrow else ()
         if field.name in declared:
             _check_written_default(
-                clsname, field, spec, storage, narrow, *written[field.name]
+                clsname, field, spec, storage, narrow, *written[field.name],
+                converts=converts,
             )
             return storage, narrowing, True
         return storage, narrowing, bool(mine)
@@ -1289,6 +1314,7 @@ def _check_written_default(
     narrow: bool,
     default: tx.Any,
     factory: bool,
+    converts: bool,
 ) -> None:
     # A field a class writes out with both a `pin` and a default (or a
     # factory) of its own asks for two things. When the constraint
@@ -1297,7 +1323,8 @@ def _check_written_default(
     # that leaves the field out -- either way the default could never be
     # used, so the class is refused rather than one of the two quietly
     # dropped. `default` and `factory` are what the class wrote, before
-    # a mutable default was turned into a factory.
+    # a mutable default was turned into a factory; the default is checked
+    # as an instance would hold it (`_as_held`).
     pins = storage != "keep" and spec.value is not MISSING
     keep = "or take the pin off the field to keep {} as written."
     if factory:
@@ -1313,7 +1340,7 @@ def _check_written_default(
                 + keep.format("the factory")
             )
         return
-    if default is MISSING or spec.matches(default):
+    if default is MISSING or spec.matches(_as_held(field, default, converts)):
         return
     if pins:
         fix = "Leave the default out -- the pin gives the field its value -- "
@@ -1336,7 +1363,9 @@ def _check_discriminants(
     polymorphic_base: type,
     fields: dict,
     specs: tx.Sequence,
+    converts: bool,
 ) -> None:
+    # `converts` says whether the class converts its defaults.
     # `polymorphic_base` is one class this one registers with; a class
     # registering with several is checked against each of them.
     # Whether the class it registers with can actually build this one,
@@ -1380,7 +1409,9 @@ def _check_discriminants(
         # actually holds has to satisfy the constraint.
         if field.build:
             continue
-        if field.default is not MISSING and spec.matches(field.default):
+        if field.default is not MISSING and spec.matches(
+            _as_held(field, field.default, converts)
+        ):
             continue
         # (iii)
         held = (
@@ -2057,10 +2088,14 @@ def __pre_new__(
         for spec in specs:
             field = fields[spec.name]
             storage, narrowing, always = _pin_plan(
-                clsname, field, spec, own, cls_annotations, written
+                clsname, field, spec, own, cls_annotations, written,
+                options.convert_defaults,
             )
             if storage != "keep" and (
-                always or not _stored_as(field, spec, storage)
+                always
+                or not _stored_as(
+                    field, spec, storage, options.convert_defaults
+                )
             ):
                 if _pin_discriminant(
                     field, namespace, spec, storage, options.mutable_default
@@ -2079,7 +2114,9 @@ def __pre_new__(
             spec.name for spec in own if spec.name in cls_annotations
         )
         for owner in reachable:
-            _check_discriminants(clsname, owner, fields, specs)
+            _check_discriminants(
+                clsname, owner, fields, specs, options.convert_defaults
+            )
 
     # A subclass that declares the field again, with no default of its
     # own, has taken the pin away.
@@ -4141,7 +4178,10 @@ class MetaMagic(ABCMeta):
         claim = specs
         if isinstance(target, type) and issubclass(target, owner):
             _check_discriminants(
-                target.__name__, owner, getattr(target, _FIELDS), specs
+                target.__name__, owner, getattr(target, _FIELDS), specs,
+                getattr(
+                    getattr(target, _OPTIONS, None), "convert_defaults", True
+                ),
             )
             # Ranked on everything it stands for, as a class statement
             # is: what it is registered for here, and what the

@@ -39,6 +39,13 @@ __all__ = [
     "Pin",
     "Narrow",
     "NoPin",
+    "PIN",
+    "CLASSVAR",
+    "KEEP",
+    "NARROW",
+    "PIN_NARROW",
+    "CLASSVAR_NARROW",
+    "KEEP_NARROW",
 ]
 import typing_extensions as tx
 
@@ -1315,7 +1322,10 @@ class Pin(AnnotatedField):
     default), "classvar", "keep", "narrow", "pin+narrow",
     "classvar+narrow" and "keep+narrow", plus `True` for "pin" and
     `False` for "keep". `Narrow[T]` is `Pin[T, "narrow"]`, and `NoPin[T]`
-    is `Pin[T, False]`.
+    is `Pin[T, False]`. Each mode is also a constant -- `PIN`,
+    `CLASSVAR`, `KEEP`, `NARROW`, `PIN_NARROW`, `CLASSVAR_NARROW`,
+    `KEEP_NARROW` -- which a linter reads as a name it knows, where it
+    reads `"classvar"` inside the brackets as an undefined type.
 
     The field keeps its `Pin` in every subclass, so every class that
     matches on it treats it the same way.
@@ -1327,6 +1337,8 @@ class Pin(AnnotatedField):
         >>> Pin[str]
         typing.Annotated[str, Pin(pin='pin')]
         >>> Pin[str, "classvar"]
+        typing.Annotated[str, Pin(pin='classvar')]
+        >>> Pin[str, CLASSVAR]
         typing.Annotated[str, Pin(pin='classvar')]
         >>> Narrow[str]
         typing.Annotated[str, Narrow(pin='narrow')]
@@ -1361,3 +1373,26 @@ class Narrow(Pin, BoolAnnotatedField):
 @slots
 class NoPin(Pin, BoolAnnotatedField):
     __set_slots__ = {'pin': False}
+
+
+PIN: tx.Literal["pin"] = "pin"
+"""Give the field the value the subclass stands for, as its default."""
+
+CLASSVAR: tx.Literal["classvar"] = "classvar"
+"""Make the field a class attribute holding the value; an argument for it
+is accepted and dropped."""
+
+KEEP: tx.Literal["keep"] = "keep"
+"""Leave the field as it is."""
+
+NARROW: tx.Literal["narrow"] = "narrow"
+"""The same as `PIN_NARROW`."""
+
+PIN_NARROW: tx.Literal["pin+narrow"] = "pin+narrow"
+"""`PIN`, and refuse any other value for the field."""
+
+CLASSVAR_NARROW: tx.Literal["classvar+narrow"] = "classvar+narrow"
+"""`CLASSVAR`, and refuse any other value for the field."""
+
+KEEP_NARROW: tx.Literal["keep+narrow"] = "keep+narrow"
+"""`KEEP`, and refuse any other value for the field."""

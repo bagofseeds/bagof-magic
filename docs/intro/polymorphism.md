@@ -411,9 +411,10 @@ TypeError: Pentagon stands for kind='pentagon', ...
 A mode on a field that no subclass matches on does nothing.
 
 A linter reads the mode in `Pin[str, "classvar"]` as the name of a type,
-and reports it as undefined. `Pin[str]`, `Narrow[str]` and `NoPin[str]`
-have no such text; for the other modes, the spelling a linter accepts is
-`Annotated[str, Pin("classvar")]`.
+and reports it as undefined. Each mode is also a constant, which a linter
+knows: `Pin[str, CLASSVAR]` is `Pin[str, "classvar"]`, and `PIN`, `KEEP`,
+`NARROW`, `PIN_NARROW`, `CLASSVAR_NARROW` and `KEEP_NARROW` stand for the
+others. They work for `pin_discriminant` too.
 
 Pickling and copying rebuild through the class an instance already has.
 Neither goes back through the dispatch.

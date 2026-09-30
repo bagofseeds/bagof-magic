@@ -26,6 +26,13 @@ from bagof.validators import ValueValidationError
 import bagof.magic._generics as g
 import bagof.magic._polymorph as p
 from bagof.magic import (
+    CLASSVAR,
+    CLASSVAR_NARROW,
+    KEEP,
+    KEEP_NARROW,
+    NARROW,
+    PIN,
+    PIN_NARROW,
     AmbiguousPolymorphError,
     ClassVar,
     ConvertTo,
@@ -3793,6 +3800,98 @@ class TestFieldPin:
             mode: Pin[str] = field(factory=lambda: "dorian")
 
         assert Kept().mode == Modal().mode == "dorian"
+
+    def test_a_default_is_checked_as_it_is_converted(self) -> None:
+        # The default an instance holds is the converted one, and that is
+        # what dispatch matches: `"1"` stands for 1 when the class
+        # converts its defaults, and is refused when it does not.
+        class Count(Magic, polymorphic=True, convert=True):
+            n: int = 0
+
+        class One(Count, on={"n": 1}):
+            n: Pin[int] = "1"
+
+        assert One().n == 1
+        assert type(Count(n="1")) is One
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Raw(Count, on={"n": 1}, convert_defaults=False):
+                n: Pin[int] = "1"
+
+        class Plain(Magic, polymorphic=True):
+            n: int = 0
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Two(Plain, on={"n": 2}):
+                n: Pin[int] = "2"
+
+    def test_a_converted_default_already_holds_the_value(self) -> None:
+        # A subclass that does not take the field, and leaves it as it
+        # is, has to hold the value already -- and a default that
+        # converts to it does.
+        class Count(Magic, polymorphic=True, convert=True):
+            m: int = 0
+
+        class Four(Count, on={"m": 4}, pin_discriminant="keep"):
+            m: NoInit[int] = "4"
+
+        assert type(Count(m=4)) is Four
+        assert Four().m == 4
+
+        with pytest.raises(TypeError, match="holds '4', which is not 4"):
+            class Raw(
+                Count, on={"m": 4}, pin_discriminant="keep",
+                convert_defaults=False,
+            ):
+                m: NoInit[int] = "4"
+
+    def test_a_converter_that_turns_the_default_down_is_left_to_init(
+        self
+    ) -> None:
+        class Count(Magic, polymorphic=True, convert=True):
+            n: int = 0
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Bad(Count, on={"n": 1}):
+                n: Pin[int] = "one"
+
+    def test_a_default_named_before_its_type_is_not_converted_early(
+        self
+    ) -> None:
+        # Converting would look the name up now, and keep what it found.
+        class Count(Magic, polymorphic=True, convert=True):
+            n: "Later" = 0  # noqa: F821
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class One(Count, on={"n": 1}):
+                n: Pin["Later"] = "1"  # noqa: F821
+
+    @pytest.mark.parametrize(
+        "constant, text",
+        [
+            (PIN, "pin"),
+            (CLASSVAR, "classvar"),
+            (KEEP, "keep"),
+            (NARROW, "narrow"),
+            (PIN_NARROW, "pin+narrow"),
+            (CLASSVAR_NARROW, "classvar+narrow"),
+            (KEEP_NARROW, "keep+narrow"),
+        ],
+    )
+    def test_each_mode_has_a_constant(self, constant: str, text: str) -> None:
+        assert constant == text
+        assert tx.get_args(Pin[str, constant])[1].pin == text
+
+        class Shape(Magic, polymorphic=True):
+            kind: str = ""
+
+        class Circle(Shape, on={"kind": "circle"}, pin_discriminant=constant):
+            pass
+
+        class Square(Shape, on={"kind": "square"}, pin_discriminant=text):
+            pass
+
+        assert self._stored(Circle, "kind") == self._stored(Square, "kind")
 
     def test_an_inherited_pin_is_applied_to_a_default_that_fits(
         self
