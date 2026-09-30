@@ -180,6 +180,7 @@ from ._polymorph import arm as _arm_polymorph
 from ._polymorph import arm_parameterised as _arm_parameterised
 from ._polymorph import as_written as _as_written
 from ._polymorph import check as _check_invariant
+from ._polymorph import check_fields as _check_spec_fields
 from ._polymorph import delegate as _delegate_polymorph
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
@@ -219,8 +220,9 @@ def __post_new__(cls: type) -> type:
     # will build it.
     registration = cls.__dict__.get(_REGISTRATION)
     if registration is not None:
-        polymorphic_base, specs, priority = registration
-        _register_polymorph(polymorphic_base, cls, specs, priority)
+        owners, specs, priority = registration
+        for owner in owners:
+            _register_polymorph(owner, cls, specs, priority)
 
     # A class built by filling in a generic's type parameters chooses
     # between the same subclasses the class it came from does, each
@@ -1090,21 +1092,68 @@ _PIN_ACTIONS = {
 }
 
 
-def _polymorphic_base(mro: tx.Tuple[type, ...]) -> tx.Optional[type]:
-    # The nearest class up the chain that builds its subclasses. A
-    # subclass registers with that one rather than with the root, so
-    # each level narrows the choice by one step.
-    for base in mro:
-        # A class built by filling in type parameters is skipped: it is
-        # not a level anyone wrote. `class Deep(Chord[int], on=...)`
-        # registers with `Chord`, and the filled-in parameters it was
-        # written with are what say that `Chord[int]` builds it and
-        # `Chord[str]` does not.
-        if _GENERIC_ORIGIN in base.__dict__:
-            continue
-        if getattr(getattr(base, _OPTIONS, None), "polymorphic", False):
-            return base
-    return None
+def _polymorphic_levels(mro: tx.Sequence[type]) -> tx.List[type]:
+    # The classes up the chain that build their subclasses, in MRO
+    # order. A class built by filling in type parameters is skipped: it
+    # is not a level anyone wrote. `class Deep(Chord[int], on=...)`
+    # registers with `Chord`, and the filled-in parameters it was
+    # written with are what say that `Chord[int]` builds it and
+    # `Chord[str]` does not.
+    return [
+        base for base in mro
+        if _GENERIC_ORIGIN not in base.__dict__
+        and getattr(getattr(base, _OPTIONS, None), "polymorphic", False)
+    ]
+
+
+def _registration_owners(
+    mro: tx.Sequence[type],
+) -> tx.Tuple[tx.List[type], tx.List[type], tx.List[type]]:
+    # Which classes up the chain a subclass registers with, which of
+    # them are registered somewhere themselves, and the nearest of those
+    # -- one per branch of the hierarchy, so two of them mean the class
+    # sits at the bottom of a diamond.
+    #
+    # A level that is registered somewhere (a "target") is reached from
+    # above by its own registration, so registering with it is enough to
+    # be reached from everything above it: each level narrows the choice
+    # by one step. A level that is not (a "pass-through", a subclass
+    # written with no on=) is reached by nothing, so a class below it
+    # registers with it *and* with every level up to the nearest target
+    # -- or up to the root when there is none -- and the root still
+    # reaches it.
+    #
+    # In a diamond, the class registers down every branch -- with each
+    # nearest target and the pass-throughs above it -- so that it is
+    # reachable whichever parent is called, and with the root(s) too: at
+    # the root the two parents are siblings that may tie, and only a
+    # registration there, whose constraint covers both of theirs, out-
+    # ranks them.
+    levels = _polymorphic_levels(mro)
+    targets = [base for base in levels if _REGISTRATION in base.__dict__]
+    nearest = [
+        target for target in targets
+        if not any(
+            other is not target and issubclass(other, target)
+            for other in targets
+        )
+    ]
+    if len(nearest) <= 1:
+        stop = nearest[0] if nearest else None
+        owners = [
+            base for base in levels if stop is None or issubclass(base, stop)
+        ]
+    else:
+        roots = [
+            base for base in levels
+            if not _polymorphic_levels(base.__mro__[1:])
+        ]
+        owners = [
+            base for base in levels
+            if any(issubclass(base, target) for target in nearest)
+        ]
+        owners += [root for root in roots if root not in owners]
+    return owners, targets, nearest
 
 
 def _check_discriminants(
@@ -1113,6 +1162,8 @@ def _check_discriminants(
     fields: dict,
     specs: tx.Sequence,
 ) -> None:
+    # `polymorphic_base` is one class this one registers with; a class
+    # registering with several is checked against each of them.
     # Whether the class it registers with can actually build this one,
     # for each field it stands for. Three cases:
     #
@@ -1738,22 +1789,25 @@ def __pre_new__(
         pinned.update(getattr(base, _PINNED, ()))
 
     # What this class stands for, if it said. The constraints are read
-    # against the class it registers with -- so a misspelled field name
-    # is refused here, where it was written, rather than the first time
-    # something is built. The registration itself waits until the class
-    # exists; `__post_new__` does it.
+    # against every class it registers with (see `_registration_owners`)
+    # -- so a misspelled field name is refused here, where it was
+    # written, rather than the first time something is built. The
+    # registration itself waits until the class exists; `__post_new__`
+    # does it.
     if on is not MISSING:
-        polymorphic_base = _polymorphic_base(mro[1:])
-        if polymorphic_base is None:
+        owners = _registration_owners(mro[1:])[0]
+        if not owners:
             raise TypeError(
                 f"{clsname} says with on= which arguments it stands for, "
                 f"but none of the classes it inherits from builds its "
                 f"subclasses. Add polymorphic=True to the one that "
                 f"should -- `class Chord(Magic, polymorphic=True)`."
             )
-        specs = _specifications(polymorphic_base, clsname, on)
+        specs = _specifications(clsname, on)
+        for owner in owners:
+            _check_spec_fields(owner, clsname, specs)
         namespace[_REGISTRATION] = (
-            polymorphic_base,
+            tuple(owners),
             specs,
             0 if priority is MISSING else priority,
         )
@@ -1775,7 +1829,8 @@ def __pre_new__(
         pinned.update(
             spec.name for spec in specs if spec.name in cls_annotations
         )
-        _check_discriminants(clsname, polymorphic_base, fields, specs)
+        for owner in owners:
+            _check_discriminants(clsname, owner, fields, specs)
 
     # A subclass that declares the field again, with no default of its
     # own, has taken the pin away.
@@ -3815,8 +3870,9 @@ class MetaMagic(ABCMeta):
         # A class built by filling in type parameters registers with the
         # one it came from, the same way a class statement does.
         owner = cls.__dict__.get(_GENERIC_ORIGIN, cls)
-        specs = _specifications(owner, getattr(target, "__name__", target),
-                                wanted)
+        name = getattr(target, "__name__", target)
+        specs = _specifications(name, wanted)
+        _check_spec_fields(owner, name, specs)
         # Registering after the fact goes through the same three-case
         # rule a `class Sub(Base, on=...)` statement does, so a target
         # that neither takes a discriminant nor holds a value it accepts

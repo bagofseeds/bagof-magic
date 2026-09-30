@@ -40,7 +40,7 @@ from bagof.magic import (
     magic,
     replace,
 )
-from bagof.magic._constants import _POLYMORPHS
+from bagof.magic._constants import _POLYMORPHS, _REGISTRATION
 
 
 def _entry_for(base: type, target: type) -> object:
@@ -2337,3 +2337,110 @@ class TestNarrowAndCheckSkips:
         assert Halves(x=1.5).x == 1.5
         with pytest.raises(Exception, match="not a valid"):
             Halves(x=3.5)
+
+
+# ======================================================================
+# Plain intermediates and diamonds
+# ======================================================================
+
+
+class TestIntermediateAndDiamond:
+    """Which classes a subclass registers with, when the hierarchy is
+    not a simple chain of registered classes."""
+
+    # -- a plain intermediate (problem A) --------------------------------
+
+    @pytest.fixture
+    def chain(self) -> tx.Tuple[type, type, type]:
+        class Foo(Magic, polymorphic=True):
+            kind: str = ""
+
+        class Bar(Foo):
+            pass
+
+        class FooBar(Bar, on={"kind": "foobar"}):
+            pass
+
+        return Foo, Bar, FooBar
+
+    def test_the_root_reaches_a_subclass_through_a_plain_intermediate(
+        self, chain: tx.Tuple[type, type, type]
+    ) -> None:
+        Foo, Bar, FooBar = chain
+        assert type(Foo(kind="foobar")) is FooBar
+
+    def test_the_plain_intermediate_still_reaches_it(
+        self, chain: tx.Tuple[type, type, type]
+    ) -> None:
+        Foo, Bar, FooBar = chain
+        assert type(Bar(kind="foobar")) is FooBar
+        assert type(Bar(kind="other")) is Bar
+        assert type(Foo(kind="other")) is Foo
+
+    def test_a_registered_level_above_a_plain_one_is_where_it_stops(
+        self
+    ) -> None:
+        # R -> S (registered) -> P (plain) -> X: X registers with P and
+        # S, and R reaches it through S in two hops, as before.
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class S(R, on={"a": "x"}):
+            pass
+
+        class P(S):
+            pass
+
+        class X(P, on={"b": "y"}):
+            pass
+
+        assert _entry_for(P, X) and _entry_for(S, X)
+        assert X not in [entry.target for entry in R.__dict__[
+            _POLYMORPHS].dispatch[0]]
+        assert type(R(a="x", b="y")) is X
+        assert type(R(b="y")) is R
+        assert type(P(b="y")) is X
+
+    def test_a_linear_subclass_with_nothing_to_say_registers_nowhere(
+        self, chain: tx.Tuple[type, type, type]
+    ) -> None:
+        Foo, Bar, FooBar = chain
+
+        class Quiet(FooBar):
+            pass
+
+        assert _REGISTRATION not in Quiet.__dict__
+        assert type(Foo(kind="foobar")) is FooBar
+
+    def test_a_field_one_of_the_levels_lacks_is_refused(self) -> None:
+        class Foo(Magic, polymorphic=True):
+            kind: str = ""
+
+        class Bar(Foo):
+            extra: str = ""
+
+        with pytest.raises(TypeError, match="not a field of Foo"):
+            class FooBar(Bar, on={"extra": "e"}):
+                pass
+
+    def test_a_strict_root_reaches_through_a_plain_intermediate(
+        self
+    ) -> None:
+        # The root used to answer "none has yet: the module has not been
+        # imported", which sent the reader looking for an import that
+        # had happened.
+        class Foo(Magic, polymorphic="strict"):
+            kind: str = ""
+
+        class Bar(Foo):
+            pass
+
+        class FooBar(Bar, on={"kind": "foobar"}):
+            pass
+
+        assert type(Foo(kind="foobar")) is FooBar
+        assert type(Bar(kind="foobar")) is FooBar
+        assert type(FooBar()) is FooBar
+        with pytest.raises(NoPolymorphError, match="FooBar"):
+            Bar(kind="other")

@@ -301,32 +301,37 @@ def _constraint_validator(
 
 
 def specifications(
-    owner: type, clsname: str, on: tx.Mapping[str, tx.Any]
+    clsname: str, on: tx.Mapping[str, tx.Any]
 ) -> tx.Tuple[_Spec, ...]:
-    """
-    Read a whole `on={...}` mapping against the class registering with.
-
-    Its keys name fields the way `owner` declares them, and a name that
-    is no field of `owner` is refused here -- when the class is written,
-    rather than the first time something is built.
-    """
+    """Read a whole `on={...}` mapping."""
     if not isinstance(on, tx.Mapping):
         raise TypeError(
             f"on= takes a mapping of field names to the values "
             f"{clsname} stands for, such as on={{'mode': 'minor'}}, "
-            f"and was given {on!r}."
+            f"and was given {on!r}. Write on=None to leave {clsname} "
+            f"out of the choice altogether."
         )
+    return tuple(_specification(name, spec) for name, spec in on.items())
+
+
+def check_fields(
+    owner: type, clsname: str, specs: tx.Iterable[_Spec]
+) -> None:
+    """
+    Refuse a registration naming a field `owner` does not have.
+
+    The keys of `on={...}` name fields the way the class registering
+    with declares them, so a misspelled one is refused when the class is
+    written, rather than the first time something is built.
+    """
     table = getattr(owner, _FIELDS)
-    specs = []
-    for name, spec in on.items():
-        if name not in table:
+    for spec in specs:
+        if spec.name not in table:
             raise TypeError(
-                f"{clsname} registers on {name!r}, which is not a field of "
-                f"{owner.__name__}. Its fields are: "
+                f"{clsname} registers on {spec.name!r}, which is not a "
+                f"field of {owner.__name__}. Its fields are: "
                 f"{', '.join(repr(field) for field in table) or 'none'}."
             )
-        specs.append(_specification(name, spec))
-    return tuple(specs)
 
 
 # ----------------------------------------------------------------------
