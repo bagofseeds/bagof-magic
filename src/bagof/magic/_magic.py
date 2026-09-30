@@ -1095,6 +1095,21 @@ _PIN_ACTIONS = {
 }
 
 
+def _pin_action(value: tx.Any) -> tx.Optional[tx.Tuple[str, bool]]:
+    # The (storage, narrow) pair a field's own `pin` stands for, or None
+    # when it is not one of the accepted values. It takes everything
+    # `pin_discriminant` does, read the same way, and also `True` for
+    # "pin" and `False` for "keep". Only a real string is looked up, so
+    # that `1` is not read as `True`, nor an unhashable value as a key.
+    if value is True:
+        return _PIN_ACTIONS["pin"]
+    if value is False:
+        return _PIN_ACTIONS["keep"]
+    if isinstance(value, str):
+        return _PIN_ACTIONS.get(value)
+    return None
+
+
 def _polymorphic_levels(mro: tx.Sequence[type]) -> tx.List[type]:
     # The classes up the chain that build their subclasses, in MRO
     # order. A class built by filling in type parameters is skipped: it
@@ -1209,6 +1224,75 @@ def _holds(field: Field, spec: tx.Any) -> bool:
     )
 
 
+def _stored_as(field: Field, spec: tx.Any, storage: str) -> bool:
+    # Whether an inherited field already holds what `spec` stands for,
+    # the way `storage` says to hold it -- as the parent it was copied
+    # from left it. A default that happens to fit is not yet a class
+    # attribute, so under "classvar" the field has to be one already.
+    return _holds(field, spec) and (storage != "classvar" or field.var is True)
+
+
+def _pin_plan(
+    clsname: str,
+    field: Field,
+    spec: tx.Any,
+    own: tx.Sequence,
+    declared: tx.Container[str],
+) -> tx.Tuple[str, tx.Tuple, bool]:
+    # How this class applies `spec` to the field it constrains: how the
+    # field is stored ("pin", "classvar" or "keep"), which written parts
+    # of the constraint it is narrowed by, and whether the storage is
+    # applied even to a field that already holds a value that fits.
+    #
+    # A field's own `pin` decides for every part, on every class that
+    # matches on it. Without one, each written part is applied the way
+    # the class that wrote it says -- its `pin_discriminant`, carried on
+    # the part -- and the field is stored the way this class's own says
+    # when it constrains the field itself, and the way the first class
+    # in the MRO that constrains it says otherwise. That keeps a field
+    # the bottom of a diamond inherits stored the way the parent that
+    # matches on it stores it.
+    #
+    # A field this class writes out itself is left exactly as written,
+    # unless its annotation gives a `pin`.
+    mine = [part for part in spec.parts if _says(part, own)]
+    if field.pin is not MISSING:
+        storage, narrow = _pin_action(field.pin)
+        narrowing = spec.parts if narrow else ()
+        if field.name in declared:
+            _check_written_default(clsname, field, spec, storage, narrow)
+            return storage, narrowing, True
+        return storage, narrowing, bool(mine)
+    if field.name in declared:
+        return "keep", (), False
+    storage = _PIN_ACTIONS[(mine or spec.parts)[0].pin][0]
+    narrowing = tuple(
+        part for part in spec.parts if _PIN_ACTIONS[part.pin][1]
+    )
+    return storage, narrowing, bool(mine)
+
+
+def _check_written_default(
+    clsname: str, field: Field, spec: tx.Any, storage: str, narrow: bool
+) -> None:
+    # A field a class writes out with both a `pin` and a default of its
+    # own asks for two things. When the constraint accepts the default
+    # they agree. When it does not, pinning would replace the default,
+    # or narrowing would turn it down on every call that leaves the
+    # field out -- either way the default could never be used, so the
+    # class is refused rather than one of the two quietly dropped.
+    if field.default is MISSING or spec.matches(field.default):
+        return
+    if narrow or (storage != "keep" and spec.value is not MISSING):
+        raise TypeError(
+            f"{clsname} stands for {spec.name}={spec.text}, and its field "
+            f"{spec.name!r} says pin={field.pin!r}, but its default is "
+            f"{field.default!r}. Leave the default out -- the pin gives "
+            f"the field its value -- or take the pin off the field to "
+            f"keep {field.default!r} as written."
+        )
+
+
 def _check_discriminants(
     clsname: str,
     polymorphic_base: type,
@@ -1277,18 +1361,15 @@ def _check_discriminants(
         )
 
 
-def _narrow_discriminants(
-    fields: dict,
-    declared: tx.Container[str],
-    specs: tx.Sequence,
+def _narrow_discriminant(
+    clsname: str, field: Field, spec: tx.Any, parts: tx.Sequence
 ) -> None:
-    # Narrow each constrained field to what its class stands for, and
-    # make it enforce it. The field's annotation becomes the value (or
-    # set of values, or type) the registration named, and a validator
+    # Narrow a constrained field to what these written parts of `spec`
+    # stand for, and make it enforce them. The field's annotation becomes
+    # the value (or set of values, or type) they name, and a validator
     # for the same constraint is added -- chained after any converter or
     # validator the field already carries, never in place of it, so a
-    # base's own checking still runs. A field the subclass writes out
-    # itself is left exactly as written, as it is for pinning.
+    # base's own checking still runs.
     #
     # The added validator is recorded as the field's own preference and
     # taken out of what was derived from the type, so that re-resolving
@@ -1301,86 +1382,80 @@ def _narrow_discriminants(
     # field already enforces is skipped: the field here is a copy of one
     # parent's, which carries what that parent narrowed it to but not
     # what the other parent did. Which parts a field enforces travels
-    # with it, so no part is ever chained twice.
-    for spec in specs:
-        field = fields[spec.name]
-        if field.name in declared:
-            continue
-        done = field._narrowed_by
-        if done is MISSING:
-            done = ()
-        added = [
-            part for part in spec.parts
-            if part.validate is not None
-            and not any(part is known for known in done)
-        ]
-        if not added:
-            continue
-        if spec.narrowed is not MISSING:
-            field.type = spec.narrowed
-        chained = field.validator
-        for part in added:
-            chained = (
-                _chain(chained, part.validate)
-                if callable(chained)
-                else part.validate
-            )
-        field._redeclare(validator=chained)
-        field._narrowed_by = tuple(done) + tuple(added)
-        field._derived = tuple(
-            attr for attr in (field._derived or ()) if attr != "validator"
+    # with it, so no part is ever chained twice. When only some of the
+    # parts narrow, the type is the one those parts alone narrow to.
+    done = field._narrowed_by
+    if done is MISSING:
+        done = ()
+    added = [
+        part for part in parts
+        if part.validate is not None
+        and not any(part is known for known in done)
+    ]
+    if not added:
+        return
+    narrowed = (
+        spec.narrowed if len(parts) == len(spec.parts)
+        else _conjoin(clsname, tuple(parts), ())[0].narrowed
+    )
+    if narrowed is not MISSING:
+        field.type = narrowed
+    chained = field.validator
+    for part in added:
+        chained = (
+            _chain(chained, part.validate)
+            if callable(chained)
+            else part.validate
         )
+    field._redeclare(validator=chained)
+    field._narrowed_by = tuple(done) + tuple(added)
+    field._derived = tuple(
+        attr for attr in (field._derived or ()) if attr != "validator"
+    )
 
 
-def _pin_discriminants(
-    fields: dict,
+def _pin_discriminant(
+    field: Field,
     namespace: dict,
-    declared: tx.Container[str],
-    specs: tx.Sequence,
-    action: str,
+    spec: tx.Any,
+    storage: str,
     mutable: str,
-) -> tx.Set[str]:
+) -> bool:
     # A subclass registered for one exact value already says what that
     # field holds, so it does not have to say it twice: the field is
     # given that value as its default ("pin"), or becomes a class
-    # attribute that is not stored per instance ("classvar"). A field
-    # the subclass writes out itself is left exactly as written.
+    # attribute that is not stored per instance ("classvar"). Returns
+    # whether the field was pinned.
     #
     # Under "classvar" the field stays a parameter of `__init__` and its
     # value is thrown away, so both `Chord(mode="minor", root="A")` --
     # which passes the argument straight through -- and
     # `MinorChord(mode="minor", root="A")` keep working.
-    pinned = set()
-    for spec in specs:
-        if spec.value is MISSING:
-            # More than one value would satisfy this constraint, so
-            # there is nothing to pin the field to.
-            continue
-        field = fields[spec.name]
-        if field.name in declared:
-            continue
-        field.default = spec.value
-        # The pin is the value, so a default the field would otherwise
-        # have built for itself no longer applies -- and nothing is left
-        # behind to build it with.
-        field.factory = False
-        if action == "classvar":
-            field.var = True
-            field.repr = SHOW_ATTR(False)
-            field.key = SHOW_ATTR(False)
-            field.eq = field.order = False
-            field.hash = False
-            # A class attribute is meant to be shared, so a mutable one
-            # is not the trap `mutable_default` is about.
-            namespace[field.name] = spec.value
-        else:
-            # A pinned default reaches every instance, so it goes
-            # through the same handling a written-out default does:
-            # `on={"cfg": {"a": 1}}` must not hand one dictionary to
-            # every instance of the subclass.
-            _handle_mutable_default(field, mutable)
-        pinned.add(field.name)
-    return pinned
+    if spec.value is MISSING:
+        # More than one value would satisfy this constraint, so there is
+        # nothing to pin the field to.
+        return False
+    field.default = spec.value
+    # The pin is the value, so a default the field would otherwise have
+    # built for itself no longer applies -- and nothing is left behind
+    # to build it with.
+    field.factory = False
+    if storage == "classvar":
+        field.var = True
+        field.repr = SHOW_ATTR(False)
+        field.key = SHOW_ATTR(False)
+        field.eq = field.order = False
+        field.hash = False
+        # A class attribute is meant to be shared, so a mutable one is
+        # not the trap `mutable_default` is about.
+        namespace[field.name] = spec.value
+    else:
+        # A pinned default reaches every instance, so it goes through
+        # the same handling a written-out default does:
+        # `on={"cfg": {"a": 1}}` must not hand one dictionary to every
+        # instance of the subclass.
+        _handle_mutable_default(field, mutable)
+    return True
 
 
 def _is_mutable(value: tx.Any) -> bool:
@@ -1827,6 +1902,14 @@ def __pre_new__(
         elif field.name in namespace:
             field.default = namespace[field.name]
 
+        if field.pin is not MISSING and _pin_action(field.pin) is None:
+            raise ValueError(
+                f"pin on {clsname}.{field.name} must be 'pin', "
+                f"'classvar', 'keep', 'narrow', 'pin+narrow', "
+                f"'classvar+narrow', 'keep+narrow', True or False, "
+                f"not {field.pin!r}"
+            )
+
         # Set unset field options from class options
         field.setdefault(options, hints)
 
@@ -1890,7 +1973,9 @@ def __pre_new__(
                 f"subclasses. Add polymorphic=True to the one that "
                 f"should -- `class Chord(Magic, polymorphic=True)`."
             )
-        own = _specifications(clsname, on if speaks else {})
+        own = _specifications(
+            clsname, on if speaks else {}, options.pin_discriminant
+        )
         if diamond:
             specs = claim = _conjoin(clsname, own, _registered(targets))
         else:
@@ -1918,21 +2003,23 @@ def __pre_new__(
         # it includes what its parents say, and each field here is a
         # copy of one parent's -- which honours that parent's pin and
         # narrowing but not the other's -- so what a field already
-        # honours is skipped, and the rest is applied the way this
-        # class's own `pin_discriminant` says.
-        storage, narrow = _PIN_ACTIONS[options.pin_discriminant]
-        if storage != "keep":
-            pinned.update(_pin_discriminants(
-                fields, namespace, cls_annotations,
-                [
-                    spec for spec in specs
-                    if _says(spec, own)
-                    or not _holds(fields[spec.name], spec)
-                ],
-                storage, options.mutable_default,
-            ))
-        if narrow:
-            _narrow_discriminants(fields, cls_annotations, specs)
+        # honours is skipped, and the rest is applied the way the field's
+        # own `pin` says, or else the way the class that wrote each
+        # constraint says (see `_pin_plan`).
+        for spec in specs:
+            field = fields[spec.name]
+            storage, narrowing, always = _pin_plan(
+                clsname, field, spec, own, cls_annotations
+            )
+            if storage != "keep" and (
+                always or not _stored_as(field, spec, storage)
+            ):
+                if _pin_discriminant(
+                    field, namespace, spec, storage, options.mutable_default
+                ):
+                    pinned.add(field.name)
+            if narrowing:
+                _narrow_discriminant(clsname, field, spec, narrowing)
         # A discriminant this class redeclares with a default of its own
         # is pinned too, as far as the signature is concerned: a required
         # parameter behind it needs the same sentinel a registration's
@@ -3990,7 +4077,12 @@ class MetaMagic(ABCMeta):
         # one it came from, the same way a class statement does.
         owner = cls.__dict__.get(_GENERIC_ORIGIN, cls)
         name = getattr(target, "__name__", target)
-        specs = _specifications(name, wanted)
+        specs = _specifications(
+            name, wanted,
+            getattr(
+                getattr(target, _OPTIONS, None), "pin_discriminant", "pin"
+            ),
+        )
         _check_spec_fields(owner, name, specs)
         # Registering after the fact goes through the same three-case
         # rule a `class Sub(Base, on=...)` statement does, so a target

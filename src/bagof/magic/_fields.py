@@ -36,6 +36,9 @@ __all__ = [
     "Key",
     "NotKey",
     "Doc",
+    "Pin",
+    "Narrow",
+    "NoPin",
 ]
 import typing_extensions as tx
 
@@ -113,6 +116,7 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     'property',         # Forwarding attribute names and access modes.
     '_declared',        # What the field asked for (bookkeeping for override).
     '_narrowed_by',     # Which constraints narrowed it (bookkeeping).
+    'pin',              # What a subclass matching on it does with it.
 )
 class Field(SlotsBase):
     """A single field in a Magic class.
@@ -206,6 +210,15 @@ class Field(SlotsBase):
             exposes the preferred public name with that access mode. "all"
             exposes every input alias the field accepts (bar the stored
             attribute and any name already in use), read/write.
+        pin : str or bool, default=`Options().pin_discriminant`
+            What a subclass that matches on this field does with it. It
+            takes the values the `pin_discriminant` setting takes --
+            "pin", "classvar", "keep", "narrow", "pin+narrow",
+            "classvar+narrow" or "keep+narrow" -- and also `True` (the
+            same as "pin") and `False` (the same as "keep"). It wins
+            over `pin_discriminant` on every class that matches on the
+            field, including subclasses that inherit it. Also settable
+            through the `Pin`, `Narrow` and `NoPin` annotations.
 
         Other Parameters
         ----------------
@@ -1287,3 +1300,62 @@ class Doc(AnnotatedField, tx.Doc):
     def __init__(self, documentation: str, /) -> None:
         tx.Doc.__init__(self, documentation)
         AnnotatedField.__init__(self, documentation)
+
+
+@slots
+class Pin(AnnotatedField):
+    """
+    Say what a subclass that matches on this field does with it.
+
+    A subclass written with `on={"mode": "minor"}` gives `mode` that value.
+    `Pin` decides how, for this field, whatever the subclass's
+    `pin_discriminant` says. It takes the same values: "pin" (the
+    default), "classvar", "keep", "narrow", "pin+narrow",
+    "classvar+narrow" and "keep+narrow", plus `True` for "pin" and
+    `False` for "keep". `Narrow[T]` is `Pin[T, "narrow"]`, and `NoPin[T]`
+    is `Pin[T, False]`.
+
+    The field keeps its `Pin` in every subclass, so every class that
+    matches on it treats it the same way.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Pin()
+        Pin(pin='pin')
+        >>> Pin[str]
+        typing.Annotated[str, Pin(pin='pin')]
+        >>> Pin[str, "classvar"]
+        typing.Annotated[str, Pin(pin='classvar')]
+        >>> Narrow[str]
+        typing.Annotated[str, Narrow(pin='narrow')]
+        >>> NoPin[str]
+        typing.Annotated[str, NoPin(pin=False)]
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Shape(Magic, polymorphic=True):
+        ...     kind: Pin[str, "classvar"] = ""
+        ...     size: float = 1.0
+        ...
+        >>> class Circle(Shape, on={"kind": "circle"}):
+        ...     pass
+        ...
+        >>> Circle.kind
+        'circle'
+        >>> Shape(kind="circle", size=2.0)
+        Circle(size=2.0)
+        ```
+    """
+
+    __set_slots__ = {'pin': 'pin'}
+
+
+@slots
+class Narrow(Pin, BoolAnnotatedField):
+    __set_slots__ = {'pin': 'narrow'}
+
+
+@slots
+class NoPin(Pin, BoolAnnotatedField):
+    __set_slots__ = {'pin': False}

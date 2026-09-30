@@ -4177,6 +4177,7 @@ class TestAnnotationPolarity:
         ("Var", {"var": True}),
         ("InitVar", {"var": True}),
         ("ClassVar", {"kw": False, "positional": False, "var": True}),
+        ("NoPin", {"pin": False}),
     ]
 
     @pytest.mark.parametrize("name,expected", CASES, ids=[c[0] for c in CASES])
@@ -4216,6 +4217,19 @@ class TestAnnotationPolarity:
     def test_subscript_keeps_extra_metadata(self) -> None:
         hint = NoRepr[int, "some note"]
         assert tx.get_args(hint)[2] == "some note"
+
+    @pytest.mark.parametrize(
+        "hint, mode",
+        [
+            (m.Pin[int], "pin"),
+            (m.Pin[int, "classvar+narrow"], "classvar+narrow"),
+            (m.Narrow[int], "narrow"),
+        ],
+    )
+    def test_a_pin_carries_its_mode(self, hint: tx.Any, mode: str) -> None:
+        (annotation,) = tx.get_args(hint)[1:]
+        assert annotation.pin == mode
+        assert Field.from_hint("x", hint).pin == mode
 
 
 class TestAlwaysGenerated:
