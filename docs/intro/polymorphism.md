@@ -117,6 +117,18 @@ Chord(root='A', mode='major', variant='harmonic')
 Diminished(root='B', mode='dim', variant='natural')
 ```
 
+When you are writing the class yourself, leave the class out of the call
+and it reads as a decorator:
+
+```pycon
+>>> @Chord.register_polymorph(mode="aug")
+... class Augmented(Chord):
+...     pass
+...
+>>> Chord(root="C", mode="aug")
+Augmented(root='C', mode='aug', variant='natural')
+```
+
 Registering later only changes what is built later. Existing instances are
 untouched.
 

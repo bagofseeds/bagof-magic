@@ -617,6 +617,44 @@ class TestRegisterPolymorph:
         assert base.register_polymorph(Later, kind="k") is Later
         assert type(base(kind="k")) is Later
 
+    def test_it_is_a_decorator_when_the_class_is_left_out(
+        self, base: type
+    ) -> None:
+        @base.register_polymorph(on={"kind": "k"})
+        class Later(base):
+            pass
+
+        assert isinstance(Later, type)
+        assert type(base(kind="k")) is Later
+
+    def test_the_decorator_takes_keywords_and_priority(
+        self, base: type
+    ) -> None:
+        @base.register_polymorph(kind="k", priority=5)
+        class Later(base):
+            pass
+
+        assert type(base(kind="k")) is Later
+
+    def test_the_bare_decorator_still_registers(self, base: type) -> None:
+        # No call, no constraints: the class arrives as the target and
+        # stands for anything, so it is the fallback.
+        @base.register_polymorph
+        class Fallback(base):
+            pass
+
+        assert isinstance(Fallback, type)
+        assert type(base(kind="anything")) is Fallback
+
+    def test_the_decorator_on_a_plain_class_refuses(self) -> None:
+        class Plain(Magic):
+            kind: str = ""
+
+        with pytest.raises(TypeError, match="does not build its subclasses"):
+            @Plain.register_polymorph(kind="k")
+            class Sub(Plain):
+                pass
+
     def test_on_and_keywords_say_the_same_thing(self, base: type) -> None:
         class Later(base):
             pass

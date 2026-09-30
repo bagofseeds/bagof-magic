@@ -160,6 +160,7 @@ from ._constants import (
     MISSING,
     REQUIRED,
     SHOW_ATTR,
+    MaybeMissing,
     _HasDefault,
     _HasFactory,
 )
@@ -3749,11 +3750,11 @@ class MetaMagic(ABCMeta):
 
     def register_polymorph(
         cls,
-        target: type,
+        target: MaybeMissing[type] = MISSING,
         on: tx.Optional[tx.Mapping[str, tx.Any]] = None,
         priority: int = 0,
         **constraints: tx.Any,
-    ) -> type:
+    ) -> tx.Union[type, tx.Callable[[type], type]]:
         """
         Build `target` instead of this class, for these argument values.
 
@@ -3763,11 +3764,19 @@ class MetaMagic(ABCMeta):
         affects what is built later; instances that already exist are
         untouched.
 
+        Leave `target` out to use it as a decorator on the class
+        statement, which registers the class and hands it back:
+
+            @Base.register_polymorph(mode="diminished")
+            class Diminished(Base):
+                ...
+
         Parameters
         ----------
-        target : type
+        target : type, optional
             The subclass to build. It must be a subclass of this class,
-            and not this class itself.
+            and not this class itself. Omit it to get a decorator that
+            registers the class it is put on.
         on : dict, optional
             What `target` stands for: field names against the values
             they must take. The same shapes as the `on=` class keyword.
@@ -3782,8 +3791,18 @@ class MetaMagic(ABCMeta):
         Returns
         -------
         target : type
-            What was registered, so this can be used as a decorator.
+            What was registered, so this can be used as a decorator --
+            or, when `target` is left out, the decorator itself.
         """
+        if target is MISSING:
+            # Decorator form: the class arrives when the decorator runs.
+            # A bare `@Base.register_polymorph` needs no help -- there the
+            # class is already `target`.
+            def register(sub: type) -> type:
+                return cls.register_polymorph(
+                    sub, on=on, priority=priority, **constraints
+                )
+            return register
         options = getattr(cls, _OPTIONS, None)
         if options is None or not options.polymorphic:
             raise TypeError(
