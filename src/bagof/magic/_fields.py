@@ -112,6 +112,7 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     'alias',            # Alternative names for this field.
     'property',         # Forwarding attribute names and access modes.
     '_declared',        # What the field asked for (bookkeeping for override).
+    '_narrowed_by',     # Which constraints narrowed it (bookkeeping).
 )
 class Field(SlotsBase):
     """A single field in a Magic class.
@@ -440,12 +441,12 @@ class Field(SlotsBase):
         return new
 
     def __repr__(self) -> str:
-        # Omit the two bookkeeping slots from repr: they are internal to
-        # `override` and rebuild-on-substitution, and would only make
-        # every repr longer.
+        # Omit the bookkeeping slots from repr: they are internal to
+        # `override`, rebuild-on-substitution and narrowing, and would
+        # only make every repr longer.
         shown = (
             slot for slot in self._slots()
-            if slot not in ("_declared", "_derived")
+            if slot not in ("_declared", "_derived", "_narrowed_by")
             and getattr(self, slot, MISSING) is not MISSING
         )
         params = ", ".join(

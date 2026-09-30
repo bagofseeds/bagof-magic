@@ -156,9 +156,11 @@ class _Spec:
         #: A validator enforcing this constraint, chained onto a narrowed
         #: field; `None` when there is nothing to enforce (a bare `...`).
         self.validate = validate
-        #: Every value this constraint accepts, when there are finitely
+        #: The values this constraint can accept, when there are finitely
         #: many and they are known (a set), sorted by repr; `None`
-        #: otherwise. An exact value is held in `value` instead.
+        #: otherwise. An exact value is held in `value` instead. A
+        #: combination with a callable keeps the values the callable
+        #: has yet to be asked about.
         self.members = members
         #: The constraints as they were written that this one is the
         #: conjunction of -- just itself, for one that was written.
@@ -348,6 +350,12 @@ def check_fields(
             )
 
 
+def has_fields(owner: type, specs: tx.Iterable[_Spec]) -> bool:
+    """Whether `owner` has every field `specs` constrains."""
+    table = getattr(owner, _FIELDS)
+    return all(spec.name in table for spec in specs)
+
+
 # ----------------------------------------------------------------------
 # Combining what several classes stand for
 # ----------------------------------------------------------------------
@@ -372,7 +380,8 @@ def conjoin(
     constraints with it -- and counts once. A combination that provably
     no value satisfies is refused here, when the class is written: two
     different exact values, or a value (or every value of a set) that
-    the other side turns down.
+    the other side's value, set, pattern or type turns down. A callable
+    is never asked at this point: it is combined, and asked at run time.
     """
     merged: tx.Dict[str, tx.Tuple[_Spec, tx.List[str]]] = {}
     sources = [("its own on=", own)]
@@ -427,15 +436,24 @@ def _both(
     source: str,
 ) -> _Spec:
     # One constraint asking for both `first` and `second`.
+    #
+    # When one side accepts finitely many known values, each is put to
+    # the other side's constraints -- but only to the ones that can be
+    # asked at build time: an exact value, a set, a pattern or a type. A
+    # question the author wrote as a callable may depend on state that
+    # is only there at run time, so it is combined and left to be asked
+    # then, and never used to refuse the class or to drop a value.
     candidates, other = _candidates(first), second
     if candidates is None:
         candidates, other = _candidates(second), first
-    survivors = None
+    members = candidates
     if candidates is not None:
-        survivors = tuple(
-            value for value in candidates if other.matches(value)
+        judges = [part for part in other.parts if part.precision > _LOOSE]
+        members = tuple(
+            value for value in candidates
+            if all(judge.matches(value) for judge in judges)
         )
-        if not survivors:
+        if not members:
             name = first.name
             raise TypeError(
                 f"Nothing can build {clsname}: it stands for "
@@ -450,7 +468,14 @@ def _both(
         else second if second.value is not MISSING
         else None
     )
-    members = survivors if exact is None else None
+    if exact is not None:
+        members = None
+    # Two equal exact values say one thing, and read as it once.
+    text = (
+        first.text
+        if first.value is not MISSING and second.value is not MISSING
+        else f"{first.text} and {second.text}"
+    )
     first_matches, second_matches = first.matches, second.matches
     first_validate, second_validate = first.validate, second.validate
 
@@ -464,7 +489,7 @@ def _both(
         ),
         max(first.precision, second.precision),
         MISSING if exact is None else exact.value,
-        f"{first.text} and {second.text}",
+        text,
         _conjoined_type(first, second, exact, members),
         validate,
         members,
@@ -700,6 +725,7 @@ class _Polymorph:
         priority: int,
         depth: int,
         respell: tx.Optional[_Plan] = None,
+        ranked: tx.Optional[tx.Tuple[_Spec, ...]] = None,
     ) -> None:
         self.target = target
         self.specs = specs
@@ -709,10 +735,18 @@ class _Polymorph:
         #: constraints are, then how far down the class hierarchy the
         #: subclass sits -- so refining an existing subclass does not
         #: need a narrower `on=`.
+        #:
+        #: The claim measured is `ranked`, everything the subclass
+        #: stands for -- what it registered and what the registered
+        #: classes above it stand for -- rather than `specs`, the part
+        #: of it this owner has left to check. Two subclasses reaching
+        #: one owner along different paths may have left different
+        #: amounts to check, and only the whole claim compares fairly.
+        claim = specs if ranked is None else ranked
         self.rank = (
             priority,
-            len(specs),
-            sum(spec.precision for spec in specs),
+            len(claim),
+            sum(spec.precision for spec in claim),
             depth,
         )
         #: How the owner re-spells the call to build this subclass, or
@@ -781,11 +815,12 @@ class _Registry:
         target: type,
         specs: tx.Tuple[_Spec, ...],
         priority: int,
+        ranked: tx.Optional[tx.Tuple[_Spec, ...]] = None,
     ) -> None:
         """Have `owner` build `target` for the arguments `specs` describe."""
         entry = _Polymorph(
             target, specs, priority, target.__mro__.index(owner),
-            _delegation_plan(owner, target, specs),
+            _delegation_plan(owner, target, specs), ranked,
         )
         entries = _replacing(self.dispatch[0], entry)
         self.dispatch = (
@@ -845,8 +880,8 @@ class _Parameterised:
     they stand at the call.
     """
 
-    __slots__ = ("cls", "origin", "arguments", "invariant", "strict",
-                 "required", "inherited", "view")
+    __slots__ = ("cls", "origin", "arguments", "strict", "unarmed",
+                 "inherited", "view", "rule", "checked")
 
     def __init__(
         self,
@@ -859,15 +894,47 @@ class _Parameterised:
         self.cls = cls
         self.origin = origin
         self.arguments = arguments
-        self.invariant = None
         self.strict = strict
-        self.required = required
+        #: Whether to refuse when nothing has registered, for as long as
+        #: the origin has no registry of its own to say so.
+        self.unarmed = required
+        #: The origin's invariant this class's was worked out from, and
+        #: this class's -- kept for the same reason as the view below.
+        self.rule = None
+        self.checked = None
         #: The origin's entries this view was made from, and the view
         #: itself. The origin publishes its entries in a single
         #: assignment, so holding on to that tuple is enough to tell
         #: that nothing has registered since.
         self.inherited = None
         self.view = None
+
+    @property
+    def required(self) -> bool:
+        # Read off the origin on every call, like the entries: the origin
+        # stops being required when it is registered by hand, which can
+        # happen after this class was built.
+        found = self.origin.__dict__.get(_POLYMORPHS)
+        return self.unarmed if found is None else found.required
+
+    @property
+    def invariant(self) -> tx.Optional[tx.Tuple]:
+        # The origin's own constraints, with where each field arrives
+        # worked out against this class. Read live for the same reason
+        # `required` is, and worked out again only when the origin's
+        # changes.
+        found = self.origin.__dict__.get(_POLYMORPHS)
+        rule = None if found is None else found.invariant
+        if rule is None:
+            return None
+        if rule is not self.rule:
+            specs = rule[0]
+            self.checked = (
+                specs,
+                discriminants(self.cls, [spec.name for spec in specs]),
+            )
+            self.rule = rule
+        return self.checked
 
     @property
     def dispatch(self) -> tx.Tuple:
@@ -919,13 +986,10 @@ def arm_parameterised(
         # stay as buildable as `Sub` is, and only `Sub` carries the
         # registration that says so.
         strict, required = found.strict, found.required
-    made = _Parameterised(cls, origin, arguments, strict, required)
-    if found is not None and found.invariant is not None:
-        specs = found.invariant[0]
-        made.invariant = (
-            specs, discriminants(cls, [spec.name for spec in specs])
-        )
-    setattr(cls, _POLYMORPHS, made)
+    setattr(
+        cls, _POLYMORPHS,
+        _Parameterised(cls, origin, arguments, strict, required),
+    )
 
 
 #: Either kind of registry: the one an ordinary polymorphic class
@@ -969,6 +1033,7 @@ def mark_registered(
     target: type,
     specs: tx.Tuple[_Spec, ...],
     priority: int,
+    ranked: tx.Tuple[_Spec, ...],
 ) -> None:
     """Record on `target` that it was registered by hand with `owner`.
 
@@ -986,7 +1051,7 @@ def mark_registered(
     """
     if _REGISTRATION in target.__dict__ or _GENERIC_ORIGIN in target.__dict__:
         return
-    setattr(target, _REGISTRATION, ((owner,), specs, priority))
+    setattr(target, _REGISTRATION, ((owner,), specs, priority, ranked))
     found = target.__dict__.get(_POLYMORPHS)
     if found is not None and found.strict:
         found.required = False
@@ -998,8 +1063,13 @@ def register(
     target: type,
     specs: tx.Tuple[_Spec, ...],
     priority: int,
+    ranked: tx.Optional[tx.Tuple[_Spec, ...]] = None,
 ) -> None:
-    """Have `owner` build `target` for the arguments `specs` describe."""
+    """Have `owner` build `target` for the arguments `specs` describe.
+
+    `ranked` is everything `target` stands for, which is what its rank
+    among the other candidates is measured on; `specs` when left out.
+    """
     if not (isinstance(target, type) and issubclass(target, owner)):
         raise TypeError(
             f"{owner.__name__} can only build its own subclasses, and "
@@ -1024,7 +1094,7 @@ def register(
             f"priority is a whole number: the subclass with the highest "
             f"one wins when two match equally well."
         )
-    registry(owner).add(owner, target, specs, priority)
+    registry(owner).add(owner, target, specs, priority, ranked)
 
 
 # ----------------------------------------------------------------------

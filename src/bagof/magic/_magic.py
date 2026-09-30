@@ -183,6 +183,7 @@ from ._polymorph import check as _check_invariant
 from ._polymorph import check_fields as _check_spec_fields
 from ._polymorph import conjoin as _conjoin
 from ._polymorph import delegate as _delegate_polymorph
+from ._polymorph import has_fields as _has_spec_fields
 from ._polymorph import mark_registered as _mark_registered
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
@@ -222,9 +223,9 @@ def __post_new__(cls: type) -> type:
     # will build it.
     registration = cls.__dict__.get(_REGISTRATION)
     if registration is not None:
-        owners, specs, priority = registration
+        owners, specs, priority, claim = registration
         for owner in owners:
-            _register_polymorph(owner, cls, specs, priority)
+            _register_polymorph(owner, cls, specs, priority, claim)
 
     # A class built by filling in a generic's type parameters chooses
     # between the same subclasses the class it came from does, each
@@ -1101,10 +1102,22 @@ def _polymorphic_levels(mro: tx.Sequence[type]) -> tx.List[type]:
     # registers with `Chord`, and the filled-in parameters it was
     # written with are what say that `Chord[int]` builds it and
     # `Chord[str]` does not.
+    #
+    # A Magic class that turns `polymorphic` off is a boundary: the
+    # levels above it are not this chain's to register with, even when
+    # a class further down turns it back on. A class off to the side --
+    # a plain mixin, or `Magic` itself -- is below none of them, and
+    # hides nothing.
+    boundaries = [
+        base for base in mro
+        if _OPTIONS in base.__dict__
+        and not base.__dict__[_OPTIONS].polymorphic
+    ]
     return [
         base for base in mro
         if _GENERIC_ORIGIN not in base.__dict__
         and getattr(getattr(base, _OPTIONS, None), "polymorphic", False)
+        and not any(issubclass(boundary, base) for boundary in boundaries)
     ]
 
 
@@ -1119,18 +1132,15 @@ def _registration_owners(
     # A level that is registered somewhere (a "target") is reached from
     # above by its own registration, so registering with it is enough to
     # be reached from everything above it: each level narrows the choice
-    # by one step. A level that is not (a "pass-through", a subclass
-    # written with no on=) is reached by nothing, so a class below it
-    # registers with it *and* with every level up to the nearest target
-    # -- or up to the root when there is none -- and the root still
-    # reaches it.
+    # by one step. So a level is left out exactly when a target below it
+    # already reaches it. Every other level is an owner: the targets
+    # nearest the class, and the levels no target stands below -- a
+    # plain subclass written with no on=, which nothing reaches, or the
+    # root of a chain with no target in it at all.
     #
-    # In a diamond, the class registers down every branch -- with each
-    # nearest target and the pass-throughs above it -- so that it is
-    # reachable whichever parent is called, and with the root(s) too: at
-    # the root the two parents are siblings that may tie, and only a
-    # registration there, whose constraint covers both of theirs, out-
-    # ranks them.
+    # At the bottom of a diamond, the root(s) are owners too. There the
+    # two parents are siblings that may tie, and only a registration at
+    # the root, whose constraint covers both of theirs, out-ranks them.
     levels = _polymorphic_levels(mro)
     targets = [base for base in levels if _REGISTRATION in base.__dict__]
     nearest = [
@@ -1140,22 +1150,63 @@ def _registration_owners(
             for other in targets
         )
     ]
-    if len(nearest) <= 1:
-        stop = nearest[0] if nearest else None
-        owners = [
-            base for base in levels if stop is None or issubclass(base, stop)
+    owners = [
+        level for level in levels
+        if not any(
+            target is not level and issubclass(target, level)
+            for target in targets
+        )
+    ]
+    if len(nearest) >= 2:
+        owners += [
+            level for level in levels
+            if level not in owners
+            and not _polymorphic_levels(level.__mro__[1:])
         ]
-    else:
-        roots = [
-            base for base in levels
-            if not _polymorphic_levels(base.__mro__[1:])
-        ]
-        owners = [
-            base for base in levels
-            if any(issubclass(base, target) for target in nearest)
-        ]
-        owners += [root for root in roots if root not in owners]
     return owners, targets, nearest
+
+
+def _registered(
+    targets: tx.Iterable[type],
+) -> tx.List[tx.Tuple[type, tx.Tuple]]:
+    # What each of these registered classes stands for, as registered.
+    return [
+        (target, target.__dict__[_REGISTRATION][1]) for target in targets
+    ]
+
+
+def _whole_claim(
+    clsname: str, own: tx.Tuple, targets: tx.Sequence[type]
+) -> tx.Tuple:
+    # Everything a class in a chain stands for: its own constraints and
+    # those of every registered class above it. It registers only its
+    # own, since the classes above have checked theirs by the time it is
+    # reached; the whole claim is what it is ranked on, so that it
+    # compares fairly with a class that registered more of it.
+    if not targets:
+        return own
+    try:
+        return _conjoin(clsname, own, _registered(targets))
+    except TypeError:
+        # A subclass may stand for a value its parent does not. It is
+        # still registered, and reached by calling it directly -- so it
+        # is ranked on what it says itself.
+        return own
+
+
+def _says(spec: tx.Any, own: tx.Sequence) -> bool:
+    # Whether a class said `spec` (or part of it) itself.
+    return any(part is mine for part in spec.parts for mine in own)
+
+
+def _holds(field: Field, spec: tx.Any) -> bool:
+    # Whether a field's own default already satisfies `spec`. A default
+    # built by a factory is not built here to find out.
+    return (
+        field.default is not MISSING
+        and not field.build
+        and spec.matches(field.default)
+    )
 
 
 def _check_discriminants(
@@ -1244,21 +1295,38 @@ def _narrow_discriminants(
     # (override) restores it rather than the option's, and substituting a
     # type variable does not regenerate a plain validator over the field
     # and drop the constraint.
+    #
+    # A constraint combined from several classes (the bottom of a
+    # diamond) is applied one written part at a time, and a part the
+    # field already enforces is skipped: the field here is a copy of one
+    # parent's, which carries what that parent narrowed it to but not
+    # what the other parent did. Which parts a field enforces travels
+    # with it, so no part is ever chained twice.
     for spec in specs:
         field = fields[spec.name]
         if field.name in declared:
             continue
+        done = field._narrowed_by
+        if done is MISSING:
+            done = ()
+        added = [
+            part for part in spec.parts
+            if part.validate is not None
+            and not any(part is known for known in done)
+        ]
+        if not added:
+            continue
         if spec.narrowed is not MISSING:
             field.type = spec.narrowed
-        added = spec.validate
-        if added is None:
-            continue
-        chained = (
-            _chain(field.validator, added)
-            if callable(field.validator)
-            else added
-        )
+        chained = field.validator
+        for part in added:
+            chained = (
+                _chain(chained, part.validate)
+                if callable(chained)
+                else part.validate
+            )
         field._redeclare(validator=chained)
+        field._narrowed_by = tuple(done) + tuple(added)
         field._derived = tuple(
             attr for attr in (field._derived or ()) if attr != "validator"
         )
@@ -1813,6 +1881,7 @@ def __pre_new__(
         speaks
         or (options.polymorphic and _GENERIC_ORIGIN not in namespace)
     )
+    reachable = []
     if speaks or composes:
         if not owners:
             raise TypeError(
@@ -1822,30 +1891,48 @@ def __pre_new__(
                 f"should -- `class Chord(Magic, polymorphic=True)`."
             )
         own = _specifications(clsname, on if speaks else {})
-        specs = own
         if diamond:
-            specs = _conjoin(clsname, own, [
-                (target, target.__dict__[_REGISTRATION][1])
-                for target in targets
-            ])
-        for owner in owners:
-            _check_spec_fields(owner, clsname, specs)
+            specs = claim = _conjoin(clsname, own, _registered(targets))
+        else:
+            specs, claim = own, _whole_claim(clsname, own, targets)
+        # An owner that does not have every field the class stands for
+        # cannot read those fields when it is called, so it is left out:
+        # the class is still reached through the owners that can. Only
+        # when none can is that an error -- and then only for a class
+        # that said what it stands for; one that merely combines its
+        # parents is left out of the choice.
+        reachable = [
+            owner for owner in owners if _has_spec_fields(owner, specs)
+        ]
+        if speaks and not reachable:
+            _check_spec_fields(owners[0], clsname, specs)
+    if reachable:
         namespace[_REGISTRATION] = (
-            tuple(owners),
+            tuple(reachable),
             specs,
             0 if priority is MISSING else priority,
+            claim,
         )
-        # Pinning and narrowing apply what this class says itself. What
-        # it inherits was applied on the classes that said it, and the
-        # fields here are copies of theirs.
+        # Pinning and narrowing apply what this class stands for. In a
+        # chain that is what it says itself. At the bottom of a diamond
+        # it includes what its parents say, and each field here is a
+        # copy of one parent's -- which honours that parent's pin and
+        # narrowing but not the other's -- so what a field already
+        # honours is skipped, and the rest is applied the way this
+        # class's own `pin_discriminant` says.
         storage, narrow = _PIN_ACTIONS[options.pin_discriminant]
         if storage != "keep":
             pinned.update(_pin_discriminants(
-                fields, namespace, cls_annotations, own,
+                fields, namespace, cls_annotations,
+                [
+                    spec for spec in specs
+                    if _says(spec, own)
+                    or not _holds(fields[spec.name], spec)
+                ],
                 storage, options.mutable_default,
             ))
         if narrow:
-            _narrow_discriminants(fields, cls_annotations, own)
+            _narrow_discriminants(fields, cls_annotations, specs)
         # A discriminant this class redeclares with a default of its own
         # is pinned too, as far as the signature is concerned: a required
         # parameter behind it needs the same sentinel a registration's
@@ -1856,7 +1943,7 @@ def __pre_new__(
         pinned.update(
             spec.name for spec in own if spec.name in cls_annotations
         )
-        for owner in owners:
+        for owner in reachable:
             _check_discriminants(clsname, owner, fields, specs)
 
     # A subclass that declares the field again, with no default of its
@@ -3846,6 +3933,10 @@ class MetaMagic(ABCMeta):
         affects what is built later; instances that already exist are
         untouched. Only this class builds `target`; a subclass of
         `target` written afterwards with `on=` is reached through it.
+        A subclass written *before* this call was placed as things
+        stood when it was written, so register a class before writing
+        its subclasses. A strict `target` refuses a direct call that
+        contradicts the first registration made for it.
 
         Leave `target` out to use it as a decorator on the class
         statement, which registers the class and hands it back:
@@ -3905,15 +3996,23 @@ class MetaMagic(ABCMeta):
         # rule a `class Sub(Base, on=...)` statement does, so a target
         # that neither takes a discriminant nor holds a value it accepts
         # is refused here rather than building the wrong class quietly.
+        claim = specs
         if isinstance(target, type) and issubclass(target, owner):
             _check_discriminants(
                 target.__name__, owner, getattr(target, _FIELDS), specs
             )
+            # Ranked on everything it stands for, as a class statement
+            # is: what it is registered for here, and what the
+            # registered classes above it stand for.
+            claim = _whole_claim(
+                target.__name__, specs,
+                _registration_owners(target.__mro__[1:])[1],
+            )
         # Only with `owner`: the hand path registers exactly where it is
         # called. The record it leaves on `target` is what lets a later
         # subclass of `target` register with it.
-        _register_polymorph(owner, target, specs, priority)
-        _mark_registered(owner, target, specs, priority)
+        _register_polymorph(owner, target, specs, priority, claim)
+        _mark_registered(owner, target, specs, priority, claim)
         return target
 
 
