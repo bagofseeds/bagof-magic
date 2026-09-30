@@ -62,6 +62,9 @@ If you prefer a decorator:
 - **A field can accept several input names**, and expose forwarding
   properties under other names. See
   [Input aliases and forwarding properties][aliases].
+- **A required field can follow one with a default**, so a subclass can
+  add one to a base whose fields all have defaults. See
+  [Field annotations][fields].
 - Also included: dict-like instances, `replace`/`asdict`/`astuple`,
   mutable defaults that aren't shared, hooks around construction, generic
   classes, and docstrings generated from the fields. See [Extras][extras].
