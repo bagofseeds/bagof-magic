@@ -167,6 +167,14 @@ An `on=` of its own adds to what the two parents ask for; it can narrow the
 choice, never widen it. When both parents match equally well, the class
 below them settles it, because it asks for more than either.
 
+A value either parent pins becomes a default of the combined class too,
+stored the way the combined class's own `pin_discriminant` says:
+
+```pycon
+>>> OrientedSpatialAxis("z", direction="up").unit
+'metre'
+```
+
 Two parents that cannot both hold, such as two different values for one
 field, make a class nothing could ever build. It is refused when it is
 written:

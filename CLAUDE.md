@@ -139,7 +139,9 @@ Tests that exercise internals import them from the module that defines them
   directly (`field.factory = False`, `_redeclare(factory=...)`), never the
   property. `_declared` (what the field asked for, for `override`) and
   `_derived` (which callables came from the type, for rebuild-on-substitution)
-  are private bookkeeping — not constructor arguments, kept out of repr.
+  are private bookkeeping — not constructor arguments, kept out of repr —
+  and so is `_narrowed_by` (which written constraints a field's
+  validator already enforces; see "Registration owners").
 
 ### Reading annotations
 
@@ -383,48 +385,80 @@ Two things that follow, and are tested:
   the reader the wrong way. `select` carries the left-out entries
   alongside the candidates for exactly that message.
 
-**Registration owners.** `_REGISTRATION` is `(owners, specs, priority)`,
-and `__post_new__` registers the class with every owner, in MRO order.
-`_registration_owners` works them out from the polymorphic ancestors
-the author wrote (parameterisations skipped): a *target* is one that
-carries its own `_REGISTRATION`, a *pass-through* one that does not.
+**Registration owners.** `_REGISTRATION` is `(owners, specs, priority,
+claim)`, and `__post_new__` registers the class with every owner, in MRO
+order. `_registration_owners` works them out from the *levels*: the
+polymorphic ancestors the author wrote (parameterisations skipped, and
+nothing above a Magic class that turns `polymorphic` off -- that class
+is a boundary; a plain mixin off to the side is not). A *target* is a
+level that carries its own `_REGISTRATION`, a *pass-through* one that
+does not.
 
-- **In a chain** the owners are every level up to and including the
-  nearest target, or up to the root when there is none. A target is
-  reached from above by its own registration, so stopping there keeps
-  one hop per level; a pass-through is reached by nothing, so a class
-  below it registers past it as well -- otherwise `Foo(kind=...)` could
-  never reach `FooBar` through a plain `Bar(Foo)`. A chain class with
-  no `on=` stays unregistered, as it always was.
-- **In a diamond** (two nearest targets, one per branch) the class is
+- **Owners.** A level is left out exactly when a target strictly below
+  it (among the class's ancestors) reaches it; every other level is an
+  owner. In a chain that is every level up to and including the
+  nearest target, or up to the root when there is none -- one hop per
+  registered level as before, while a pass-through, which nothing
+  reaches, is registered past: otherwise `Foo(kind=...)` could never
+  reach `FooBar` through a plain `Bar(Foo)`. A plain branch beside a
+  registered one (`X(P, SB)`) keeps both. A chain class with no `on=`
+  stays unregistered, as it always was.
+- **Diamonds** (two nearest targets, one per branch). The class is
   registered even with no `on=`, standing for its own `on=` combined by
-  `conjoin` with every target ancestor's specs. The owners are every
-  level down each branch to its nearest target, *plus the root(s)*.
-  All the parents make it reachable from either branch -- a priority on
-  one branch would otherwise send the call where the class is not. The
-  root is needed as well to break ties: two siblings matching equally
-  well at the root raise before anything descends, and only an entry at
-  the root whose constraint covers both of theirs out-ranks them.
+  `conjoin` with every target ancestor's registered specs, and the
+  root(s) are owners as well as the branches. All the parents make it
+  reachable from either branch -- a priority on one branch would
+  otherwise send the call where the class is not. The root breaks ties:
+  two siblings matching equally well at the root raise before anything
+  descends, and only an entry at the root whose constraint covers both
+  of theirs out-ranks them.
+- **An owner that lacks a field the specs name is dropped** -- the whole
+  owner, since it could not read that field when called. If none is
+  left, a class that wrote `on=` gets the "not a field of" error
+  naming the nearest level; one that only combines its parents is left
+  unregistered without a word (two unrelated roots, say).
 - **`conjoin`** merges per field and never uses the MRO to drop a side:
   a value has to satisfy all of it. `_Spec.parts` holds the written
   specs a merged one came from, so one reaching the merge along two
-  branches (a diamond of diamonds) counts once by identity. A merge
-  that is provably empty -- unequal exact values, a value outside a
-  set, disjoint sets, a value or every member of a set failing the
-  other side's `matches` -- is refused at class creation. Everything
-  else is left to run time. Pinning and narrowing apply to a class's
-  *own* specs only; the inherited ones were applied by the classes that
-  said them, and re-applying would chain a validator twice.
+  branches (a diamond of diamonds) counts once by identity. A merge is
+  refused at class creation when it is provably empty -- unequal exact
+  values, a value outside a set, disjoint sets, a value or every member
+  of a set that the other side's exact value, set, pattern or type
+  turns down. A callable is never asked at build time (it may depend on
+  state that only exists at run time): it is combined and left to run
+  time, and `members` keeps the values it has yet to be asked about.
+- **Pinning and narrowing apply to the composed specs.** A diamond's
+  fields are merged the `dataclasses` way, so each is a copy of *one*
+  parent's -- the MRO-first parent that has it -- and carries that
+  parent's pin and narrowing but not the other's. So the registration
+  block pins a composed spec unless the class said it itself or the
+  field's non-factory default already satisfies it, under the class's
+  *own* `pin_discriminant`; and `_narrow_discriminants` chains each
+  written part a field does not already enforce, which
+  `Field._narrowed_by` records and every copy carries. In a chain the
+  specs are the class's own, so neither changes anything there.
+- **Rank is measured on the whole claim.** A chain class registers only
+  its own specs (the classes above have checked theirs by the time it
+  is reached), while a diamond registers the combination -- so a
+  diamond entry would out-count a chain sibling that says just as much.
+  `claim` is everything the class stands for (`_whole_claim`: its own
+  conjoined with every target ancestor's), and `_Polymorph.rank` uses
+  it; matching, the delegation plan and `_check_discriminants` keep
+  using the registered specs. A chain child that contradicts its parent
+  (`T(S, on={"a": "q"})` under `S(on={"a": "x"})`) is still registered
+  and reached by calling `S` directly, and is ranked on its own specs.
 - **`on=None`** stands for nothing: never registered, even in a
   diamond (the escape hatch for a contradiction), and a pass-through to
   anything below it. `priority=` with it is refused.
 - **`register_polymorph`** registers only with the class it is called
-  on, then writes `((owner,), specs, priority)` onto a target that has
-  no record, so a later `class X(Target, on=...)` sees a target rather
-  than a pass-through. Writing it also disarms a strict target's
-  "required" flag and sets its invariant, as `arm` does for a class
-  statement -- without that, a strict leaf registered by hand refused
-  to be built at all.
+  on, then writes `((owner,), specs, priority, claim)` onto a target
+  that has no record, so a later `class X(Target, on=...)` sees a
+  target rather than a pass-through. Writing it also disarms a strict
+  target's "required" flag and sets its invariant, as `arm` does for a
+  class statement -- without that, a strict leaf registered by hand
+  refused to be built at all. A parameterisation reads `required` and
+  `invariant` off its origin's registry on every call (like `dispatch`),
+  so one built before the hand registration follows it too.
 
 ## Conventions specific to this repo (do not regress)
 
