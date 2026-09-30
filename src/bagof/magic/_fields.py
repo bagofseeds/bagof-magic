@@ -37,6 +37,8 @@ __all__ = [
     "NotKey",
     "Doc",
 ]
+import difflib
+
 import typing_extensions as tx
 
 from ._aliases import (
@@ -211,7 +213,22 @@ class Field(SlotsBase):
         ----------------
         compare : bool, optional
             Shorthand for setting both `eq` and `order` at once.
+        kw_only : bool, optional
+            The `dataclasses` spelling. `kw_only=True` makes the field
+            keyword-only, as the `KwOnly` annotation does. `kw_only=False`
+            lets it be passed by position or by keyword, whatever the
+            class says.
+        default_factory : Callable[[], any], optional
+            The `dataclasses` spelling of `factory`: called to build a
+            fresh default for each instance.
+
+        Raises
+        ------
+        TypeError
+            When given a keyword not listed here, or both `factory` and
+            `default_factory`.
         """
+        _check_keywords(type(self), kwargs)
         # The positional argument lets Field act as the opposite of Var.
         if arg and arg[0] is not MISSING:
             kwargs["var"] = not arg[0]
@@ -224,7 +241,7 @@ class Field(SlotsBase):
             if flag in kwargs:
                 kwargs.setdefault(call, kwargs.pop(flag))
         # `compare` sets both `eq` and `order` at once.
-        compare = kwargs.get("compare", MISSING)
+        compare = kwargs.pop("compare", MISSING)
         if compare is not MISSING:
             kwargs.setdefault("eq", compare)
             kwargs.setdefault("order", compare)
@@ -237,6 +254,20 @@ class Field(SlotsBase):
         if init is not MISSING:
             kwargs.setdefault("kw", init)
             kwargs.setdefault("positional", init)
+        # `kw_only=` (the `dataclasses` spelling) sets the same pair:
+        # keyword-only, or positional-or-keyword. `init=False` wins.
+        kw_only = kwargs.pop("kw_only", MISSING)
+        if kw_only is not MISSING:
+            kwargs.setdefault("kw", True)
+            kwargs.setdefault("positional", not kw_only)
+        # `default_factory=` (the `dataclasses` spelling) is `factory=`.
+        if "default_factory" in kwargs:
+            if "factory" in kwargs:
+                raise TypeError(
+                    "A field takes factory= or default_factory=, not both:"
+                    " they are two spellings of the same thing."
+                )
+            kwargs["factory"] = kwargs.pop("default_factory")
         if "alias" in kwargs:
             kwargs["alias"] = alias_option(kwargs["alias"])
         if "property" in kwargs:
@@ -596,6 +627,36 @@ _FLAG_TO_CALL = {
 }
 
 
+#: The keywords `Field` takes that are not the name of one of its
+#: attributes, each folded onto one or more attributes in `__init__`.
+#: Together with the attributes they are what a field accepts.
+_KEYWORDS = (
+    "build", "compare", "convert", "default_factory", "init", "kw_only",
+    "validate",
+)
+
+
+def _check_keywords(
+    cls: tx.Type[Field], kwargs: tx.Mapping[str, tx.Any], owner: str = ""
+) -> None:
+    # Refuse a keyword a field does not take, naming it and what it could
+    # have been. The bookkeeping attributes (a leading underscore) are
+    # set by assignment inside the package, never through the constructor.
+    accepted = sorted(
+        {slot for slot in cls._slots() if not slot.startswith("_")}
+        | set(_KEYWORDS)
+    )
+    for name in kwargs:
+        if name not in accepted:
+            close = difflib.get_close_matches(name, accepted, n=1)
+            hint = f" Did you mean {close[0]!r}?" if close else ""
+            raise TypeError(
+                f"{owner or cls.__name__}() got an unexpected keyword"
+                f" argument {name!r}.{hint}"
+                f" A field accepts: {', '.join(accepted)}."
+            )
+
+
 def _stored(obj: tx.Any, field: Field) -> tx.Tuple[bool, tx.Any]:
     """Return (has_value, value) for a field on an object.
 
@@ -619,13 +680,16 @@ def field(**kwargs: tx.Any) -> tx.Any:
         name: str
         tags: list = field(factory=list)
         token: str = field(default="", repr=False)
+        retries: int = field(default=0, kw_only=True)
     ```
 
-    Takes the same arguments as `Field` and produces the same object.
+    Takes the same arguments as `Field` and produces the same object,
+    and refuses a keyword it does not know.
     The difference is for type checkers: `field(...)` declares its
     return type as the annotated type, so `tags: list = field(...)` reads
     cleanly. `Field(...)` in that position also works.
     """
+    _check_keywords(Field, kwargs, "field")
     return Field(**kwargs)
 
 

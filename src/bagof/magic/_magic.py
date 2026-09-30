@@ -752,21 +752,6 @@ def _resolve_string_annotations(
     return resolved
 
 
-class _BadSignature(SyntaxError):
-    """A field layout that cannot produce an `__init__` signature."""
-
-
-def _unbuildable_init(clsname: str, reason: str) -> tx.Callable:
-    """Stand-in for an `__init__` this class's fields cannot describe."""
-
-    def __magic_init__(self: tx.Self, *args, **kwargs) -> tx.NoReturn:
-        raise TypeError(
-            f"no __init__ could be generated for {clsname}: {reason}"
-        )
-
-    return __magic_init__
-
-
 def _no_order(self: tx.Self, other: tx.Any) -> tx.Any:
     """Take the place of an ordering method a subclass turned off.
 
@@ -2016,33 +2001,17 @@ def __pre_new__(
     direct_assign = _direct_assignment(options, fields, bases) and not (
         "__setattr__" in namespace or "__delattr__" in namespace
     )
-    try:
-        init_kwargs, sentinels, alias_params, alias_defaults = _make_init(
-            fields, prepost, clsname, options,
-            {fields[name].public_name for name in pinned},
-            direct_assign,
-        )
-    except _BadSignature as error:
-        if init_name:
-            raise
-        # This class does not want an `__init__`, so being unable to
-        # build one must not stop the class being created. It still gets
-        # its own `__magic_init__`, one that explains the problem if it
-        # is ever called -- without it, `self.__magic_init__(...)` would
-        # quietly find a base class's version and set the wrong fields.
-        init_kwargs, sentinels, alias_params, alias_defaults = None, (), (), {}
-        namespace.setdefault(
-            _MAGIC("init"), _unbuildable_init(clsname, str(error))
-        )
-    if init_kwargs is not None:
-        fnbuilder.add_fn(
-            name=_MAGIC("init"),
-            overwrite_error=(
-                f"-- define {init_name or '__init__'!r} instead and call it "
-                f"from there"
-            ),
-            **init_kwargs
-        )
+    init_kwargs, sentinels, alias_params, alias_defaults = _make_init(
+        fields, prepost, clsname, options, direct_assign,
+    )
+    fnbuilder.add_fn(
+        name=_MAGIC("init"),
+        overwrite_error=(
+            f"-- define {init_name or '__init__'!r} instead and call it "
+            f"from there"
+        ),
+        **init_kwargs
+    )
 
     # TODO
     # _set_new_attribute(cls, '__replace__', _replace)
@@ -2152,29 +2121,29 @@ def __pre_new__(
     # `__magic_init__` has been compiled by now. Give it the name people
     # will see -- it appears in error messages and tracebacks -- and
     # bind the public name to the same function if the class wants one.
-    magic_init = namespace.get(_MAGIC("init"))
-    if magic_init is not None and init_kwargs is not None:
-        # When the class asked for no `__init__`, the only name this is
-        # reachable by is the private one, so that is what it is called.
-        magic_init.__name__ = init_name or _MAGIC("init")
-        magic_init.__qualname__ = (
-            f"{qualname or clsname}.{magic_init.__name__}"
-        )
-        # Before Python 3.10 the interpreter words "missing a required
-        # argument" from the compiled code object rather than from the
-        # function, so that has to be renamed too -- otherwise the error
-        # names the private method on the older versions.
-        magic_init.__code__ = magic_init.__code__.replace(
-            co_name=magic_init.__name__
-        )
-        # The alias parameters are compiled into `__init__`, so its
-        # signature is curated here to hide them and show each preferred
-        # name's real default in place of the marker it carries.
-        _show_real_signature(magic_init, sentinels, alias_params,
-                             alias_defaults)
-        if init_name and init_name not in namespace:
-            namespace[init_name] = magic_init
-            generated[init_name] = "init"
+    magic_init = namespace[_MAGIC("init")]
+    # When the class asked for no `__init__`, the only name this is
+    # reachable by is the private one, so that is what it is called.
+    magic_init.__name__ = init_name or _MAGIC("init")
+    magic_init.__qualname__ = (
+        f"{qualname or clsname}.{magic_init.__name__}"
+    )
+    # Before Python 3.10 the interpreter words "missing a required
+    # argument" from the compiled code object rather than from the
+    # function, so that has to be renamed too -- otherwise the error
+    # names the private method on the older versions.
+    magic_init.__code__ = magic_init.__code__.replace(
+        co_name=magic_init.__name__
+    )
+    # Some compiled parameters carry a stand-in -- the alias marker, a
+    # default behind a marker, the sentinel of a required parameter
+    # that follows a defaulted one -- so the signature people read is
+    # put right here.
+    _show_real_signature(magic_init, sentinels, alias_params,
+                         alias_defaults)
+    if init_name and init_name not in namespace:
+        namespace[init_name] = magic_init
+        generated[init_name] = "init"
 
     # `__init__` is bound above by hand rather than through `_install`,
     # since it is compiled rather than closed over, so the part of
@@ -2214,11 +2183,11 @@ def _show_real_signature(
     Three of them stand in for something. A field whose default skips
     conversion or validation carries that default behind a marker, so
     that the body can tell "not passed" from a caller who passed the
-    same value; a parameter with no default at all, sitting behind
-    one that has a default -- which a pinned discriminant can leave
-    behind it, and which Python's own syntax cannot write -- carries a
-    sentinel saying so; and an aliased field's parameters carry the alias
-    marker, with the extra names present only to be passed, not read.
+    same value; a positional parameter with no default at all, sitting
+    behind one that has a default -- which Python's own syntax cannot
+    write -- carries a sentinel saying so; and an aliased field's
+    parameters carry the alias marker, with the extra names present only
+    to be passed, not read.
 
     None of it is anything a reader should meet. `help`, an editor's
     tooltip and `Signature.bind` all go by the signature, and would show
@@ -2603,7 +2572,6 @@ def _make_init(
     prepost: tx.Mapping[str, bool],
     clsname: str,
     options: Options,
-    pinned: tx.Container[str] = (),
     direct_assign: bool = False,
 ) -> tx.Tuple[dict, tx.Set[str]]:
 
@@ -2671,15 +2639,16 @@ def _make_init(
         if field.public_name == "self":
             SELF = _SELF
 
-    # Pinning a field, and aliasing one, both give a parameter a default
-    # it was not written with -- `MinorChord(mode="minor", root)`, which
-    # Python's syntax has no way to write, and the alias marker an aliased
-    # parameter carries. Either can leave a parameter without a default
-    # behind one that has one. Those trailing parameters are given a
-    # sentinel default instead, and the body turns a sentinel that is
-    # still there back into the usual "missing a required argument". Two
-    # hand-written fields in that order, neither pinned nor aliased, are
-    # still refused, with the error that says so.
+    # A positional parameter with no default can come after one that has
+    # a default -- `C(x=0, y)`, which Python's syntax has no way to write.
+    # The default may be one the field was written with, a factory, a
+    # discriminant a registration pinned, or the marker an aliased
+    # parameter carries. Every such trailing parameter is given a sentinel
+    # default instead, and the body turns a sentinel that is still there
+    # back into the usual "missing a required argument". Arguments still
+    # fill the parameters left to right, as in any other function. A
+    # class whose required parameters all come first compiles no
+    # sentinel and no check.
     required = set()
     # An aliased field with no default of its own carries the alias marker
     # and is restored to the required sentinel, so the missing-argument
@@ -2687,11 +2656,11 @@ def _make_init(
     for field in fields.values():
         if _aliased(field) and field.default is MISSING and not field.build:
             required.add(field.public_name)
-    after_synthetic = False
+    after_default = False
     for field in list(positional_onlys.values()) + list(args.values()):
-        if field.public_name in pinned or _aliased(field):
-            after_synthetic = True
-        elif after_synthetic and field.default is MISSING and not field.build:
+        if field.default is not MISSING or field.build or _aliased(field):
+            after_default = True
+        elif after_default:
             required.add(field.public_name)
 
     def _skipped(field: Field) -> tx.Tuple[bool, bool]:
@@ -2748,25 +2717,6 @@ def _make_init(
         doc = _make_doc_elem(field, name)
         return signature, doc
 
-    def _check_signature(signature: tx.List[str]) -> None:
-        has_default = False
-        for elem in signature:
-            if elem == "*":
-                break
-            if elem == "/":
-                continue
-            if "=" in elem:
-                has_default = True
-            elif has_default:
-                # `elem` is the generated "<name>: <type local>" text, and
-                # the type local is an internal name a user never wrote.
-                # Name the field instead -- everything before the colon.
-                name = elem.split(":", 1)[0].strip()
-                raise _BadSignature(
-                    f"parameter without a default follows parameter with a "
-                    f"default: {name}"
-                )
-
     def _alias_param_elems() -> tx.List[str]:
         # Every extra name a field accepts, as a keyword-only parameter
         # defaulting to the alias marker. Only a keyword-able field has
@@ -2803,8 +2753,6 @@ def _make_init(
         signature.append(signature_elem)
         doc.append(doc_elem)
     signature.extend(alias_elems)
-
-    _check_signature(signature)
 
     parameters = list(positional_onlys.values())
     parameters += list(args.values())
@@ -3008,7 +2956,13 @@ def _make_init(
     # nothing a default would have built or unwrapped can fail first
     # and report something else instead.
     body = [_make_alias_prelude(field) for field in aliased]
-    body += [_make_required_elem(name) for name in sorted(required)]
+    # In parameter order, so the one reported is the first the caller
+    # left out.
+    body += [
+        _make_required_elem(field.public_name)
+        for field in parameters
+        if field.public_name in required
+    ]
     body += [_make_unpack_elem(field) for field in parameters]
     if _PRE_INIT_NAME in prepost:
         body.append(_make_prepost_call(_PRE_INIT_NAME))
@@ -3908,9 +3862,10 @@ class MetaMagic(ABCMeta):
                     if written is getattr(object, name, None):
                         continue
                     found = signature(written)
-                    # Not `replace`, which checks the result: a pinned
-                    # discriminant makes a signature Python's own
-                    # syntax cannot write, and it is already true.
+                    # Not `replace`, which checks the result: a
+                    # required parameter after a defaulted one is a
+                    # signature Python's own syntax cannot write, and
+                    # it is already true.
                     return Signature(
                         list(found.parameters.values())[1:],
                         return_annotation=found.return_annotation,

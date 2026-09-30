@@ -50,6 +50,36 @@ The annotation form composes naturally. Several annotations stack on one
 field without nesting. The `field(...)` form covers anything the annotations
 cannot say.
 
+`field(...)` also takes the `dataclasses` spellings `kw_only=` and
+`default_factory=`, which mypy and pyright read the same way:
+
+```python
+from bagof.magic import Magic, field
+
+class Job(Magic):
+    command: str
+    env: dict = field(default_factory=dict)
+    retries: int = field(default=0, kw_only=True)
+```
+
+```pycon
+>>> Job("make", retries=2)
+Job(command='make', env={}, retries=2)
+>>> Job("make", {}, 2)
+Traceback (most recent call last):
+  ...
+TypeError: Job.__init__() takes from 2 to 3 positional arguments but 4 were given
+```
+
+A keyword `field(...)` does not know is refused, not ignored:
+
+```pycon
+>>> field(defaults=0)
+Traceback (most recent call last):
+  ...
+TypeError: field() got an unexpected keyword argument 'defaults'. Did you mean 'default'? ...
+```
+
 `Field(...)` is the same thing with a capital letter. Prefer the lowercase
 `field(...)` when using it as a default value: mypy reads
 `tags: list = Field(factory=list)` as assigning a `Field` to a `list` slot,
@@ -131,6 +161,63 @@ Point(a=2, x=1)
 ```
 
 `x` is declared second but becomes the first positional argument.
+
+## A required field after one with a default
+
+A field without a default can follow one that has a default:
+
+```python
+class Server(Magic):
+    host: str = "localhost"
+    port: int
+```
+
+```pycon
+>>> Server(port=8080)
+Server(host='localhost', port=8080)
+>>> Server("example.org", 443)
+Server(host='example.org', port=443)
+>>> Server(8080)
+Traceback (most recent call last):
+TypeError: Server() missing a required argument: 'port'
+```
+
+Positional arguments fill the fields from the left, as in any function
+call. `Server(8080)` sets `host`, so `port` is still missing.
+
+This matters most when a subclass adds a required field to a base whose
+fields all have defaults:
+
+```python
+class Job(Magic):
+    retries: int = 3
+
+class Backup(Job):
+    target: str
+```
+
+```pycon
+>>> Backup(target="/srv")
+Backup(retries=3, target='/srv')
+```
+
+`dataclasses` and `attrs` refuse both classes.
+
+!!! warning "Type checkers apply the stricter rule"
+    mypy and pyright check a `Magic` class by the `dataclasses` rules, so
+    they still report this order as an error, although the class works.
+    For code a checker accepts, make the later fields keyword-only with
+    `kw_only=True` on the class that declares them:
+
+    ```python
+    class Backup(Job, kw_only=True):
+        target: str
+    ```
+
+    ```pycon
+    >>> Backup(target="/srv")
+    Backup(retries=3, target='/srv')
+    ```
 
 Anything you cannot say with one of these, say with `Field(...)` inside an
 `Annotated`: `x: Annotated[int, Field(alias="ex", metadata={"unit": "m"})]`.

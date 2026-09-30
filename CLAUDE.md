@@ -94,6 +94,23 @@ Tests that exercise internals import them from the module that defines them
   dict. The runtime `InputAliases.normalize` remains only for polymorphic
   dispatch, which has to read the arguments by their preferred names before
   `__init__` runs.
+- **A positional parameter without a default may follow one with a
+  default**, for every class -- `x: int = 0` then `y: int`, which `def`
+  cannot write. In `_make_init`, every positional-only or
+  positional-or-keyword parameter with neither a default nor a factory
+  that comes after one with a default (written, a factory, a pinned
+  discriminant, or the alias marker) joins `required`: it is compiled
+  with the `REQUIRED` sentinel as its default, the body turns a sentinel
+  still there into `C() missing a required argument: 'y'` before
+  anything else runs, and `_show_real_signature` shows it as having no
+  default (built with `__validate_parameters__=False`, since `Signature`
+  would refuse the shape). Keyword-only parameters are never touched.
+  Arguments fill parameters left to right, as in any function, so
+  `C(5)` binds `x` and reports `y` missing. A class whose required
+  parameters all come first compiles exactly what it did before -- no
+  sentinel, no check, no `__signature__` -- so nothing is paid for the
+  shape where it is not used. There is no longer a layout `_make_init`
+  refuses, so `__magic_init__` is always compiled, `init=False` or not.
 - **`__eq__`, `__repr__` and the four order comparisons compile their
   field reads** when every field they read is always set -- a constructor
   parameter, or given a default or a factory. Then equality and ordering
@@ -537,6 +554,18 @@ argued the other way:
   standard library doubles it too — and `attrs.evolve` re-runs
   converters the same way. Pydantic's `model_copy` differs, and gives
   the different behaviour a different name.
+
+One deliberate departure, decided by the maintainer against the
+consensus:
+
+- **A required field may follow a defaulted one.** `dataclasses` and
+  `attrs` refuse `x: int = 0; y: int`, and `pydantic` accepts it only
+  because its fields are keyword-only. We accept it positionally: the
+  sentinel machinery already existed, pinned discriminants and aliases
+  already produced the shape, and in an inheritance-heavy, hint-driven
+  library the shape is usually what the author meant. Checkers applying
+  the `dataclasses` rules (mypy, pyright) still flag it; the docs point
+  to `kw_only=True` on the declaring class for checker-clean code.
 
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 

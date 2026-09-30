@@ -75,9 +75,15 @@ class Task(Magic):
     token: str = Field(default="", repr=False)
 
 
+class Named(Magic):
+    name: str = field(kw_only=True)
+    size: int = 0
+
+
 reveal_type(Point.__init__)
 reveal_type(Task.__init__)
 Point("nope", 2.0)
+Named("positional")
 '''
 
 
@@ -141,3 +147,20 @@ class TestACheckerSeesTheConstructor:
         # become equivalent and the docs can stop distinguishing them.
         said = _run_mypy(tmp_path)
         assert 'expression has type "Field"' in said
+
+    def test_kw_only_is_keyword_only_to_mypy(self, tmp_path: Path) -> None:
+        # The run-time half is `test_kw_only_is_keyword_only_when_run`:
+        # the checker and the class have to agree about which calls are
+        # allowed.
+        said = _run_mypy(tmp_path)
+        assert 'Missing named argument "name" for "Named"' in said
+
+
+def test_kw_only_is_keyword_only_when_run() -> None:
+    # What mypy is told about `field(kw_only=True)` in the fixture is
+    # what the class does.
+    namespace: dict = {}
+    exec(textwrap.dedent(FIXTURE).split("reveal_type")[0], namespace)
+    with pytest.raises(TypeError):
+        namespace["Named"]("positional")
+    assert namespace["Named"](name="named").name == "named"
