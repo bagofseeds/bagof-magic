@@ -20,10 +20,19 @@ from typing import Any as TypingAny
 import pytest
 import typing_extensions as tx
 from bagof.converters.exceptions import ConversionError
+from bagof.validators import ValueValidationError
 
 # locals
 import bagof.magic._generics as g
+import bagof.magic._polymorph as p
 from bagof.magic import (
+    CLASSVAR,
+    CLASSVAR_NARROW,
+    KEEP,
+    KEEP_NARROW,
+    NARROW,
+    PIN,
+    PIN_NARROW,
     AmbiguousPolymorphError,
     ClassVar,
     ConvertTo,
@@ -31,8 +40,11 @@ from bagof.magic import (
     KwOnly,
     Magic,
     MetaMagic,
+    Narrow,
     NoInit,
+    NoPin,
     NoPolymorphError,
+    Pin,
     PolymorphError,
     PositionalOnly,
     asdict,
@@ -40,7 +52,13 @@ from bagof.magic import (
     magic,
     replace,
 )
-from bagof.magic._constants import _POLYMORPHS
+from bagof.magic._constants import (
+    _FIELDS,
+    _PINNED,
+    _POLYMORPHS,
+    _REGISTRATION,
+    MISSING,
+)
 
 
 def _entry_for(base: type, target: type) -> object:
@@ -2410,3 +2428,1628 @@ class TestNarrowAndCheckSkips:
         assert Halves(x=1.5).x == 1.5
         with pytest.raises(Exception, match="not a valid"):
             Halves(x=3.5)
+
+
+# ======================================================================
+# Plain intermediates and diamonds
+# ======================================================================
+
+
+class TestIntermediateAndDiamond:
+    """Which classes a subclass registers with, when the hierarchy is
+    not a simple chain of registered classes."""
+
+    # -- a plain intermediate (problem A) --------------------------------
+
+    @pytest.fixture
+    def chain(self) -> tx.Tuple[type, type, type]:
+        class Foo(Magic, polymorphic=True):
+            kind: str = ""
+
+        class Bar(Foo):
+            pass
+
+        class FooBar(Bar, on={"kind": "foobar"}):
+            pass
+
+        return Foo, Bar, FooBar
+
+    def test_the_root_reaches_a_subclass_through_a_plain_intermediate(
+        self, chain: tx.Tuple[type, type, type]
+    ) -> None:
+        Foo, Bar, FooBar = chain
+        assert type(Foo(kind="foobar")) is FooBar
+
+    def test_the_plain_intermediate_still_reaches_it(
+        self, chain: tx.Tuple[type, type, type]
+    ) -> None:
+        Foo, Bar, FooBar = chain
+        assert type(Bar(kind="foobar")) is FooBar
+        assert type(Bar(kind="other")) is Bar
+        assert type(Foo(kind="other")) is Foo
+
+    def test_a_registered_level_above_a_plain_one_is_where_it_stops(
+        self
+    ) -> None:
+        # R -> S (registered) -> P (plain) -> X: X registers with P and
+        # S, and R reaches it through S in two hops, as before.
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class S(R, on={"a": "x"}):
+            pass
+
+        class P(S):
+            pass
+
+        class X(P, on={"b": "y"}):
+            pass
+
+        assert _entry_for(P, X) and _entry_for(S, X)
+        assert X not in [entry.target for entry in R.__dict__[
+            _POLYMORPHS].dispatch[0]]
+        assert type(R(a="x", b="y")) is X
+        assert type(R(b="y")) is R
+        assert type(P(b="y")) is X
+
+    def test_a_linear_subclass_with_nothing_to_say_registers_nowhere(
+        self, chain: tx.Tuple[type, type, type]
+    ) -> None:
+        Foo, Bar, FooBar = chain
+
+        class Quiet(FooBar):
+            pass
+
+        assert _REGISTRATION not in Quiet.__dict__
+        assert type(Foo(kind="foobar")) is FooBar
+
+    def test_a_level_without_the_field_is_skipped(self) -> None:
+        # Foo has no `extra` to read, so FooBar is reached through Bar,
+        # which does.
+        class Foo(Magic, polymorphic=True):
+            kind: str = ""
+
+        class Bar(Foo):
+            extra: str = ""
+
+        class FooBar(Bar, on={"extra": "e"}):
+            pass
+
+        assert FooBar.__dict__[_REGISTRATION][0] == (Bar,)
+        assert type(Bar(extra="e")) is FooBar
+        assert type(Foo(kind="e")) is Foo
+        assert _POLYMORPHS not in Foo.__dict__ or not Foo.__dict__[
+            _POLYMORPHS].dispatch[0]
+
+    def test_a_misspelled_field_is_still_refused(self) -> None:
+        class Foo(Magic, polymorphic=True):
+            kind: str = ""
+
+        class Bar(Foo):
+            extra: str = ""
+
+        with pytest.raises(TypeError, match="'extar', which is not a field "
+                                           "of Bar"):
+            class FooBar(Bar, on={"extar": "e"}):
+                pass
+
+    def test_a_strict_root_reaches_through_a_plain_intermediate(
+        self
+    ) -> None:
+        # The root used to answer "none has yet: the module has not been
+        # imported", which sent the reader looking for an import that
+        # had happened.
+        class Foo(Magic, polymorphic="strict"):
+            kind: str = ""
+
+        class Bar(Foo):
+            pass
+
+        class FooBar(Bar, on={"kind": "foobar"}):
+            pass
+
+        assert type(Foo(kind="foobar")) is FooBar
+        assert type(Bar(kind="foobar")) is FooBar
+        assert type(FooBar()) is FooBar
+        with pytest.raises(NoPolymorphError, match="FooBar"):
+            Bar(kind="other")
+
+    def test_a_plain_branch_beside_a_registered_one(self) -> None:
+        # P is plain, SB is registered: X registers with P, which nothing
+        # else reaches, and with SB, which R reaches already.
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class P(R):
+            pass
+
+        class SB(R, on={"b": "y"}):
+            pass
+
+        class X(P, SB, on={"a": "x"}):
+            pass
+
+        assert X.__dict__[_REGISTRATION][0] == (P, SB)
+        assert type(P(a="x", b="y")) is X
+        assert type(R(a="x", b="y")) is X
+
+    def test_turning_polymorphic_off_is_a_boundary(self) -> None:
+        class Rb(Magic, polymorphic=True):
+            kind: str = ""
+
+        class Mb(Rb, polymorphic=False):
+            pass
+
+        class Sb(Mb, polymorphic=True):
+            pass
+
+        class Xb(Sb, on={"kind": "x"}):
+            pass
+
+        assert Xb.__dict__[_REGISTRATION][0] == (Sb,)
+        assert type(Rb(kind="x")) is Rb
+        assert type(Sb(kind="x")) is Xb
+
+    def test_a_plain_mixin_in_front_is_no_boundary(self) -> None:
+        class Mixin(Magic):
+            pass
+
+        class R(Magic, polymorphic=True):
+            kind: str = ""
+
+        class X(Mixin, R, on={"kind": "x"}):
+            pass
+
+        assert X.__dict__[_REGISTRATION][0] == (R,)
+        assert type(R(kind="x")) is X
+
+    # -- a diamond with nothing to say (problem B) -----------------------
+
+    @pytest.fixture
+    def axes(self) -> tx.Dict[str, type]:
+        class Axis(Magic, polymorphic=True):
+            name: str = ""
+            type: tx.Optional[str] = None
+            orientation: tx.Optional[str] = None
+
+        class SpatialAxis(Axis, on={"type": "space"}):
+            type: tx.Literal["space"] = "space"
+
+        class OrientedAxis(
+            Axis, on={"orientation": lambda v: v is not None}
+        ):
+            pass
+
+        class OrientedSpatialAxis(SpatialAxis, OrientedAxis):
+            pass
+
+        class AnatomicalAxis(
+            OrientedSpatialAxis,
+            on={"orientation": lambda v: v in {"LR", "RL"}},
+        ):
+            pass
+
+        return {
+            cls.__name__: cls
+            for cls in (Axis, SpatialAxis, OrientedAxis,
+                        OrientedSpatialAxis, AnatomicalAxis)
+        }
+
+    def test_a_diamond_is_reached_from_the_root(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        Axis = axes["Axis"]
+        assert type(Axis(type="space", orientation="AP")) is axes[
+            "OrientedSpatialAxis"]
+        assert type(Axis(type="space", orientation="LR")) is axes[
+            "AnatomicalAxis"]
+
+    def test_a_diamond_is_reached_from_either_parent(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        anatomical = axes["AnatomicalAxis"]
+        assert type(axes["SpatialAxis"](orientation="LR")) is anatomical
+        assert type(
+            axes["OrientedAxis"](type="space", orientation="LR")
+        ) is anatomical
+        assert type(axes["SpatialAxis"](orientation="AP")) is axes[
+            "OrientedSpatialAxis"]
+
+    def test_a_diamond_stands_for_what_both_parents_do(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        # It is not reached on one parent's constraint alone.
+        assert type(axes["SpatialAxis"]("x")) is axes["SpatialAxis"]
+        assert type(axes["SpatialAxis"]()) is axes["SpatialAxis"]
+        assert type(axes["Axis"](type="space")) is axes["SpatialAxis"]
+        assert type(axes["OrientedAxis"](orientation="LR")) is axes[
+            "OrientedAxis"]
+
+    def test_a_missing_field_is_never_guessed(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        # `type` is not given, so nothing says this is a spatial axis:
+        # the choice goes on what was passed, not on what would fit.
+        assert type(axes["Axis"]("x", orientation="LR")) is axes[
+            "OrientedAxis"]
+
+    def test_the_combined_constraint_is_registered_once_per_owner(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        both = axes["OrientedSpatialAxis"]
+        owners, specs, priority, claim = both.__dict__[_REGISTRATION]
+        assert owners == (
+            axes["SpatialAxis"], axes["OrientedAxis"], axes["Axis"]
+        )
+        assert [spec.name for spec in specs] == ["type", "orientation"]
+        assert priority == 0
+        assert claim is specs
+        # The leaf below it is in a chain again, and registers with it
+        # alone, standing for its own constraint.
+        leaf = axes["AnatomicalAxis"].__dict__[_REGISTRATION]
+        assert leaf[0] == (both,)
+        assert [spec.name for spec in leaf[1]] == ["orientation"]
+
+    def test_an_empty_on_in_a_diamond_is_the_same_combination(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        class Again(axes["SpatialAxis"], axes["OrientedAxis"], on={}):
+            pass
+
+        specs = Again.__dict__[_REGISTRATION][1]
+        assert [spec.name for spec in specs] == ["type", "orientation"]
+        assert type(axes["SpatialAxis"]()) is axes["SpatialAxis"]
+
+    def test_a_diamond_that_turns_polymorphic_off_is_left_alone(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        class Off(axes["SpatialAxis"], axes["OrientedAxis"],
+                  polymorphic=False):
+            pass
+
+        assert _REGISTRATION not in Off.__dict__
+
+    def test_on_none_leaves_a_diamond_out(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        class Aside(axes["SpatialAxis"], axes["OrientedAxis"], on=None):
+            pass
+
+        assert _REGISTRATION not in Aside.__dict__
+        assert type(Aside(orientation="AP")) is Aside
+        assert all(
+            entry.target is not Aside
+            for entry in axes["Axis"].__dict__[_POLYMORPHS].dispatch[0]
+        )
+
+    # -- a diamond that says something (problems C and D) ----------------
+
+    def test_a_diamond_with_priority_on_one_branch(self) -> None:
+        def is_2d(axes: tx.Any) -> bool:
+            return len(axes) == 2
+
+        def is_spatial(axes: tx.Any) -> bool:
+            return all(axis == "space" for axis in axes)
+
+        def is_spatial_2d(axes: tx.Any) -> bool:
+            return is_2d(axes) and is_spatial(axes)
+
+        class CoordinateSystem(Magic, polymorphic=True):
+            axes: tx.Tuple[str, ...] = ()
+
+        class CoordinateSystem2D(CoordinateSystem, on={"axes": is_2d}):
+            pass
+
+        class SpatialCoordinateSystem(
+            CoordinateSystem, on={"axes": is_spatial}, priority=1
+        ):
+            pass
+
+        class SpatialCoordinateSystem2D(
+            CoordinateSystem2D, SpatialCoordinateSystem,
+            on={"axes": is_spatial_2d},
+        ):
+            pass
+
+        plane = ("space", "space")
+        assert type(SpatialCoordinateSystem(axes=plane)) is (
+            SpatialCoordinateSystem2D)
+        assert type(CoordinateSystem(axes=plane)) is (
+            SpatialCoordinateSystem2D)
+        assert type(CoordinateSystem2D(axes=plane)) is (
+            SpatialCoordinateSystem2D)
+        assert type(CoordinateSystem(axes=("time", "space"))) is (
+            CoordinateSystem2D)
+        assert type(CoordinateSystem(axes=("space",) * 3)) is (
+            SpatialCoordinateSystem)
+
+    @pytest.fixture
+    def tones(self) -> tx.Tuple[type, type, type]:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": "y"}):
+            pass
+
+        return R, SA, SB
+
+    def test_tied_siblings_are_settled_by_the_class_below_both(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SAB(SA, SB, on={"a": "x", "b": "y"}):
+            pass
+
+        assert type(R(a="x", b="y")) is SAB
+        assert type(SA(b="y")) is SAB
+        assert type(SB(a="x")) is SAB
+        assert type(R(a="x")) is SA
+
+    def test_tied_siblings_are_settled_with_nothing_said(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SAB(SA, SB):
+            pass
+
+        assert type(R(a="x", b="y")) is SAB
+
+    def test_what_a_diamond_says_can_only_narrow(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SAB(SA, SB, on={"a": {"x", "z"}}):
+            pass
+
+        specs = SAB.__dict__[_REGISTRATION][1]
+        assert [spec.name for spec in specs] == ["a", "b"]
+        # Its own "or z" cannot widen what SA stands for.
+        assert type(R(a="z", b="y")) is SB
+        assert type(R(a="x", b="y")) is SAB
+
+    def test_contradicting_parents_are_refused_by_field(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SX(R, on={"a": "q"}):
+            pass
+
+        with pytest.raises(TypeError) as raised:
+            class Both(SA, SX):
+                pass
+
+        message = str(raised.value)
+        assert "Nothing can build Both" in message
+        assert "a='x'" in message and "a='q'" in message
+        assert "through SA" in message and "through SX" in message
+        assert "on=None" in message
+
+    def test_contradicting_parents_build_with_on_none(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SX(R, on={"a": "q"}):
+            pass
+
+        class Both(SA, SX, on=None):
+            pass
+
+        assert _REGISTRATION not in Both.__dict__
+        assert type(R(a="x")) is SA
+
+    def test_contradicting_its_own_parent_is_refused(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+        with pytest.raises(TypeError, match="through its own on="):
+            class Both(SA, SB, on={"b": "n"}):
+                pass
+
+    def test_a_subclass_of_an_opted_out_diamond(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        # on=None makes the class a plain intermediate, which a subclass
+        # saying something registers through.
+        R, SA, SB = tones
+
+        class Aside(SA, SB, on=None):
+            pass
+
+        class Below(Aside, on={"a": "x"}):
+            pass
+
+        owners = Below.__dict__[_REGISTRATION][0]
+        assert owners == (Aside, SA, SB, R)
+        assert type(R(a="x", b="y")) is Below
+
+    def test_priority_with_on_none_is_refused(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+        with pytest.raises(TypeError, match="priority= without on="):
+            class Both(SA, SB, on=None, priority=1):
+                pass
+
+    def test_on_none_in_a_chain_changes_nothing(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class Quiet(SA, on=None):
+            pass
+
+        assert _REGISTRATION not in Quiet.__dict__
+        assert type(R(a="x")) is SA
+
+    def test_owners_without_the_field_are_skipped_in_a_diamond(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class Wide(SA):
+            extra: str = ""
+
+        class Both(Wide, SB, on={"extra": "e"}):
+            pass
+
+        assert Both.__dict__[_REGISTRATION][0] == (Wide,)
+        assert type(Wide(a="x", b="y", extra="e")) is Both
+        assert type(Wide(a="x", b="n", extra="e")) is Wide
+
+    def test_a_combination_no_owner_can_read_is_left_out(self) -> None:
+        class R1(Magic, polymorphic=True):
+            a: str = ""
+
+        class R2(Magic, polymorphic=True):
+            b: str = ""
+
+        class SA1(R1, on={"a": "x"}):
+            pass
+
+        class SB2(R2, on={"b": "y"}):
+            pass
+
+        class Both(SA1, SB2):
+            pass
+
+        assert _REGISTRATION not in Both.__dict__
+        assert type(Both(a="x", b="y")) is Both
+
+    def test_a_diamond_of_diamonds_counts_each_constraint_once(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SAB(SA, SB):
+            pass
+
+        class SC(R, on={"a": {"x", "w"}}):
+            pass
+
+        class All(SAB, SC):
+            pass
+
+        (a, b) = All.__dict__[_REGISTRATION][1]
+        # SA's and SB's constraints reach it through SAB and again from
+        # SA and SB themselves, and are counted once.
+        assert a.text == "'x' and {'w', 'x'}"
+        assert b.text == "'y'"
+        assert a.value == "x"
+        assert type(R(a="x", b="y")) is All
+
+    def test_a_strict_diamond_keeps_the_combined_invariant(self) -> None:
+        class R(Magic, polymorphic="strict"):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": "y"}):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        assert type(SAB(a="x", b="y")) is SAB
+        with pytest.raises(PolymorphError, match="contradicts"):
+            SAB(a="x", b="n")
+        assert type(R(a="x", b="y")) is SAB
+
+    def test_a_diamond_over_a_generic_root(self) -> None:
+        class GRoot(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            value: _T
+            kind: str = ""
+            shade: str = ""
+
+        class GA(GRoot[_T], on={"kind": "a"}):
+            pass
+
+        class GB(GRoot[_T], on={"shade": "b"}):
+            pass
+
+        class GAB(GA[_T], GB[_T]):
+            pass
+
+        built = GRoot[int](value="1", kind="a", shade="b")
+        assert type(built) is GAB[int]
+        assert built.value == 1
+        assert type(GRoot(value="1", kind="a", shade="b")) is GAB
+        assert type(GA[int](value="1", shade="b")) is GAB[int]
+        # A parameterisation is not a class anyone wrote, so it is never
+        # registered in its own right.
+        assert _REGISTRATION not in GAB[int].__dict__
+
+    def test_a_parameterisation_of_an_opted_out_diamond_stays_out(
+        self
+    ) -> None:
+        class GRoot(Magic, tx.Generic[_T], polymorphic=True):
+            value: _T
+            kind: str = ""
+            shade: str = ""
+
+        class GA(GRoot[_T], on={"kind": "a"}):
+            pass
+
+        class GB(GRoot[_T], on={"shade": "b"}):
+            pass
+
+        class GAB(GA[_T], GB[_T], on=None):
+            pass
+
+        assert _REGISTRATION not in GAB[int].__dict__
+
+    def test_narrowed_parents_are_not_narrowed_again(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}, pin_discriminant="narrow"):
+            pass
+
+        class SB(R, on={"b": "y"}, pin_discriminant="narrow"):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        # The field is SA's, with SA's validator on it, and nothing was
+        # chained on top of it a second time.
+        mine = getattr(SAB, _FIELDS)["a"]
+        theirs = getattr(SA, _FIELDS)["a"]
+        assert mine.validator is theirs.validator
+        assert mine.type == theirs.type == tx.Literal["x"]
+        assert type(R(a="x", b="y")) is SAB
+        with pytest.raises(Exception, match="expected a value that is 'x'"):
+            SAB(a="q", b="y")
+        # `b` came from SA as R left it, so SB's narrowing is applied to
+        # it here -- once.
+        b = getattr(SAB, _FIELDS)["b"]
+        assert b.type == tx.Literal["y"]
+        assert b._narrowed_by == getattr(SB, _FIELDS)["b"]._narrowed_by
+        assert SAB().b == "y"
+        with pytest.raises(Exception, match="expected a value that is 'y'"):
+            SAB(a="x", b="z")
+
+    # -- what the second parent did to a field ---------------------------
+
+    @staticmethod
+    def _diamond(**options: tx.Any) -> tx.Tuple[type, type, type, type]:
+        class R(Magic, **options):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": "y"}):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        return R, SA, SB, SAB
+
+    def test_the_second_parents_pin_reaches_the_diamond(self) -> None:
+        R, SA, SB, SAB = self._diamond(polymorphic=True)
+        assert SB(a="x") == SAB(a="x", b="y")
+        assert type(SB(a="x")) is SAB
+        assert SAB() == SAB(a="x", b="y")
+        assert "b" in SAB.__dict__[_PINNED]
+
+    def test_a_strict_diamond_builds_from_its_pins(self) -> None:
+        R, SA, SB, SAB = self._diamond(polymorphic="strict")
+        assert type(SAB()) is SAB
+        assert type(SB(a="x")) is SAB
+        assert type(SA(b="y")) is SAB
+
+    def test_the_diamond_stores_the_way_its_own_option_says(self) -> None:
+        R, SA, SB, SAB = self._diamond(
+            polymorphic=True, pin_discriminant="classvar"
+        )
+        assert SAB.b == "y"
+        assert "b" not in asdict(SAB())
+
+    def test_a_default_that_already_fits_is_left_alone(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: float = 1.0
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": 1}):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        # `b` already holds a value SB's constraint accepts, stored the
+        # way SB stores it, so it is not pinned a second time: the
+        # diamond keeps the default as SA inherited it.
+        assert type(SAB().b) is float
+        assert SAB().b == 1
+
+    def test_a_default_that_fits_is_still_stored_as_its_parent_does(
+        self
+    ) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = "y"
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": "y"}, pin_discriminant="classvar"):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        # `b` already holds "y" as SA inherited it, but as an instance
+        # field. SB, which matches on it, keeps it as a class attribute,
+        # and so does the diamond -- whatever SAB's own option says.
+        assert "b" not in asdict(SB())
+        assert "b" not in asdict(SAB())
+        assert SAB.b == SAB().b == "y"
+
+    def test_swapped_parents_pin_the_same(self) -> None:
+        class Axis(Magic, polymorphic=True):
+            name: str = ""
+            type: tx.Optional[str] = None
+            orientation: tx.Optional[str] = None
+
+        class SpatialAxis(Axis, on={"type": "space"}):
+            pass
+
+        class OrientedAxis(
+            Axis, on={"orientation": lambda v: v is not None}
+        ):
+            pass
+
+        class OrientedSpatialAxis(OrientedAxis, SpatialAxis):
+            pass
+
+        # `type` came from OrientedAxis as Axis left it; the diamond
+        # still pins it to what SpatialAxis stands for.
+        assert getattr(OrientedAxis, _FIELDS)["type"].default is None
+        assert OrientedSpatialAxis(orientation="AP").type == "space"
+        built = OrientedAxis(orientation="AP", type="space")
+        assert type(built) is OrientedSpatialAxis
+        assert built == OrientedSpatialAxis(orientation="AP")
+
+    def test_a_diamond_of_diamonds_chains_each_part_once(self) -> None:
+        asked = []
+
+        def counted(value: tx.Any) -> bool:
+            asked.append(value)
+            return value in ("x", "w")
+
+        class R(Magic, polymorphic=True, pin_discriminant="narrow"):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": "y"}):
+            pass
+
+        class SC(R, on={"a": counted}):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        class All(SAB, SC):
+            pass
+
+        a = getattr(All, _FIELDS)["a"]
+        assert len(a._narrowed_by) == len(
+            {id(part) for part in a._narrowed_by}) == 2
+        assert len(getattr(All, _FIELDS)["b"]._narrowed_by) == 1
+        del asked[:]
+        All(a="x", b="y")
+        assert asked == ["x"]
+
+
+class TestRankingTheWholeClaim:
+    """A subclass is ranked on everything it stands for."""
+
+    def test_a_chain_child_is_not_outranked_by_a_diamond(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+            c: str = ""
+
+        class SAr(R, on={"a": "x"}):
+            pass
+
+        class SBr(R, on={"b": "y"}):
+            pass
+
+        class SABr(SAr, SBr):
+            pass
+
+        class SAXr(SAr, on={"b": "y", "c": "z"}):
+            pass
+
+        assert type(SAr(b="y", c="z")) is SAXr
+        assert type(SAr(b="y")) is SABr
+        assert [spec.name for spec in SAXr.__dict__[_REGISTRATION][3]] == [
+            "b", "c", "a"]
+
+    def test_a_child_standing_for_another_value_is_still_registered(
+        self
+    ) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+
+        class S(R, on={"a": "x"}):
+            pass
+
+        class T(S, on={"a": "q"}):
+            pass
+
+        owners, specs, priority, claim = T.__dict__[_REGISTRATION]
+        assert owners == (S,)
+        assert claim is specs
+        assert type(S(a="q")) is T
+        assert type(R(a="q")) is R
+
+    def test_a_class_registered_by_hand_is_ranked_the_same_way(
+        self
+    ) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class S(R, on={"a": "x"}):
+            pass
+
+        class Mid(S):
+            pass
+
+        S.register_polymorph(Mid, b="y")
+        claim = Mid.__dict__[_REGISTRATION][3]
+        assert [spec.name for spec in claim] == ["b", "a"]
+
+
+class TestConjoin:
+    """Combining the constraints several classes put on one field."""
+
+    @staticmethod
+    def _one(*written: tx.Any) -> tx.Any:
+        # Each constraint as if written by a separate registered class.
+        specs = [p._specification("f", spec) for spec in written]
+        inherited = [
+            (type(f"C{index}", (), {}), (spec,))
+            for index, spec in enumerate(specs[1:])
+        ]
+        (merged,) = p.conjoin("Both", (specs[0],), inherited)
+        return merged
+
+    def test_presence_adds_nothing_either_way(self) -> None:
+        assert self._one(..., "x").text == "'x'"
+        assert self._one("x", ...).text == "'x'"
+        assert self._one(..., ...).text == "anything"
+
+    def test_two_sets_meet_in_their_common_values(self) -> None:
+        merged = self._one({"x", "y", "z"}, {"y", "z", "w"})
+        assert merged.members == ("y", "z")
+        assert merged.value is MISSING
+        assert merged.narrowed == tx.Literal["y", "z"]
+        assert merged.matches("y") and not merged.matches("x")
+        assert not merged.matches([])  # unhashable reads as no match
+
+    def test_two_sets_with_nothing_in_common_are_refused(self) -> None:
+        with pytest.raises(TypeError, match="no value of 'f' is both"):
+            self._one({"x"}, {"y"})
+
+    def test_an_exact_value_outside_a_set_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="Nothing can build Both"):
+            self._one({"x", "y"}, "z")
+
+    def test_an_exact_value_inside_a_set_is_kept(self) -> None:
+        merged = self._one({"x", "y"}, "x")
+        assert merged.value == "x"
+        assert merged.members is None
+        assert merged.narrowed == tx.Literal["x"]
+        assert merged.precision == 4
+
+    def test_a_question_is_not_asked_when_the_class_is_written(
+        self
+    ) -> None:
+        asked = []
+
+        def question(value: tx.Any) -> bool:
+            asked.append(value)
+            return value > 1
+
+        merged = self._one(question, {1, 2, 3})
+        assert asked == []
+        # The set is kept whole: the question is asked at run time.
+        assert merged.members == (1, 2, 3)
+        assert merged.narrowed == tx.Literal[1, 2, 3]
+        assert merged.matches(2) and not merged.matches(1)
+
+    def test_a_question_is_never_used_to_refuse(self) -> None:
+        merged = self._one({1, 2}, lambda v: v > 5)
+        assert not merged.matches(1) and not merged.matches(2)
+
+    def test_a_set_is_still_put_to_the_rest_of_a_combination(self) -> None:
+        # Merged with a question first, then with a set: the second set
+        # is judged by the first, and the question is still not asked.
+        R = type("R", (), {})
+        specs = [p._specification("f", spec)
+                 for spec in ({1, 2}, lambda v: 1 / 0, {2, 3}, {4})]
+        (merged,) = p.conjoin("Both", (specs[0],), [(R, (specs[1],))])
+        (again,) = p.conjoin("Both", (merged,), [(R, (specs[2],))])
+        assert again.members == (2,)
+        with pytest.raises(TypeError, match="no value of 'f' is both"):
+            p.conjoin("Both", (merged,), [(R, (specs[3],))])
+
+    def test_two_equal_values_read_as_one(self) -> None:
+        merged = self._one("x", "x")
+        assert merged.text == "'x'"
+        assert merged.value == "x"
+
+    def test_an_exact_value_failing_a_type_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="no value of 'f' is both"):
+            self._one("x", int)
+
+    def test_an_exact_value_failing_a_pattern_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="no value of 'f' is both"):
+            self._one(re.compile("[a-z]+"), "X1")
+
+    def test_a_value_no_literal_can_hold_takes_the_type(self) -> None:
+        assert self._one(1.5, float).narrowed is float
+        assert self._one({1.5, 2.5}, float).narrowed is float
+
+    def test_two_open_constraints_are_left_to_run_time(self) -> None:
+        merged = self._one(re.compile("[a-z]+"), lambda v: len(v) > 2)
+        assert merged.narrowed is MISSING
+        assert merged.members is None
+        assert merged.matches("abc") and not merged.matches("ab")
+        assert not merged.matches("AB1")
+
+    def test_the_combined_check_asks_both(self) -> None:
+        merged = self._one({"x", "y"}, lambda v: v != "y")
+        assert merged.validate("x") == "x"
+        with pytest.raises(ValueValidationError, match="expected"):
+            merged.validate("y")
+
+
+class TestRegisterPolymorphRecord:
+    """What registering by hand leaves behind on the class registered."""
+
+    @pytest.fixture
+    def base(self) -> type:
+        class Root(Magic, polymorphic=True):
+            kind: str = ""
+            flavour: str = ""
+
+        return Root
+
+    def test_a_strict_leaf_registered_by_hand_can_be_built(self) -> None:
+        class Strict(Magic, polymorphic="strict"):
+            kind: str = ""
+
+        class Dim(Strict):
+            pass
+
+        Strict.register_polymorph(Dim, kind="dim")
+        assert type(Strict(kind="dim")) is Dim
+        assert type(Dim(kind="dim")) is Dim
+        with pytest.raises(PolymorphError, match="contradicts"):
+            Dim(kind="other")
+
+    def test_a_later_subclass_registers_with_the_class_by_hand(
+        self, base: type
+    ) -> None:
+        class Inner(base):
+            pass
+
+        base.register_polymorph(Inner, kind="k")
+
+        class Deeper(Inner, on={"flavour": "f"}):
+            pass
+
+        # Inner is reached from the root, so Deeper need not climb past it.
+        assert Deeper.__dict__[_REGISTRATION][0] == (Inner,)
+        assert type(base(kind="k", flavour="f")) is Deeper
+        assert type(base(flavour="f")) is base
+
+    def test_it_only_registers_where_it_is_called(self, base: type) -> None:
+        class Middle(base, on={"kind": "k"}):
+            pass
+
+        class Leaf(Middle):
+            pass
+
+        Middle.register_polymorph(Leaf, flavour="f")
+        assert Leaf.__dict__[_REGISTRATION][0] == (Middle,)
+        assert all(
+            entry.target is not Leaf
+            for entry in base.__dict__[_POLYMORPHS].dispatch[0]
+        )
+        assert type(base(kind="k", flavour="f")) is Leaf
+
+    def test_a_class_statement_registration_is_kept(self, base: type) -> None:
+        class Middle(base, on={"kind": "k"}):
+            pass
+
+        class Leaf(Middle, on={"flavour": "f"}):
+            pass
+
+        base.register_polymorph(Leaf, kind="k", flavour="f")
+        assert Leaf.__dict__[_REGISTRATION][0] == (Middle,)
+
+    def test_a_parameterisation_made_before_registering_by_hand(
+        self
+    ) -> None:
+        class Strict(Magic, tx.Generic[_T], polymorphic="strict"):
+            kind: str = ""
+
+        class Dim(Strict[_T]):
+            pass
+
+        early = Dim[int]
+        Strict.register_polymorph(Dim, kind="dim")
+        assert type(Strict[int](kind="dim")) is early
+        assert type(early(kind="dim")) is early
+        with pytest.raises(PolymorphError, match="contradicts"):
+            early(kind="other")
+
+    def test_a_parameterisation_of_an_unarmed_origin(self) -> None:
+        # Nothing has registered with Loose, so it has no registry for
+        # its parameterisation to read, and nothing is required of it.
+        class Loose(Magic, tx.Generic[_T], polymorphic=True):
+            kind: str = ""
+
+        found = Loose[int].__dict__[_POLYMORPHS]
+        assert found.required is False
+        assert found.invariant is None
+        assert type(Loose[int](kind="k")) is Loose[int]
+
+    def test_a_parameterisation_carries_no_record(self) -> None:
+        class Root(Magic, tx.Generic[_T], polymorphic=True):
+            kind: str = ""
+
+        class Sub(Root[_T]):
+            pass
+
+        Root.register_polymorph(Sub[int], kind="s")
+        assert _REGISTRATION not in Sub[int].__dict__
+        assert _REGISTRATION not in Sub.__dict__
+
+
+# ======================================================================
+# A field's own pin
+# ======================================================================
+
+
+class TestFieldPin:
+    """`Pin[...]` on a field decides, over any `pin_discriminant`."""
+
+    @staticmethod
+    def _stored(cls: type, name: str) -> str:
+        # How a field ended up: "classvar", or an instance field with
+        # ("pin") or without ("keep") the value its class stands for as
+        # its default.
+        found = getattr(cls, _FIELDS)[name]
+        if found.var:
+            return "classvar"
+        record = cls.__dict__.get(_REGISTRATION, ((), ()))
+        values = [spec.value for spec in record[1] if spec.name == name]
+        return "pin" if values and found.default == values[0] else "keep"
+
+    # -- precedence -------------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "annotation, option, storage, narrowed",
+        [
+            (Pin[str, "classvar"], "pin", "classvar", False),
+            (Pin[str], "classvar", "pin", False),
+            (Pin[str, True], "keep", "pin", False),
+            (NoPin[str], "narrow", "keep", False),
+            (Pin[str, False], "classvar+narrow", "keep", False),
+            (Narrow[str], "keep", "pin", True),
+            (Pin[str, "keep+narrow"], "classvar", "keep", True),
+        ],
+    )
+    def test_the_field_beats_the_class_option(
+        self, annotation: tx.Any, option: str, storage: str, narrowed: bool
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: annotation = "major"
+
+        class Minor(Tune, on={"mode": "minor"}, pin_discriminant=option):
+            pass
+
+        assert self._stored(Minor, "mode") == storage
+        mode = getattr(Minor, _FIELDS)["mode"]
+        assert (mode.type == tx.Literal["minor"]) is narrowed
+        assert type(Tune(mode="minor")) is Minor
+
+    def test_the_class_option_fills_in_when_the_field_says_nothing(
+        self
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: str = "major"
+            key: Pin[str, "classvar"] = ""  # noqa: F821
+
+        class Minor(
+            Tune, on={"mode": "minor", "key": "a"},
+            pin_discriminant="narrow",
+        ):
+            pass
+
+        assert self._stored(Minor, "mode") == "pin"
+        assert self._stored(Minor, "key") == "classvar"
+        # The class narrows `mode`; `key` says "classvar", with no
+        # narrowing, so another value is accepted and dropped.
+        with pytest.raises(ValueValidationError):
+            Minor(mode="dorian")
+        assert Minor(key="b") == Minor()
+
+    def test_a_subclass_option_does_not_override_the_field(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: Pin[str, "classvar"] = "major"  # noqa: F821
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        class Harmonic(Minor, on={"root": "A"}, pin_discriminant="keep"):
+            pass
+
+        class Melodic(Tune, on={"mode": "melodic"}, pin_discriminant="pin"):
+            pass
+
+        assert Minor.mode == "minor"
+        assert Melodic.mode == "melodic"
+        assert "mode" not in asdict(Harmonic())
+        assert self._stored(Harmonic, "root") == "keep"
+
+    # -- the bottom of a diamond ------------------------------------------
+
+    def test_a_diamond_stores_each_field_as_the_parent_matching_it(
+        self
+    ) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}, pin_discriminant="narrow"):
+            pass
+
+        class SB(R, on={"b": "y"}, pin_discriminant="classvar"):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        # `b` is SB's: a class attribute, and another value is accepted
+        # and dropped.
+        assert self._stored(SB, "b") == self._stored(SAB, "b") == "classvar"
+        assert SAB.b == "y"
+        assert SAB(b="z") == SAB()
+        assert "b" not in asdict(SAB())
+        # `a` is SA's: pinned, narrowed, and another value is refused.
+        assert self._stored(SAB, "a") == "pin"
+        assert getattr(SAB, _FIELDS)["a"].type == tx.Literal["x"]
+        with pytest.raises(ValueValidationError):
+            SAB(a="q")
+        assert type(R(a="x", b="y")) is SAB
+
+    def test_a_diamond_stores_a_field_as_the_parent_that_pins_it(
+        self
+    ) -> None:
+        # A set has nothing to pin, so SB's "classvar" is never seen on
+        # SB itself; SC is the one that pins `b`, and decides how it is
+        # stored whichever parent comes first.
+        class R(Magic, polymorphic=True):
+            b: str = ""
+            c: str = ""
+
+        class SB(R, on={"b": {"x", "y"}}, pin_discriminant="classvar"):
+            pass
+
+        class SC(R, on={"b": "x", "c": "k"}):
+            pass
+
+        class SBC(SB, SC):
+            pass
+
+        class SCB(SC, SB):
+            pass
+
+        assert self._stored(SB, "b") == "keep"
+        assert self._stored(SBC, "b") == self._stored(SCB, "b") == "pin"
+        assert SBC().b == SCB().b == "x"
+
+    def test_the_diamonds_own_option_is_for_what_it_says(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+            c: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": "y"}):
+            pass
+
+        class SAB(SA, SB, on={"c": "z"}, pin_discriminant="classvar+narrow"):
+            pass
+
+        # What the parents stand for is applied their way...
+        assert self._stored(SAB, "a") == self._stored(SAB, "b") == "pin"
+        assert getattr(SAB, _FIELDS)["b"].type is str
+        assert SAB(b="q").b == "q"
+        # ...and what the diamond says itself, its own way.
+        assert self._stored(SAB, "c") == "classvar"
+        with pytest.raises(ValueValidationError):
+            SAB(c="q")
+
+    def test_a_field_pin_overrides_both_parents_of_a_diamond(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: Pin[str] = ""
+
+        class SA(R, on={"a": "x"}, pin_discriminant="classvar"):
+            pass
+
+        class SB(R, on={"b": "y"}, pin_discriminant="classvar+narrow"):
+            pass
+
+        class SAB(SA, SB, on={"b": "y"}, pin_discriminant="classvar"):
+            pass
+
+        for cls in (SB, SAB):
+            assert self._stored(cls, "b") == "pin"
+            assert getattr(cls, _FIELDS)["b"].type is str
+            assert asdict(cls())["b"] == "y"
+        assert self._stored(SAB, "a") == "classvar"
+
+    def test_parents_that_both_match_one_field(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"a": {"x", "y"}, "b": "y"}, pin_discriminant="narrow"):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        # `a` is stored the way SA, the first parent matching it, stores
+        # it, and narrowed only by what SB -- which narrows -- stands for.
+        a = getattr(SAB, _FIELDS)["a"]
+        assert self._stored(SAB, "a") == "pin"
+        assert a.type == tx.Literal["x", "y"]
+        assert SAB().a == "x"
+        assert SAB(a="y").a == "y"
+        with pytest.raises(ValueValidationError):
+            SAB(a="z")
+
+    def test_a_class_registered_by_hand_brings_its_own_option(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, pin_discriminant="classvar"):
+            pass
+
+        R.register_polymorph(SB, b="y")
+
+        class SAB(SA, SB):
+            pass
+
+        assert self._stored(SAB, "b") == "classvar"
+        assert SAB.b == "y"
+
+    # -- the annotations ---------------------------------------------------
+
+    @pytest.mark.parametrize(
+        "annotation, type_, storage, refuses, shown",
+        [
+            (Pin[str], str, "pin", False, "Minor(root='C', mode='minor')"),
+            (Pin[str, True], str, "pin", False,
+             "Minor(root='C', mode='minor')"),
+            (Pin[str, "classvar+narrow"], tx.Literal["minor"], "classvar",
+             True, "Minor(root='C')"),
+            (Narrow[str], tx.Literal["minor"], "pin", True,
+             "Minor(root='C', mode='minor')"),
+            (NoPin[str], str, "keep", False,
+             "Minor(root='C', mode='major')"),
+            (Pin[str, False], str, "keep", False,
+             "Minor(root='C', mode='major')"),
+        ],
+    )
+    def test_each_annotation_does_what_it_says(
+        self,
+        annotation: tx.Any,
+        type_: tx.Any,
+        storage: str,
+        refuses: bool,
+        shown: str,
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: annotation = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        mode = getattr(Minor, _FIELDS)["mode"]
+        assert mode.type == type_
+        assert self._stored(Minor, "mode") == storage
+        assert repr(Minor()) == shown
+        if refuses:
+            with pytest.raises(ValueValidationError):
+                Minor(mode="dorian")
+        else:
+            assert Minor(mode="dorian").mode == "dorian"
+
+    def test_the_annotations_lower_to_a_field_pin(self) -> None:
+        assert repr(Pin[int]) .endswith("[int, Pin(pin='pin')]")
+        assert repr(Pin[int, "classvar"]).endswith(
+            "[int, Pin(pin='classvar')]"
+        )
+        assert repr(Pin[int, True]).endswith("[int, Pin(pin=True)]")
+        assert repr(Narrow[int]).endswith("[int, Narrow(pin='narrow')]")
+        assert repr(NoPin[int]).endswith("[int, NoPin(pin=False)]")
+        assert repr(field(pin="keep")) == "Field(pin='keep')"
+        # Anything after the type and the mode stays as metadata.
+        assert tx.get_args(Narrow[int, "note"])[2] == "note"
+
+    @pytest.mark.parametrize("given", ["maybe", 1, 0, None, ["pin"]])
+    def test_an_unknown_mode_is_refused(self, given: tx.Any) -> None:
+        wrong = f"must be .*, True or False, not {re.escape(repr(given))}"
+        with pytest.raises(ValueError, match=f"pin on Tune.mode {wrong}"):
+            class Tune(Magic):
+                mode: Pin[str, given] = ""
+        with pytest.raises(ValueError, match=f"pin on Tune.mode {wrong}"):
+            class Tune(Magic):  # noqa: F811
+                mode: str = field(default="", pin=given)
+
+    def test_a_pin_on_a_field_nothing_matches_on_does_nothing(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: Pin[str, "classvar+narrow"] = "C"  # noqa: F821
+            mode: str = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        for cls in (Tune, Minor):
+            assert cls(root="D").root == "D"
+            assert self._stored(cls, "root") == "keep"
+            assert getattr(cls, _FIELDS)["root"].type is str
+
+    # -- a field the subclass writes out itself ----------------------------
+
+    def test_a_redeclaration_without_a_pin_is_left_as_written(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: Pin[str, "classvar+narrow"] = "major"  # noqa: F821
+
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: str = "aeolian"
+
+        assert self._stored(Minor, "mode") == "keep"
+        assert Minor().mode == "aeolian"
+        assert Minor(mode="dorian").mode == "dorian"
+
+    def test_a_redeclaration_with_a_pin_is_pinned(self) -> None:
+        class Tune(Magic, polymorphic=True, pin_discriminant="keep"):
+            root: str = "C"
+            mode: str = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: Pin[str, "classvar+narrow"]  # noqa: F821
+
+        class Aeolian(Tune, on={"mode": "aeolian"}):
+            mode: Narrow[str] = "aeolian"
+
+        assert self._stored(Minor, "mode") == "classvar"
+        assert Minor.mode == "minor"
+        with pytest.raises(ValueValidationError):
+            Minor(mode="dorian")
+        assert self._stored(Aeolian, "mode") == "pin"
+        assert Aeolian().mode == "aeolian"
+        with pytest.raises(ValueValidationError):
+            Aeolian(mode="dorian")
+
+    @pytest.mark.parametrize(
+        "annotation, fix",
+        [
+            (Pin[str], "Leave the default out -- the pin gives"),
+            (Pin[str, "classvar"], "Leave the default out -- the pin gives"),
+            # "keep" gives no value, so the fix is a default that fits.
+            (Pin[str, "keep+narrow"], "Give it a default Minor stands for"),
+        ],
+    )
+    def test_a_redeclared_pin_with_another_default_is_refused(
+        self, annotation: tx.Any, fix: str
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: str = "major"
+
+        with pytest.raises(TypeError, match=fix):
+            class Minor(Tune, on={"mode": "minor"}):
+                mode: annotation = "dorian"
+
+    def test_a_narrowed_set_is_not_told_the_pin_gives_a_value(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            mode: str = "major"
+
+        with pytest.raises(TypeError) as caught:
+            class Modal(Tune, on={"mode": {"dorian", "lydian"}}):
+                mode: Narrow[str] = "ionian"
+        assert "Give it a default Modal stands for" in str(caught.value)
+        assert "the pin gives" not in str(caught.value)
+
+    @pytest.mark.parametrize("mutable", ["factory", "allow"])
+    def test_a_mutable_default_is_checked_as_written(
+        self, mutable: str
+    ) -> None:
+        # A mutable default is turned into a factory before the pin is
+        # applied; the check still sees the value that was written.
+        class Config(Magic, polymorphic=True):
+            cfg: dict = field(factory=dict)
+            tags: list = field(factory=list)
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Pinned(
+                Config, on={"cfg": {"a": 1}}, mutable_default=mutable
+            ):
+                cfg: Pin[dict] = {"a": 2}
+
+        with pytest.raises(TypeError, match="Give it a default"):
+            class Kept(Config, on={"tags": ["a"]}, mutable_default=mutable):
+                tags: Pin[list, "keep+narrow"] = ["b"]  # noqa: F821
+
+        class Same(Config, on={"cfg": {"a": 1}}, mutable_default=mutable):
+            cfg: Pin[dict] = {"a": 1}
+
+        assert Same().cfg == {"a": 1}
+
+    def test_a_redeclared_pin_with_a_factory_is_refused(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            mode: str = "major"
+
+        with pytest.raises(TypeError, match="it also has a factory"):
+            class Minor(Tune, on={"mode": "minor"}):
+                mode: Pin[str] = field(factory=lambda: "dorian")
+
+        # "keep" leaves the factory to build the value, and a set has no
+        # one value to replace it with.
+        class Kept(Tune, on={"mode": "minor"}):
+            mode: NoPin[str] = field(factory=lambda: "dorian")
+
+        class Modal(Tune, on={"mode": {"dorian", "lydian"}}):
+            mode: Pin[str] = field(factory=lambda: "dorian")
+
+        assert Kept().mode == Modal().mode == "dorian"
+
+    def test_a_default_is_checked_as_it_is_converted(self) -> None:
+        # The default an instance holds is the converted one, and that is
+        # what dispatch matches: `"1"` stands for 1 when the class
+        # converts its defaults, and is refused when it does not.
+        class Count(Magic, polymorphic=True, convert=True):
+            n: int = 0
+
+        class One(Count, on={"n": 1}):
+            n: Pin[int] = "1"
+
+        assert One().n == 1
+        assert type(Count(n="1")) is One
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Raw(Count, on={"n": 1}, convert_defaults=False):
+                n: Pin[int] = "1"
+
+        class Plain(Magic, polymorphic=True):
+            n: int = 0
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Two(Plain, on={"n": 2}):
+                n: Pin[int] = "2"
+
+    def test_a_converted_default_already_holds_the_value(self) -> None:
+        # A subclass that does not take the field, and leaves it as it
+        # is, has to hold the value already -- and a default that
+        # converts to it does.
+        class Count(Magic, polymorphic=True, convert=True):
+            m: int = 0
+
+        class Four(Count, on={"m": 4}, pin_discriminant="keep"):
+            m: NoInit[int] = "4"
+
+        assert type(Count(m=4)) is Four
+        assert Four().m == 4
+
+        with pytest.raises(TypeError, match="holds '4', which is not 4"):
+            class Raw(
+                Count, on={"m": 4}, pin_discriminant="keep",
+                convert_defaults=False,
+            ):
+                m: NoInit[int] = "4"
+
+    def test_a_converter_that_turns_the_default_down_is_left_to_init(
+        self
+    ) -> None:
+        class Count(Magic, polymorphic=True, convert=True):
+            n: int = 0
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Bad(Count, on={"n": 1}):
+                n: Pin[int] = "one"
+
+    def test_a_default_named_before_its_type_is_not_converted_early(
+        self
+    ) -> None:
+        # Converting would look the name up now, and keep what it found.
+        class Count(Magic, polymorphic=True, convert=True):
+            n: "Later" = 0  # noqa: F821
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class One(Count, on={"n": 1}):
+                n: Pin["Later"] = "1"  # noqa: F821
+
+    @pytest.mark.parametrize(
+        "constant, text",
+        [
+            (PIN, "pin"),
+            (CLASSVAR, "classvar"),
+            (KEEP, "keep"),
+            (NARROW, "narrow"),
+            (PIN_NARROW, "pin+narrow"),
+            (CLASSVAR_NARROW, "classvar+narrow"),
+            (KEEP_NARROW, "keep+narrow"),
+        ],
+    )
+    def test_each_mode_has_a_constant(self, constant: str, text: str) -> None:
+        assert constant == text
+        assert tx.get_args(Pin[str, constant])[1].pin == text
+
+        class Shape(Magic, polymorphic=True):
+            kind: str = ""
+
+        class Circle(Shape, on={"kind": "circle"}, pin_discriminant=constant):
+            pass
+
+        class Square(Shape, on={"kind": "square"}, pin_discriminant=text):
+            pass
+
+        assert self._stored(Circle, "kind") == self._stored(Square, "kind")
+
+    def test_an_inherited_pin_is_applied_to_a_default_that_fits(
+        self
+    ) -> None:
+        # The field already holds the value its subclass stands for, but
+        # its own `pin` still counts it as pinned -- which is what lets a
+        # required parameter follow it.
+        class Tune(Magic, polymorphic=True):
+            mode: Pin[str] = "minor"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        assert "mode" in getattr(Minor, _PINNED)
+
+    def test_a_redeclared_pin_that_changes_nothing_keeps_its_default(
+        self
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: str = "major"
+
+        # "keep" asks for nothing, and a set has no one value to pin.
+        class Kept(Tune, on={"mode": "kept"}):
+            mode: NoPin[str] = "dorian"
+
+        class Modal(Tune, on={"mode": {"dorian", "lydian"}}):
+            mode: Pin[str] = "ionian"
+
+        assert Kept().mode == "dorian"
+        assert Modal().mode == "ionian"
+
+    # -- surviving the rest of the builder ---------------------------------
+
+    def test_a_pin_survives_generic_filling(self) -> None:
+        class Box(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            item: _T
+            kind: Pin[str, "classvar"] = ""  # noqa: F821
+
+        class One(Box[_T], on={"kind": "one"}):
+            pass
+
+        class IntTwo(Box[int], on={"kind": "two"}):
+            pass
+
+        assert getattr(Box[int], _FIELDS)["kind"].pin == "classvar"
+        assert One.kind == One[int].kind == "one"
+        built = Box[int](kind="one", item="3")
+        assert type(built) is One[int]
+        assert built.item == 3
+        assert "kind" not in asdict(built)
+        assert IntTwo.kind == "two"
+        assert type(Box(item=1, kind="two")) is IntTwo
+
+    def test_a_generic_discriminant_narrows_to_its_constraint(self) -> None:
+        class Box(Magic, tx.Generic[_T], polymorphic=True):
+            kind: Narrow[_T] = None
+
+        class One(Box[_T], on={"kind": "one"}):
+            pass
+
+        for cls in (One, One[str]):
+            assert getattr(cls, _FIELDS)["kind"].type == tx.Literal["one"]
+            with pytest.raises(ValueValidationError):
+                cls(kind="two")
+
+    def test_a_pin_survives_override(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str = "C"
+            mode: Pin[str, "classvar+narrow"] = "major"  # noqa: F821
+
+        class Loose(Tune, override=True, pin_discriminant="keep"):
+            pass
+
+        class Minor(Loose, on={"mode": "minor"}):
+            pass
+
+        assert getattr(Loose, _FIELDS)["mode"].pin == "classvar+narrow"
+        assert Minor.mode == "minor"
+        with pytest.raises(ValueValidationError):
+            Minor(mode="dorian")
+
+        class Fancy(Minor, override=True):
+            pass
+
+        assert Fancy.mode == "minor"
+        with pytest.raises(ValueValidationError):
+            Fancy(mode="dorian")

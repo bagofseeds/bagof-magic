@@ -156,7 +156,9 @@ Tests that exercise internals import them from the module that defines them
   directly (`field.factory = False`, `_redeclare(factory=...)`), never the
   property. `_declared` (what the field asked for, for `override`) and
   `_derived` (which callables came from the type, for rebuild-on-substitution)
-  are private bookkeeping — not constructor arguments, kept out of repr.
+  are private bookkeeping — not constructor arguments, kept out of repr —
+  and so is `_narrowed_by` (which written constraints a field's
+  validator already enforces; see "Registration owners").
 
 ### Reading annotations
 
@@ -373,7 +375,7 @@ Three things it has to get right:
   ordinary spelling would go unrecognised on exactly the interpreters
   CI covers at the old end.
 
-**Nothing registers with a parameterisation.** `_polymorphic_base`
+**Nothing registers with a parameterisation.** `_polymorphic_levels`
 skips a class built by filling parameters in, and `register_polymorph`
 called on one hands the registration to its origin -- so
 `class Only(Signal[str], on=...)` registers with `Signal`, and the
@@ -399,6 +401,127 @@ Two things that follow, and are tested:
   "none has yet: the module has not been imported" report would send
   the reader the wrong way. `select` carries the left-out entries
   alongside the candidates for exactly that message.
+
+**Registration owners.** `_REGISTRATION` is `(owners, specs, priority,
+claim)`, and `__post_new__` registers the class with every owner, in MRO
+order. `_registration_owners` works them out from the *levels*: the
+polymorphic ancestors the author wrote (parameterisations skipped, and
+nothing above a Magic class that turns `polymorphic` off -- that class
+is a boundary; a plain mixin off to the side is not). A *target* is a
+level that carries its own `_REGISTRATION`, a *pass-through* one that
+does not.
+
+- **Owners.** A level is left out exactly when a target strictly below
+  it (among the class's ancestors) reaches it; every other level is an
+  owner. In a chain that is every level up to and including the
+  nearest target, or up to the root when there is none -- one hop per
+  registered level as before, while a pass-through, which nothing
+  reaches, is registered past: otherwise `Foo(kind=...)` could never
+  reach `FooBar` through a plain `Bar(Foo)`. A plain branch beside a
+  registered one (`X(P, SB)`) keeps both. A chain class with no `on=`
+  stays unregistered, as it always was.
+- **Diamonds** (two nearest targets, one per branch). The class is
+  registered even with no `on=`, standing for its own `on=` combined by
+  `conjoin` with every target ancestor's registered specs, and the
+  root(s) are owners as well as the branches. All the parents make it
+  reachable from either branch -- a priority on one branch would
+  otherwise send the call where the class is not. The root breaks ties:
+  two siblings matching equally well at the root raise before anything
+  descends, and only an entry at the root whose constraint covers both
+  of theirs out-ranks them.
+- **An owner that lacks a field the specs name is dropped** -- the whole
+  owner, since it could not read that field when called. If none is
+  left, a class that wrote `on=` gets the "not a field of" error
+  naming the nearest level; one that only combines its parents is left
+  unregistered without a word (two unrelated roots, say).
+- **`conjoin`** merges per field and never uses the MRO to drop a side:
+  a value has to satisfy all of it. `_Spec.parts` holds the written
+  specs a merged one came from, so one reaching the merge along two
+  branches (a diamond of diamonds) counts once by identity. A merge is
+  refused at class creation when it is provably empty -- unequal exact
+  values, a value outside a set, disjoint sets, a value or every member
+  of a set that the other side's exact value, set, pattern or type
+  turns down. A callable is never asked at build time (it may depend on
+  state that only exists at run time): it is combined and left to run
+  time, and `members` keeps the values it has yet to be asked about.
+- **Pinning and narrowing apply to the composed specs.** A diamond's
+  fields are merged the `dataclasses` way, so each is a copy of *one*
+  parent's -- the MRO-first parent that has it -- and carries that
+  parent's pin and narrowing but not the other's. `_pin_plan` decides,
+  per spec, how the field is stored, which written parts narrow it, and
+  whether to apply the storage even to a field that already holds it:
+  - **The mode.** The field's own `pin` slot (`Pin[T, mode]`,
+    `Narrow[T]`, `NoPin[T]`) wins, for every part and on every class,
+    since a field travels into subclasses as a copy and an option does
+    not. Otherwise each written part carries its writer's
+    `pin_discriminant` as `_Spec.pin`, stamped by `specifications` (a
+    hand registration stamps the target's), and it survives `conjoin`
+    in `parts`. Storage comes from the first part that names one exact
+    value -- the class's own parts first, then the others in MRO order,
+    since `conjoin` lists own specs first and then the targets in MRO
+    order -- and from the first part (own, else MRO) when none does. A
+    part that allows several values pins nothing, so its mode is never
+    seen on its own class and must not decide a diamond's storage over
+    the parent that does pin. Narrowing is per part. So a diamond
+    stores an inherited field the way the parent that pins it does,
+    not the way the diamond's inherited option says; in a chain every
+    part is the class's own, so nothing changes there.
+  - **Already applied.** A spec the class says itself is always
+    applied. An inherited one is skipped when the copy already holds
+    it stored that way (`_stored_as`: a fitting non-factory default,
+    and for "classvar" a pseudo-field too -- a default that merely
+    fits is not yet a class attribute). `_narrow_discriminant` chains
+    each part the field does not already enforce, which
+    `Field._narrowed_by` records and every copy carries; when only
+    some parts narrow, the type is the one those parts alone
+    `conjoin` to.
+  - **A field the class writes out itself** is left as written unless
+    the new annotation gives a `pin`, which is then applied. A written
+    default the constraint turns down is refused
+    (`_check_written_default`) when the mode would pin an exact value
+    or narrow -- the pin would replace the default, or the validator
+    would reject it on every call that leaves the field out -- rather
+    than one of the two being dropped quietly. "keep" and a constraint
+    with no single value leave the default alone, so it stands. The
+    check sees the default as written: `__pre_new__` records it (and
+    whether a factory was written) in `written` before a mutable
+    default is turned into a factory, which would otherwise hide it.
+    A written factory is refused when the mode pins an exact value,
+    since the pin replaces it; it is never run to see what it builds.
+  - **A default is checked as an instance holds it.** `_as_held` runs
+    it through the field's converter when the class converts its
+    defaults -- the value dispatch reads, and the one `__init__`
+    stores -- in `_holds`, `_check_written_default` and case (iii) of
+    `_check_discriminants`. A `_Deferred` converter is not called
+    (the first call settles it for good, and the name may not exist
+    yet), and one that raises leaves the value as written, for
+    `__init__` to report.
+  - A `pin` value is checked where the field is declared, whether or
+    not anything ever matches on it; `_pin_action` reads it, with
+    `True`/`False` for "pin"/"keep" and nothing else that is not a
+    string.
+- **Rank is measured on the whole claim.** A chain class registers only
+  its own specs (the classes above have checked theirs by the time it
+  is reached), while a diamond registers the combination -- so a
+  diamond entry would out-count a chain sibling that says just as much.
+  `claim` is everything the class stands for (`_whole_claim`: its own
+  conjoined with every target ancestor's), and `_Polymorph.rank` uses
+  it; matching, the delegation plan and `_check_discriminants` keep
+  using the registered specs. A chain child that contradicts its parent
+  (`T(S, on={"a": "q"})` under `S(on={"a": "x"})`) is still registered
+  and reached by calling `S` directly, and is ranked on its own specs.
+- **`on=None`** stands for nothing: never registered, even in a
+  diamond (the escape hatch for a contradiction), and a pass-through to
+  anything below it. `priority=` with it is refused.
+- **`register_polymorph`** registers only with the class it is called
+  on, then writes `((owner,), specs, priority, claim)` onto a target
+  that has no record, so a later `class X(Target, on=...)` sees a
+  target rather than a pass-through. Writing it also disarms a strict
+  target's "required" flag and sets its invariant, as `arm` does for a
+  class statement -- without that, a strict leaf registered by hand
+  refused to be built at all. A parameterisation reads `required` and
+  `invariant` off its origin's registry on every call (like `dispatch`),
+  so one built before the hand registration follows it too.
 
 ## Conventions specific to this repo (do not regress)
 

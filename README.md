@@ -119,7 +119,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `mapping` | `False` | behave like a dictionary; a subclass inherits the methods and cannot turn them off |
 | `override` | `False` | apply this class's settings to inherited fields too |
 | `polymorphic` | `False` | build one of this class's subclasses, chosen from the arguments; or `"strict"`, which refuses to build this class when none of them matches |
-| `pin_discriminant` | `"pin"` | what a subclass does with the field it matches on; also `"classvar"`, `"keep"`, or any of those with `+narrow` (and `"narrow"` = `"pin+narrow"`) to narrow its type and reject other values |
+| `pin_discriminant` | `"pin"` | what a subclass does with the field it matches on; also `"classvar"`, `"keep"`, or any of those with `+narrow` (and `"narrow"` = `"pin+narrow"`) to narrow its type and reject other values; a field's own `Pin[T, mode]` wins over it |
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
 | `doc` | `True` | add the field table to the class docstring |
 

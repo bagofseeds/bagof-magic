@@ -105,6 +105,109 @@ Reaching `HarmonicMinor` means satisfying `MinorChord` first. Ask for
 Chord(root='A', mode='major', variant='harmonic')
 ```
 
+### A plain class in between
+
+A subclass written without `on=` stands for nothing, so it is never chosen.
+It can still sit between the root and the subclasses that are:
+
+```python
+class Seventh(Chord):
+    def notes(self) -> int:
+        return 4
+
+class DominantSeventh(Seventh, on={"variant": "dominant"}):
+    pass
+```
+
+```pycon
+>>> Chord(root="G", variant="dominant")
+DominantSeventh(root='G', mode='major', variant='dominant')
+>>> Seventh(root="G", variant="dominant")
+DominantSeventh(root='G', mode='major', variant='dominant')
+```
+
+### Combining two subclasses
+
+A class that inherits from two subclasses on different branches stands for
+what both of them stand for. It does not have to say it again:
+
+```python
+from typing import Optional
+
+class Axis(Magic, polymorphic=True):
+    name: str
+    unit: Optional[str] = None
+    direction: Optional[str] = None
+
+class SpatialAxis(Axis, on={"unit": "metre"}):
+    pass
+
+class OrientedAxis(Axis, on={"direction": {"up", "down"}}):
+    pass
+
+class OrientedSpatialAxis(SpatialAxis, OrientedAxis):
+    pass
+```
+
+It is reached from the root and from either parent, but only when both
+conditions hold. A missing argument is never guessed:
+
+```pycon
+>>> Axis("z", unit="metre", direction="up")
+OrientedSpatialAxis(name='z', unit='metre', direction='up')
+>>> SpatialAxis("z", direction="up")
+OrientedSpatialAxis(name='z', unit='metre', direction='up')
+>>> SpatialAxis("z")
+SpatialAxis(name='z', unit='metre', direction=None)
+>>> Axis("z", direction="up")
+OrientedAxis(name='z', unit=None, direction='up')
+```
+
+An `on=` of its own adds to what the two parents ask for; it can narrow the
+choice, never widen it. When both parents match equally well, the class
+below them settles it, because it asks for more than either.
+
+A value either parent pins is pinned on the combined class too, and stored
+the way that parent stores it -- its `pin_discriminant`, not the one the
+combined class inherits. A field that says for itself (see
+[pinning one field](#pinning-one-field)) is stored its own way everywhere:
+
+```pycon
+>>> OrientedSpatialAxis("z", direction="up").unit
+'metre'
+```
+
+Two parents that cannot both hold, such as two different values for one
+field, make a class nothing could ever build. It is refused when it is
+written:
+
+```pycon
+>>> class TimeAxis(Axis, on={"unit": "second"}):
+...     pass
+...
+>>> class SpaceTime(SpatialAxis, TimeAxis):
+...     pass
+...
+Traceback (most recent call last):
+TypeError: Nothing can build SpaceTime: ...
+```
+
+### Leaving a class out
+
+`on=None` says a class stands for nothing, so no parent ever builds it. It
+works anywhere, and it is how to write a class that combines two subclasses
+without being chosen for them:
+
+```pycon
+>>> class SpaceTime(SpatialAxis, TimeAxis, on=None):
+...     pass
+...
+>>> SpaceTime("t", unit="second")
+SpaceTime(name='t', unit='second', direction=None)
+```
+
+A subclass of it can still say what it stands for, and is reached through it.
+
 ## Registering a class you did not write
 
 ```pycon
@@ -237,6 +340,81 @@ then the base could only pass `mode` to a constructor that would reject it.
 `pin_discriminant="classvar"` is the spelling that keeps the field a
 parameter while storing it once, so both calls keep working without writing
 the attribute out.
+
+### Pinning one field
+
+A field can say for itself what a subclass that matches on it does with it.
+`Pin[T, mode]` takes the same values as `pin_discriminant`, and also `True`
+for `"pin"` and `False` for `"keep"`. `Pin[T]` is `Pin[T, "pin"]`,
+`Narrow[T]` is `Pin[T, "narrow"]`, and `NoPin[T]` is `Pin[T, False]`.
+
+```python
+class Shape(Magic, polymorphic=True):
+    kind: Pin[str, "classvar"] = ""
+    size: float = 1.0
+
+class Circle(Shape, on={"kind": "circle"}):
+    pass
+```
+
+```pycon
+>>> Circle.kind
+'circle'
+>>> Shape(kind="circle", size=2.0)
+Circle(size=2.0)
+```
+
+The field's own mode wins over `pin_discriminant`, on every subclass that
+matches on it, however far down:
+
+```python
+class Square(Shape, on={"kind": "square"}, pin_discriminant="narrow"):
+    pass
+```
+
+```pycon
+>>> Square.kind
+'square'
+>>> Square()
+Square(size=1.0)
+```
+
+A subclass that writes the field out again keeps it as written, as before.
+To pin it another way, give the new annotation a mode of its own:
+
+```python
+class Hexagon(Shape, on={"kind": "hexagon"}):
+    kind: Narrow[str]
+```
+
+```pycon
+>>> Hexagon().kind
+'hexagon'
+>>> Hexagon(kind="square")
+Traceback (most recent call last):
+ValueValidationError: ...
+```
+
+A default written beside a mode that pins or narrows the field has to be
+one the subclass stands for. Any other value could never be used, since the
+pin replaces it or the narrowing turns it down, so the class is refused. A
+factory beside a mode that pins one value is refused for the same reason:
+
+```pycon
+>>> class Pentagon(Shape, on={"kind": "pentagon"}):
+...     kind: Pin[str] = "square"
+...
+Traceback (most recent call last):
+TypeError: Pentagon stands for kind='pentagon', ...
+```
+
+A mode on a field that no subclass matches on does nothing.
+
+A linter reads the mode in `Pin[str, "classvar"]` as the name of a type,
+and reports it as undefined. Each mode is also a constant, which a linter
+knows: `Pin[str, CLASSVAR]` is `Pin[str, "classvar"]`, and `PIN`, `KEEP`,
+`NARROW`, `PIN_NARROW`, `CLASSVAR_NARROW` and `KEEP_NARROW` stand for the
+others. They work for `pin_discriminant` too.
 
 Pickling and copying rebuild through the class an instance already has.
 Neither goes back through the dispatch.
