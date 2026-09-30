@@ -93,7 +93,8 @@ pin_discriminant : str, default="pin"
     "keep" leaves it as the subclass wrote it. Add "+narrow" (or write
     "narrow" for "pin+narrow") to also narrow the field's type to what
     it stands for and reject any other value: "narrow", "pin+narrow",
-    "classvar+narrow" or "keep+narrow".
+    "classvar+narrow" or "keep+narrow". A field that says for itself,
+    with `Pin[T, mode]`, `Narrow[T]` or `NoPin[T]`, keeps its own.
 reverse : bool, default=False
     Use the reverse MRO order to determine field order.
 doc : bool | str, default=True
@@ -3871,7 +3872,9 @@ class MetaMagic(ABCMeta):
         "keep" leaves it as the subclass wrote it. Add "+narrow" (or
         write "narrow" for "pin+narrow") to also narrow the field's type
         to what it stands for and reject any other value: "narrow",
-        "pin+narrow", "classvar+narrow" or "keep+narrow".
+        "pin+narrow", "classvar+narrow" or "keep+narrow". A field that
+        says for itself, with `Pin[T, mode]`, `Narrow[T]` or
+        `NoPin[T]`, keeps its own.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
     doc : bool | str, default=True
@@ -4197,7 +4200,9 @@ class Magic(metaclass=MetaMagic):
         "keep" leaves it as the subclass wrote it. Add "+narrow" (or
         write "narrow" for "pin+narrow") to also narrow the field's type
         to what it stands for and reject any other value: "narrow",
-        "pin+narrow", "classvar+narrow" or "keep+narrow".
+        "pin+narrow", "classvar+narrow" or "keep+narrow". A field that
+        says for itself, with `Pin[T, mode]`, `Narrow[T]` or
+        `NoPin[T]`, keeps its own.
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
     doc : bool | str, default=True

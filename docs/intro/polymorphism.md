@@ -167,8 +167,10 @@ An `on=` of its own adds to what the two parents ask for; it can narrow the
 choice, never widen it. When both parents match equally well, the class
 below them settles it, because it asks for more than either.
 
-A value either parent pins becomes a default of the combined class too,
-stored the way the combined class's own `pin_discriminant` says:
+A value either parent pins is pinned on the combined class too, and stored
+the way that parent stores it -- its `pin_discriminant`, not the one the
+combined class inherits. A field that says for itself (see
+[pinning one field](#pinning-one-field)) is stored its own way everywhere:
 
 ```pycon
 >>> OrientedSpatialAxis("z", direction="up").unit
@@ -338,6 +340,74 @@ then the base could only pass `mode` to a constructor that would reject it.
 `pin_discriminant="classvar"` is the spelling that keeps the field a
 parameter while storing it once, so both calls keep working without writing
 the attribute out.
+
+### Pinning one field
+
+A field can say for itself what a subclass that matches on it does with it.
+`Pin[T, mode]` takes the same values as `pin_discriminant`, and also `True`
+for `"pin"` and `False` for `"keep"`. `Pin[T]` is `Pin[T, "pin"]`,
+`Narrow[T]` is `Pin[T, "narrow"]`, and `NoPin[T]` is `Pin[T, False]`.
+
+```python
+class Shape(Magic, polymorphic=True):
+    kind: Pin[str, "classvar"] = ""
+    size: float = 1.0
+
+class Circle(Shape, on={"kind": "circle"}):
+    pass
+```
+
+```pycon
+>>> Circle.kind
+'circle'
+>>> Shape(kind="circle", size=2.0)
+Circle(size=2.0)
+```
+
+The field's own mode wins over `pin_discriminant`, on every subclass that
+matches on it, however far down:
+
+```python
+class Square(Shape, on={"kind": "square"}, pin_discriminant="narrow"):
+    pass
+```
+
+```pycon
+>>> Square.kind
+'square'
+>>> Square()
+Square(size=1.0)
+```
+
+A subclass that writes the field out again keeps it as written, as before.
+To pin it another way, give the new annotation a mode of its own:
+
+```python
+class Hexagon(Shape, on={"kind": "hexagon"}):
+    kind: Narrow[str]
+```
+
+```pycon
+>>> Hexagon().kind
+'hexagon'
+>>> Hexagon(kind="square")
+Traceback (most recent call last):
+ValueValidationError: ...
+```
+
+A default written beside a mode that pins or narrows the field has to be
+one the subclass stands for. Any other value could never be used, since the
+pin replaces it or the narrowing turns it down, so the class is refused:
+
+```pycon
+>>> class Pentagon(Shape, on={"kind": "pentagon"}):
+...     kind: Pin[str] = "square"
+...
+Traceback (most recent call last):
+TypeError: Pentagon stands for kind='pentagon', ...
+```
+
+A mode on a field that no subclass matches on does nothing.
 
 Pickling and copying rebuild through the class an instance already has.
 Neither goes back through the dispatch.
