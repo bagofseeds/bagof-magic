@@ -181,6 +181,7 @@ from ._polymorph import arm_parameterised as _arm_parameterised
 from ._polymorph import as_written as _as_written
 from ._polymorph import check as _check_invariant
 from ._polymorph import check_fields as _check_spec_fields
+from ._polymorph import conjoin as _conjoin
 from ._polymorph import delegate as _delegate_polymorph
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
@@ -1537,7 +1538,7 @@ def __pre_new__(
     # nothing inherits them.
     on = kwargs.pop("on", MISSING)
     priority = kwargs.pop("priority", MISSING)
-    if priority is not MISSING and on is MISSING:
+    if priority is not MISSING and (on is MISSING or on is None):
         raise TypeError(
             f"{clsname} sets priority= without on=, and priority only "
             f"decides between subclasses that match the same arguments. "
@@ -1794,8 +1795,24 @@ def __pre_new__(
     # written, rather than the first time something is built. The
     # registration itself waits until the class exists; `__post_new__`
     # does it.
-    if on is not MISSING:
-        owners = _registration_owners(mro[1:])[0]
+    #
+    # A class that inherits from two registered classes on different
+    # branches -- the bottom of a diamond -- stands for what both of them
+    # do, and for whatever it says itself on top: `_conjoin` combines
+    # them. That happens with no on= too, so the class is reachable from
+    # either parent without having to repeat what they stand for; only
+    # on=None ("this class stands for nothing") keeps it out, and so
+    # does a class built by filling in type parameters, which is not one
+    # anyone wrote. A class in a single chain that says nothing is left
+    # unregistered, as it always was.
+    owners, targets, nearest = _registration_owners(mro[1:])
+    diamond = len(nearest) >= 2
+    speaks = on is not MISSING and on is not None
+    composes = diamond and on is not None and (
+        speaks
+        or (options.polymorphic and _GENERIC_ORIGIN not in namespace)
+    )
+    if speaks or composes:
         if not owners:
             raise TypeError(
                 f"{clsname} says with on= which arguments it stands for, "
@@ -1803,7 +1820,13 @@ def __pre_new__(
                 f"subclasses. Add polymorphic=True to the one that "
                 f"should -- `class Chord(Magic, polymorphic=True)`."
             )
-        specs = _specifications(clsname, on)
+        own = _specifications(clsname, on if speaks else {})
+        specs = own
+        if diamond:
+            specs = _conjoin(clsname, own, [
+                (target, target.__dict__[_REGISTRATION][1])
+                for target in targets
+            ])
         for owner in owners:
             _check_spec_fields(owner, clsname, specs)
         namespace[_REGISTRATION] = (
@@ -1811,14 +1834,17 @@ def __pre_new__(
             specs,
             0 if priority is MISSING else priority,
         )
+        # Pinning and narrowing apply what this class says itself. What
+        # it inherits was applied on the classes that said it, and the
+        # fields here are copies of theirs.
         storage, narrow = _PIN_ACTIONS[options.pin_discriminant]
         if storage != "keep":
             pinned.update(_pin_discriminants(
-                fields, namespace, cls_annotations, specs,
+                fields, namespace, cls_annotations, own,
                 storage, options.mutable_default,
             ))
         if narrow:
-            _narrow_discriminants(fields, cls_annotations, specs)
+            _narrow_discriminants(fields, cls_annotations, own)
         # A discriminant this class redeclares with a default of its own
         # is pinned too, as far as the signature is concerned: a required
         # parameter behind it needs the same sentinel a registration's
@@ -1827,7 +1853,7 @@ def __pre_new__(
         # because a base pinned it is already accounted for by that base's
         # `_PINNED`, and one with no default here is filtered out below.
         pinned.update(
-            spec.name for spec in specs if spec.name in cls_annotations
+            spec.name for spec in own if spec.name in cls_annotations
         )
         for owner in owners:
             _check_discriminants(clsname, owner, fields, specs)

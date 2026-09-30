@@ -20,9 +20,11 @@ from typing import Any as TypingAny
 import pytest
 import typing_extensions as tx
 from bagof.converters.exceptions import ConversionError
+from bagof.validators import ValueValidationError
 
 # locals
 import bagof.magic._generics as g
+import bagof.magic._polymorph as p
 from bagof.magic import (
     AmbiguousPolymorphError,
     ClassVar,
@@ -40,7 +42,12 @@ from bagof.magic import (
     magic,
     replace,
 )
-from bagof.magic._constants import _POLYMORPHS, _REGISTRATION
+from bagof.magic._constants import (
+    _FIELDS,
+    _POLYMORPHS,
+    _REGISTRATION,
+    MISSING,
+)
 
 
 def _entry_for(base: type, target: type) -> object:
@@ -2444,3 +2451,486 @@ class TestIntermediateAndDiamond:
         assert type(FooBar()) is FooBar
         with pytest.raises(NoPolymorphError, match="FooBar"):
             Bar(kind="other")
+
+    # -- a diamond with nothing to say (problem B) -----------------------
+
+    @pytest.fixture
+    def axes(self) -> tx.Dict[str, type]:
+        class Axis(Magic, polymorphic=True):
+            name: str = ""
+            type: tx.Optional[str] = None
+            orientation: tx.Optional[str] = None
+
+        class SpatialAxis(Axis, on={"type": "space"}):
+            type: tx.Literal["space"] = "space"
+
+        class OrientedAxis(
+            Axis, on={"orientation": lambda v: v is not None}
+        ):
+            pass
+
+        class OrientedSpatialAxis(SpatialAxis, OrientedAxis):
+            pass
+
+        class AnatomicalAxis(
+            OrientedSpatialAxis,
+            on={"orientation": lambda v: v in {"LR", "RL"}},
+        ):
+            pass
+
+        return {
+            cls.__name__: cls
+            for cls in (Axis, SpatialAxis, OrientedAxis,
+                        OrientedSpatialAxis, AnatomicalAxis)
+        }
+
+    def test_a_diamond_is_reached_from_the_root(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        Axis = axes["Axis"]
+        assert type(Axis(type="space", orientation="AP")) is axes[
+            "OrientedSpatialAxis"]
+        assert type(Axis(type="space", orientation="LR")) is axes[
+            "AnatomicalAxis"]
+
+    def test_a_diamond_is_reached_from_either_parent(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        anatomical = axes["AnatomicalAxis"]
+        assert type(axes["SpatialAxis"](orientation="LR")) is anatomical
+        assert type(
+            axes["OrientedAxis"](type="space", orientation="LR")
+        ) is anatomical
+        assert type(axes["SpatialAxis"](orientation="AP")) is axes[
+            "OrientedSpatialAxis"]
+
+    def test_a_diamond_stands_for_what_both_parents_do(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        # It is not reached on one parent's constraint alone.
+        assert type(axes["SpatialAxis"]("x")) is axes["SpatialAxis"]
+        assert type(axes["SpatialAxis"]()) is axes["SpatialAxis"]
+        assert type(axes["Axis"](type="space")) is axes["SpatialAxis"]
+        assert type(axes["OrientedAxis"](orientation="LR")) is axes[
+            "OrientedAxis"]
+
+    def test_a_missing_field_is_never_guessed(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        # `type` is not given, so nothing says this is a spatial axis:
+        # the choice goes on what was passed, not on what would fit.
+        assert type(axes["Axis"]("x", orientation="LR")) is axes[
+            "OrientedAxis"]
+
+    def test_the_combined_constraint_is_registered_once_per_owner(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        both = axes["OrientedSpatialAxis"]
+        owners, specs, priority = both.__dict__[_REGISTRATION]
+        assert owners == (
+            axes["SpatialAxis"], axes["OrientedAxis"], axes["Axis"]
+        )
+        assert [spec.name for spec in specs] == ["type", "orientation"]
+        assert priority == 0
+        # The leaf below it is in a chain again, and registers with it
+        # alone, standing for its own constraint.
+        leaf = axes["AnatomicalAxis"].__dict__[_REGISTRATION]
+        assert leaf[0] == (both,)
+        assert [spec.name for spec in leaf[1]] == ["orientation"]
+
+    def test_an_empty_on_in_a_diamond_is_the_same_combination(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        class Again(axes["SpatialAxis"], axes["OrientedAxis"], on={}):
+            pass
+
+        specs = Again.__dict__[_REGISTRATION][1]
+        assert [spec.name for spec in specs] == ["type", "orientation"]
+        assert type(axes["SpatialAxis"]()) is axes["SpatialAxis"]
+
+    def test_a_diamond_that_turns_polymorphic_off_is_left_alone(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        class Off(axes["SpatialAxis"], axes["OrientedAxis"],
+                  polymorphic=False):
+            pass
+
+        assert _REGISTRATION not in Off.__dict__
+
+    def test_on_none_leaves_a_diamond_out(
+        self, axes: tx.Dict[str, type]
+    ) -> None:
+        class Aside(axes["SpatialAxis"], axes["OrientedAxis"], on=None):
+            pass
+
+        assert _REGISTRATION not in Aside.__dict__
+        assert type(Aside(orientation="AP")) is Aside
+        assert all(
+            entry.target is not Aside
+            for entry in axes["Axis"].__dict__[_POLYMORPHS].dispatch[0]
+        )
+
+    # -- a diamond that says something (problems C and D) ----------------
+
+    def test_a_diamond_with_priority_on_one_branch(self) -> None:
+        def is_2d(axes: tx.Any) -> bool:
+            return len(axes) == 2
+
+        def is_spatial(axes: tx.Any) -> bool:
+            return all(axis == "space" for axis in axes)
+
+        def is_spatial_2d(axes: tx.Any) -> bool:
+            return is_2d(axes) and is_spatial(axes)
+
+        class CoordinateSystem(Magic, polymorphic=True):
+            axes: tx.Tuple[str, ...] = ()
+
+        class CoordinateSystem2D(CoordinateSystem, on={"axes": is_2d}):
+            pass
+
+        class SpatialCoordinateSystem(
+            CoordinateSystem, on={"axes": is_spatial}, priority=1
+        ):
+            pass
+
+        class SpatialCoordinateSystem2D(
+            CoordinateSystem2D, SpatialCoordinateSystem,
+            on={"axes": is_spatial_2d},
+        ):
+            pass
+
+        plane = ("space", "space")
+        assert type(SpatialCoordinateSystem(axes=plane)) is (
+            SpatialCoordinateSystem2D)
+        assert type(CoordinateSystem(axes=plane)) is (
+            SpatialCoordinateSystem2D)
+        assert type(CoordinateSystem2D(axes=plane)) is (
+            SpatialCoordinateSystem2D)
+        assert type(CoordinateSystem(axes=("time", "space"))) is (
+            CoordinateSystem2D)
+        assert type(CoordinateSystem(axes=("space",) * 3)) is (
+            SpatialCoordinateSystem)
+
+    @pytest.fixture
+    def tones(self) -> tx.Tuple[type, type, type]:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": "y"}):
+            pass
+
+        return R, SA, SB
+
+    def test_tied_siblings_are_settled_by_the_class_below_both(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SAB(SA, SB, on={"a": "x", "b": "y"}):
+            pass
+
+        assert type(R(a="x", b="y")) is SAB
+        assert type(SA(b="y")) is SAB
+        assert type(SB(a="x")) is SAB
+        assert type(R(a="x")) is SA
+
+    def test_tied_siblings_are_settled_with_nothing_said(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SAB(SA, SB):
+            pass
+
+        assert type(R(a="x", b="y")) is SAB
+
+    def test_what_a_diamond_says_can_only_narrow(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SAB(SA, SB, on={"a": {"x", "z"}}):
+            pass
+
+        specs = SAB.__dict__[_REGISTRATION][1]
+        assert [spec.name for spec in specs] == ["a", "b"]
+        # Its own "or z" cannot widen what SA stands for.
+        assert type(R(a="z", b="y")) is SB
+        assert type(R(a="x", b="y")) is SAB
+
+    def test_contradicting_parents_are_refused_by_field(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SX(R, on={"a": "q"}):
+            pass
+
+        with pytest.raises(TypeError) as raised:
+            class Both(SA, SX):
+                pass
+
+        message = str(raised.value)
+        assert "Nothing can build Both" in message
+        assert "a='x'" in message and "a='q'" in message
+        assert "through SA" in message and "through SX" in message
+        assert "on=None" in message
+
+    def test_contradicting_parents_build_with_on_none(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SX(R, on={"a": "q"}):
+            pass
+
+        class Both(SA, SX, on=None):
+            pass
+
+        assert _REGISTRATION not in Both.__dict__
+        assert type(R(a="x")) is SA
+
+    def test_contradicting_its_own_parent_is_refused(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+        with pytest.raises(TypeError, match="through its own on="):
+            class Both(SA, SB, on={"b": "n"}):
+                pass
+
+    def test_a_subclass_of_an_opted_out_diamond(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        # on=None makes the class a plain intermediate, which a subclass
+        # saying something registers through.
+        R, SA, SB = tones
+
+        class Aside(SA, SB, on=None):
+            pass
+
+        class Below(Aside, on={"a": "x"}):
+            pass
+
+        owners = Below.__dict__[_REGISTRATION][0]
+        assert owners == (Aside, SA, SB, R)
+        assert type(R(a="x", b="y")) is Below
+
+    def test_priority_with_on_none_is_refused(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+        with pytest.raises(TypeError, match="priority= without on="):
+            class Both(SA, SB, on=None, priority=1):
+                pass
+
+    def test_on_none_in_a_chain_changes_nothing(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class Quiet(SA, on=None):
+            pass
+
+        assert _REGISTRATION not in Quiet.__dict__
+        assert type(R(a="x")) is SA
+
+    def test_a_field_one_owner_lacks_is_refused_in_a_diamond(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class Wide(SA):
+            extra: str = ""
+
+        with pytest.raises(TypeError, match="not a field of SA"):
+            class Both(Wide, SB, on={"extra": "e"}):
+                pass
+
+    def test_a_diamond_of_diamonds_counts_each_constraint_once(
+        self, tones: tx.Tuple[type, type, type]
+    ) -> None:
+        R, SA, SB = tones
+
+        class SAB(SA, SB):
+            pass
+
+        class SC(R, on={"a": {"x", "w"}}):
+            pass
+
+        class All(SAB, SC):
+            pass
+
+        (a, b) = All.__dict__[_REGISTRATION][1]
+        # SA's and SB's constraints reach it through SAB and again from
+        # SA and SB themselves, and are counted once.
+        assert a.text == "'x' and {'w', 'x'}"
+        assert b.text == "'y'"
+        assert a.value == "x"
+        assert type(R(a="x", b="y")) is All
+
+    def test_a_strict_diamond_keeps_the_combined_invariant(self) -> None:
+        class R(Magic, polymorphic="strict"):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}):
+            pass
+
+        class SB(R, on={"b": "y"}):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        assert type(SAB(a="x", b="y")) is SAB
+        with pytest.raises(PolymorphError, match="contradicts"):
+            SAB(a="x", b="n")
+        assert type(R(a="x", b="y")) is SAB
+
+    def test_a_diamond_over_a_generic_root(self) -> None:
+        class GRoot(Magic, tx.Generic[_T], polymorphic=True, convert=True):
+            value: _T
+            kind: str = ""
+            shade: str = ""
+
+        class GA(GRoot[_T], on={"kind": "a"}):
+            pass
+
+        class GB(GRoot[_T], on={"shade": "b"}):
+            pass
+
+        class GAB(GA[_T], GB[_T]):
+            pass
+
+        built = GRoot[int](value="1", kind="a", shade="b")
+        assert type(built) is GAB[int]
+        assert built.value == 1
+        assert type(GRoot(value="1", kind="a", shade="b")) is GAB
+        assert type(GA[int](value="1", shade="b")) is GAB[int]
+        # A parameterisation is not a class anyone wrote, so it is never
+        # registered in its own right.
+        assert _REGISTRATION not in GAB[int].__dict__
+
+    def test_a_parameterisation_of_an_opted_out_diamond_stays_out(
+        self
+    ) -> None:
+        class GRoot(Magic, tx.Generic[_T], polymorphic=True):
+            value: _T
+            kind: str = ""
+            shade: str = ""
+
+        class GA(GRoot[_T], on={"kind": "a"}):
+            pass
+
+        class GB(GRoot[_T], on={"shade": "b"}):
+            pass
+
+        class GAB(GA[_T], GB[_T], on=None):
+            pass
+
+        assert _REGISTRATION not in GAB[int].__dict__
+
+    def test_narrowed_parents_are_not_narrowed_again(self) -> None:
+        class R(Magic, polymorphic=True):
+            a: str = ""
+            b: str = ""
+
+        class SA(R, on={"a": "x"}, pin_discriminant="narrow"):
+            pass
+
+        class SB(R, on={"b": "y"}, pin_discriminant="narrow"):
+            pass
+
+        class SAB(SA, SB):
+            pass
+
+        # The field is SA's, with SA's validator on it, and nothing was
+        # chained on top of it a second time.
+        mine = getattr(SAB, _FIELDS)["a"]
+        theirs = getattr(SA, _FIELDS)["a"]
+        assert mine.validator is theirs.validator
+        assert mine.type == theirs.type == tx.Literal["x"]
+        assert type(R(a="x", b="y")) is SAB
+        with pytest.raises(Exception, match="expected a value that is 'x'"):
+            SAB(a="q", b="y")
+
+
+class TestConjoin:
+    """Combining the constraints several classes put on one field."""
+
+    @staticmethod
+    def _one(*written: tx.Any) -> tx.Any:
+        # Each constraint as if written by a separate registered class.
+        specs = [p._specification("f", spec) for spec in written]
+        inherited = [
+            (type(f"C{index}", (), {}), (spec,))
+            for index, spec in enumerate(specs[1:])
+        ]
+        (merged,) = p.conjoin("Both", (specs[0],), inherited)
+        return merged
+
+    def test_presence_adds_nothing_either_way(self) -> None:
+        assert self._one(..., "x").text == "'x'"
+        assert self._one("x", ...).text == "'x'"
+        assert self._one(..., ...).text == "anything"
+
+    def test_two_sets_meet_in_their_common_values(self) -> None:
+        merged = self._one({"x", "y", "z"}, {"y", "z", "w"})
+        assert merged.members == ("y", "z")
+        assert merged.value is MISSING
+        assert merged.narrowed == tx.Literal["y", "z"]
+        assert merged.matches("y") and not merged.matches("x")
+        assert not merged.matches([])  # unhashable reads as no match
+
+    def test_two_sets_with_nothing_in_common_are_refused(self) -> None:
+        with pytest.raises(TypeError, match="no value of 'f' is both"):
+            self._one({"x"}, {"y"})
+
+    def test_an_exact_value_outside_a_set_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="Nothing can build Both"):
+            self._one({"x", "y"}, "z")
+
+    def test_an_exact_value_inside_a_set_is_kept(self) -> None:
+        merged = self._one({"x", "y"}, "x")
+        assert merged.value == "x"
+        assert merged.members is None
+        assert merged.narrowed == tx.Literal["x"]
+        assert merged.precision == 4
+
+    def test_a_set_filtered_by_a_question(self) -> None:
+        merged = self._one(lambda v: v > 1, {1, 2, 3})
+        assert merged.members == (2, 3)
+        assert merged.narrowed == tx.Literal[2, 3]
+
+    def test_every_member_failing_the_question_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="no value of 'f' is both"):
+            self._one({1, 2}, lambda v: v > 5)
+
+    def test_an_exact_value_failing_a_type_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="no value of 'f' is both"):
+            self._one("x", int)
+
+    def test_an_exact_value_failing_a_pattern_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="no value of 'f' is both"):
+            self._one(re.compile("[a-z]+"), "X1")
+
+    def test_a_value_no_literal_can_hold_takes_the_type(self) -> None:
+        assert self._one(1.5, float).narrowed is float
+        assert self._one({1.5, 2.5}, float).narrowed is float
+
+    def test_two_open_constraints_are_left_to_run_time(self) -> None:
+        merged = self._one(re.compile("[a-z]+"), lambda v: len(v) > 2)
+        assert merged.narrowed is MISSING
+        assert merged.members is None
+        assert merged.matches("abc") and not merged.matches("ab")
+        assert not merged.matches("AB1")
+
+    def test_the_combined_check_asks_both(self) -> None:
+        merged = self._one({"x", "y"}, lambda v: v != "y")
+        assert merged.validate("x") == "x"
+        with pytest.raises(ValueValidationError, match="expected"):
+            merged.validate("y")

@@ -126,7 +126,7 @@ class _Spec:
     """One `field: constraint` pair of a registration."""
 
     __slots__ = ("name", "matches", "precision", "value", "text",
-                 "narrowed", "validate")
+                 "narrowed", "validate", "members", "parts")
 
     def __init__(
         self,
@@ -137,6 +137,8 @@ class _Spec:
         text: str,
         narrowed: MaybeMissing[tx.Any],
         validate: tx.Optional[tx.Callable[[tx.Any], tx.Any]],
+        members: tx.Optional[tx.Tuple[tx.Any, ...]] = None,
+        parts: tx.Optional[tx.Tuple["_Spec", ...]] = None,
     ) -> None:
         self.name = name
         self.matches = matches
@@ -154,6 +156,16 @@ class _Spec:
         #: A validator enforcing this constraint, chained onto a narrowed
         #: field; `None` when there is nothing to enforce (a bare `...`).
         self.validate = validate
+        #: Every value this constraint accepts, when there are finitely
+        #: many and they are known (a set), sorted by repr; `None`
+        #: otherwise. An exact value is held in `value` instead.
+        self.members = members
+        #: The constraints as they were written that this one is the
+        #: conjunction of -- just itself, for one that was written.
+        #: Combining two classes' registrations reads it, so that one
+        #: constraint reaching the combination along two branches of
+        #: the hierarchy counts once.
+        self.parts = (self,) if parts is None else parts
 
 
 def _is_hint(spec: tx.Any) -> bool:
@@ -233,6 +245,8 @@ def _specification(name: str, spec: tx.Any) -> _Spec:
         text,
         _narrowed_type(spec),
         _constraint_validator(spec, matches, text),
+        tuple(sorted(spec, key=repr))
+        if isinstance(spec, (set, frozenset)) else None,
     )
 
 
@@ -332,6 +346,151 @@ def check_fields(
                 f"field of {owner.__name__}. Its fields are: "
                 f"{', '.join(repr(field) for field in table) or 'none'}."
             )
+
+
+# ----------------------------------------------------------------------
+# Combining what several classes stand for
+# ----------------------------------------------------------------------
+
+
+def conjoin(
+    clsname: str,
+    own: tx.Tuple[_Spec, ...],
+    inherited: tx.Sequence[tx.Tuple[type, tx.Tuple[_Spec, ...]]],
+) -> tx.Tuple[_Spec, ...]:
+    """
+    What a class that inherits from several registered classes stands for.
+
+    `own` is what the class says itself, and `inherited` what each of
+    the registered classes it inherits from stands for, in MRO order. A
+    value has to satisfy all of it, so the constraints on one field are
+    combined into one that asks for every one of them. A field is listed
+    where it is first mentioned.
+
+    One constraint can reach the combination along two branches of the
+    hierarchy -- a class that already combines two others brings their
+    constraints with it -- and counts once. A combination that provably
+    no value satisfies is refused here, when the class is written: two
+    different exact values, or a value (or every value of a set) that
+    the other side turns down.
+    """
+    merged: tx.Dict[str, tx.Tuple[_Spec, tx.List[str]]] = {}
+    sources = [("its own on=", own)]
+    sources += [(base.__name__, specs) for base, specs in inherited]
+    for source, specs in sources:
+        for spec in specs:
+            for part in spec.parts:
+                _merge_part(clsname, merged, source, part)
+    return tuple(spec for spec, _ in merged.values())
+
+
+def _merge_part(
+    clsname: str,
+    merged: tx.Dict[str, tx.Tuple[_Spec, tx.List[str]]],
+    source: str,
+    part: _Spec,
+) -> None:
+    # Add one written constraint, coming from `source`, to what the
+    # combination asks of its field.
+    found = merged.get(part.name)
+    if found is None:
+        merged[part.name] = (part, [source])
+        return
+    current, whose = found
+    if any(part is known for known in current.parts):
+        return
+    # A bare `...` asks only that the value be there, which every other
+    # constraint asks already.
+    if part.validate is None:
+        return
+    if current.validate is None:
+        merged[part.name] = (part, [source])
+        return
+    both = _both(clsname, current, part, whose, source)
+    merged[part.name] = (
+        both, whose if source in whose else whose + [source]
+    )
+
+
+def _candidates(spec: _Spec) -> tx.Optional[tx.Tuple[tx.Any, ...]]:
+    # Every value `spec` accepts, when there are finitely many known ones.
+    if spec.value is not MISSING:
+        return (spec.value,)
+    return spec.members
+
+
+def _both(
+    clsname: str,
+    first: _Spec,
+    second: _Spec,
+    whose: tx.Sequence[str],
+    source: str,
+) -> _Spec:
+    # One constraint asking for both `first` and `second`.
+    candidates, other = _candidates(first), second
+    if candidates is None:
+        candidates, other = _candidates(second), first
+    survivors = None
+    if candidates is not None:
+        survivors = tuple(
+            value for value in candidates if other.matches(value)
+        )
+        if not survivors:
+            name = first.name
+            raise TypeError(
+                f"Nothing can build {clsname}: it stands for "
+                f"{name}={first.text} through {' and '.join(whose)}, and "
+                f"for {name}={second.text} through {source}, and no value "
+                f"of {name!r} is both. Write on=None on {clsname} to leave "
+                f"it out of the choice, or have it inherit from only one "
+                f"of them."
+            )
+    exact = (
+        first if first.value is not MISSING
+        else second if second.value is not MISSING
+        else None
+    )
+    members = survivors if exact is None else None
+    first_matches, second_matches = first.matches, second.matches
+    first_validate, second_validate = first.validate, second.validate
+
+    def validate(value: tx.Any) -> tx.Any:
+        return second_validate(first_validate(value))
+
+    return _Spec(
+        first.name,
+        _guarded(
+            lambda value: first_matches(value) and second_matches(value)
+        ),
+        max(first.precision, second.precision),
+        MISSING if exact is None else exact.value,
+        f"{first.text} and {second.text}",
+        _conjoined_type(first, second, exact, members),
+        validate,
+        members,
+        first.parts + second.parts,
+    )
+
+
+def _conjoined_type(
+    first: _Spec,
+    second: _Spec,
+    exact: tx.Optional[_Spec],
+    members: tx.Optional[tx.Tuple[tx.Any, ...]],
+) -> MaybeMissing[tx.Any]:
+    # The type a field standing for both would be narrowed to: the exact
+    # value's `Literal`, else a `Literal` of the values both accept, else
+    # whatever the more precise side narrows to (the earlier one on a
+    # tie), else nothing.
+    if exact is not None and exact.narrowed is not MISSING:
+        return exact.narrowed
+    if members and all(_literal_legal(member) for member in members):
+        return tx.Literal[members]
+    ranked = sorted((first, second), key=lambda spec: -spec.precision)
+    for spec in ranked:
+        if spec.narrowed is not MISSING:
+            return spec.narrowed
+    return MISSING
 
 
 # ----------------------------------------------------------------------
