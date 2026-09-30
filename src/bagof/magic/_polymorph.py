@@ -51,9 +51,12 @@ __all__ = [
     "AmbiguousPolymorphError",
 ]
 
+# stdlib
+import enum
+
 # dependencies
 import typing_extensions as tx
-from bagof.validators import Validator
+from bagof.validators import Validator, ValueValidationError
 
 # internals
 from ._constants import (
@@ -122,7 +125,8 @@ _LOOSE = 0
 class _Spec:
     """One `field: constraint` pair of a registration."""
 
-    __slots__ = ("name", "matches", "precision", "value", "text")
+    __slots__ = ("name", "matches", "precision", "value", "text",
+                 "narrowed", "validate")
 
     def __init__(
         self,
@@ -131,6 +135,8 @@ class _Spec:
         precision: int,
         value: MaybeMissing[tx.Any],
         text: str,
+        narrowed: MaybeMissing[tx.Any],
+        validate: tx.Optional[tx.Callable[[tx.Any], tx.Any]],
     ) -> None:
         self.name = name
         self.matches = matches
@@ -141,6 +147,13 @@ class _Spec:
         self.value = value
         #: How the constraint reads in an error message.
         self.text = text
+        #: The type a narrowed discriminant should carry, or `MISSING`
+        #: when the constraint says nothing a type could capture and the
+        #: field keeps the type it was declared with.
+        self.narrowed = narrowed
+        #: A validator enforcing this constraint, chained onto a narrowed
+        #: field; `None` when there is nothing to enforce (a bare `...`).
+        self.validate = validate
 
 
 def _is_hint(spec: tx.Any) -> bool:
@@ -190,7 +203,11 @@ def _shape(
     if spec is Ellipsis:
         return (lambda value: True), _LOOSE, MISSING, "anything"
     if isinstance(spec, (set, frozenset)):
-        return (lambda value: value in spec), _MEMBER, MISSING, repr(spec)
+        # A set has no order, so read it the same way every run: sorted
+        # by repr, so the message (and any narrowed Literal built from
+        # it) does not vary with the hash seed.
+        text = "{" + ", ".join(sorted(map(repr, spec))) + "}"
+        return (lambda value: value in spec), _MEMBER, MISSING, text
     if hasattr(spec, "fullmatch"):
         return (
             lambda value: spec.fullmatch(str(value)) is not None,
@@ -208,7 +225,79 @@ def _shape(
 def _specification(name: str, spec: tx.Any) -> _Spec:
     """Read one value of an `on={...}` mapping."""
     matches, precision, value, text = _shape(spec)
-    return _Spec(name, _guarded(matches), precision, value, text)
+    return _Spec(
+        name,
+        _guarded(matches),
+        precision,
+        value,
+        text,
+        _narrowed_type(spec),
+        _constraint_validator(spec, matches, text),
+    )
+
+
+# ----------------------------------------------------------------------
+# Narrowing a discriminant's field from what it stands for
+# ----------------------------------------------------------------------
+
+#: The value kinds a `Literal` may hold. A constraint over anything else
+#: (a regular expression, a callable, a value of some other class) cannot
+#: be written as a type, so the field's declared type is left as it is.
+_LITERAL_TYPES = (str, bytes, bool, int, enum.Enum)
+
+
+def _literal_legal(value: tx.Any) -> bool:
+    return value is None or isinstance(value, _LITERAL_TYPES)
+
+
+def _narrowed_type(spec: tx.Any) -> MaybeMissing[tx.Any]:
+    # The type a discriminant should carry once its class stands for
+    # `spec`, or `MISSING` when the field keeps the type it was declared
+    # with. An exact value becomes `Literal[value]`, a set becomes
+    # `Literal[a, b, ...]` (both only when every value is one a `Literal`
+    # can hold), and a type or typing form is used as it is. A regular
+    # expression, a callable, or a bare `...` narrows nothing.
+    if spec is Ellipsis:
+        return MISSING
+    if isinstance(spec, (set, frozenset)):
+        # Sorted by repr, so the Literal reads the same every run rather
+        # than in the set's hash-seeded order.
+        members = tuple(sorted(spec, key=repr))
+        if members and all(_literal_legal(member) for member in members):
+            return tx.Literal[members]
+        return MISSING
+    if hasattr(spec, "fullmatch"):
+        return MISSING
+    if _is_hint(spec):
+        return spec
+    if callable(spec):
+        return MISSING
+    if _literal_legal(spec):
+        return tx.Literal[spec]
+    return MISSING
+
+
+def _constraint_validator(
+    spec: tx.Any,
+    matches: tx.Callable[[tx.Any], tx.Any],
+    text: str,
+) -> tx.Optional[tx.Callable[[tx.Any], tx.Any]]:
+    # A validator enforcing `spec`, or None when there is nothing to
+    # enforce (a bare `...`). It uses the very predicate dispatch matches
+    # on, so a value that would not have chosen this subclass is turned
+    # down here -- returning the value unchanged when it fits, and
+    # raising a validation error (named against the field by the usual
+    # machinery) when it does not.
+    if spec is Ellipsis:
+        return None
+    guarded = _guarded(matches)
+
+    def validate(value: tx.Any) -> tx.Any:
+        if not guarded(value):
+            raise ValueValidationError(f"expected a value that is {text}")
+        return value
+
+    return validate
 
 
 def specifications(
@@ -370,10 +459,75 @@ def read(
 # ----------------------------------------------------------------------
 
 
+class _Plan:
+    """How the owner re-spells a delegated call for one subclass.
+
+    Most subclasses take exactly what the owner takes, so the owner
+    hands the call straight on -- `target(*args, **kwargs)` -- and needs
+    no plan. A subclass that does *not* take one of its discriminants
+    (it holds the value as a class attribute or a non-init default
+    instead) needs that argument taken back out before the owner calls
+    it, and its positional arguments re-spelled by name around the gap.
+    """
+
+    __slots__ = ("positions", "positional_only", "drops")
+
+    def __init__(
+        self,
+        positions: tx.Tuple[str, ...],
+        positional_only: int,
+        drops: tx.FrozenSet[str],
+    ) -> None:
+        #: The owner's positional parameters, by public name, in the
+        #: order they are passed -- so a positional argument can be
+        #: matched to the name it fills.
+        self.positions = positions
+        #: How many of those lead a positional-only run, which stays
+        #: positional because it cannot be passed by name.
+        self.positional_only = positional_only
+        #: The public names to drop before calling the subclass, which
+        #: does not take them.
+        self.drops = drops
+
+
+def _delegation_plan(
+    owner: type, target: type, specs: tx.Tuple[_Spec, ...]
+) -> tx.Optional[_Plan]:
+    # What the owner must do differently to build `target`, or None when
+    # it can hand the call straight on. Only a discriminant the owner
+    # takes but the target does not needs anything: it has to come out
+    # of the call, and the positional arguments re-spelled around it. A
+    # target whose `__init__` is hand-written takes its arguments however
+    # it likes, so nothing can be re-spelled and the call goes verbatim.
+    if not _generated_init(target):
+        return None
+    owner_fields = getattr(owner, _FIELDS)
+    target_fields = getattr(target, _FIELDS)
+    drops = []
+    for spec in specs:
+        owner_field = owner_fields.get(spec.name)
+        target_field = target_fields.get(spec.name)
+        if owner_field is None or target_field is None:  # pragma: no cover
+            # Defensive: a spec name is validated against the owner's
+            # fields, and the target is a subclass carrying all of them,
+            # so neither lookup misses.
+            continue
+        if owner_field.init and not target_field.init:
+            drops.append(owner_field.public_name)
+    if not drops:
+        return None
+    positional = [f for f in owner_fields.values() if f.positional]
+    order = [f for f in positional if not f.kw]
+    order += [f for f in positional if f.kw]
+    positions = tuple(f.public_name for f in order)
+    positional_only = sum(1 for f in order if not f.kw)
+    return _Plan(positions, positional_only, frozenset(drops))
+
+
 class _Polymorph:
     """One subclass, and what it stands for."""
 
-    __slots__ = ("target", "specs", "rank")
+    __slots__ = ("target", "specs", "rank", "respell")
 
     def __init__(
         self,
@@ -381,6 +535,7 @@ class _Polymorph:
         specs: tx.Tuple[_Spec, ...],
         priority: int,
         depth: int,
+        respell: tx.Optional[_Plan] = None,
     ) -> None:
         self.target = target
         self.specs = specs
@@ -396,18 +551,24 @@ class _Polymorph:
             sum(spec.precision for spec in specs),
             depth,
         )
+        #: How the owner re-spells the call to build this subclass, or
+        #: None to hand it straight on.
+        self.respell = respell
 
     def standing_for(self, target: type) -> "_Polymorph":
         """This registration, with `target` answering for it instead.
 
         The rank is kept: `Sub[int]` stands for the same claim `Sub`
         registered, and sits at the same place in the hierarchy as far
-        as the choice is concerned.
+        as the choice is concerned. The re-spelling plan is kept too:
+        filling in type parameters changes neither which arguments the
+        subclass takes nor the order the owner passes them in.
         """
         made = _Polymorph.__new__(_Polymorph)
         made.target = target
         made.specs = self.specs
         made.rank = self.rank
+        made.respell = self.respell
         return made
 
     def matches(self, values: tx.Mapping[str, tx.Any]) -> bool:
@@ -459,7 +620,8 @@ class _Registry:
     ) -> None:
         """Have `owner` build `target` for the arguments `specs` describe."""
         entry = _Polymorph(
-            target, specs, priority, target.__mro__.index(owner)
+            target, specs, priority, target.__mro__.index(owner),
+            _delegation_plan(owner, target, specs),
         )
         entries = _replacing(self.dispatch[0], entry)
         self.dispatch = (
@@ -703,9 +865,12 @@ def select(
     found: _Registries,
     args: tx.Tuple[tx.Any, ...],
     kwargs: tx.Dict[str, tx.Any],
-) -> tx.Optional[type]:
+) -> tx.Optional["_Polymorph"]:
     """
     Which subclass of `cls` to build, or `None` to build `cls` itself.
+
+    The whole registration is handed back, not just the class, so the
+    caller can re-spell the delegated call the way the subclass needs.
     """
     entries, where, left_out = found.dispatch
     values = read(where, args, kwargs)
@@ -739,7 +904,52 @@ def select(
             f"`class {as_written(best.target)}({as_written(cls)}, "
             f"on={{...}}, priority=1)`."
         )
-    return best.target
+    return best
+
+
+def delegate(
+    cls: type,
+    entry: "_Polymorph",
+    args: tx.Tuple[tx.Any, ...],
+    kwargs: tx.Dict[str, tx.Any],
+) -> tx.Any:
+    """Build `entry.target`, re-spelling the call when it takes less.
+
+    The common case -- the subclass takes exactly what the owner takes
+    -- hands the call straight on. When the subclass does not take one of
+    its discriminants, that argument is taken back out and the positional
+    arguments are re-spelled by name around the gap, so the leftover
+    positional-only run stays positional and everything else is passed by
+    name.
+    """
+    plan = entry.respell
+    target = entry.target
+    if plan is None:
+        return target(*args, **kwargs)
+    # More positional arguments than the owner takes never bind to a
+    # name, so re-spelling them by name would drop them silently -- the
+    # verbatim path raises, and so must this one.
+    if len(args) > len(plan.positions):
+        raise TypeError(
+            f"{as_written(cls)}() takes {len(plan.positions)} positional "
+            f"arguments but {len(args)} were given"
+        )
+    leading = args[: plan.positional_only]
+    bound: tx.Dict[str, tx.Any] = {}
+    for name, value in zip(
+        plan.positions[plan.positional_only:], args[plan.positional_only:]
+    ):
+        bound[name] = value
+    for name, value in kwargs.items():
+        if name in bound:
+            raise TypeError(
+                f"{as_written(cls)}() got multiple values for argument "
+                f"{name!r}"
+            )
+        bound[name] = value
+    for name in plan.drops:
+        bound.pop(name, None)
+    return target(*leading, **bound)
 
 
 def _nothing_matched(
