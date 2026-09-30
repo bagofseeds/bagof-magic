@@ -88,8 +88,12 @@ polymorphic : bool | str, default=False
     Build one of this class's subclasses instead of this class,
     chosen from the arguments it was given.
 pin_discriminant : str, default="pin"
-    What a subclass does with a field it matches on exactly.
-    "pin", "classvar" or "keep".
+    What a subclass does with a field it matches on. "pin" gives it
+    that value as a default, "classvar" makes it a class attribute,
+    "keep" leaves it as the subclass wrote it. Add "+narrow" (or write
+    "narrow" for "pin+narrow") to also narrow the field's type to what
+    it stands for and reject any other value: "narrow", "pin+narrow",
+    "classvar+narrow" or "keep+narrow".
 reverse : bool, default=False
     Use the reverse MRO order to determine field order.
 doc : bool | str, default=True
@@ -1066,8 +1070,22 @@ _MUTABLE_DEFAULT_ACTIONS = ("factory", "raise", "allow")
 # hierarchy unbuildable.
 _POLYMORPHIC = (False, True, "strict")
 
-# The accepted values of the `pin_discriminant` class option.
-_PIN_ACTIONS = ("pin", "classvar", "keep")
+# The accepted values of the `pin_discriminant` class option, each read
+# as a (storage, narrow) pair. `storage` is what the matched field
+# becomes -- a pinned default ("pin"), a class attribute ("classvar"), or
+# left as the subclass wrote it ("keep"). `narrow`, added by the
+# `+narrow` spellings (and by the bare "narrow", which is "pin+narrow"),
+# also narrows the field's type to what it stands for and enforces the
+# constraint with a validator. "pin" is the default.
+_PIN_ACTIONS = {
+    "pin": ("pin", False),
+    "classvar": ("classvar", False),
+    "keep": ("keep", False),
+    "narrow": ("pin", True),
+    "pin+narrow": ("pin", True),
+    "classvar+narrow": ("classvar", True),
+    "keep+narrow": ("keep", True),
+}
 
 
 def _polymorphic_base(mro: tx.Tuple[type, ...]) -> tx.Optional[type]:
@@ -1520,8 +1538,9 @@ def __pre_new__(
 
     if options.pin_discriminant not in _PIN_ACTIONS:
         raise ValueError(
-            f"pin_discriminant must be 'pin', 'classvar' or 'keep', "
-            f"not {options.pin_discriminant!r}"
+            f"pin_discriminant must be 'pin', 'classvar', 'keep', "
+            f"'narrow', 'pin+narrow', 'classvar+narrow' or "
+            f"'keep+narrow', not {options.pin_discriminant!r}"
         )
 
     if options.unresolved_hints not in _HINT_POLICIES:
@@ -3493,9 +3512,12 @@ class MetaMagic(ABCMeta):
         chosen from the arguments it was given. With "strict", a call
         matching no subclass is refused.
     pin_discriminant : str, default="pin"
-        What a subclass does with a field it matches on exactly. "pin"
-        gives it a default, "classvar" makes it a class attribute,
-        "keep" leaves it alone.
+        What a subclass does with a field it matches on. "pin" gives it
+        that value as a default, "classvar" makes it a class attribute,
+        "keep" leaves it as the subclass wrote it. Add "+narrow" (or
+        write "narrow" for "pin+narrow") to also narrow the field's type
+        to what it stands for and reject any other value: "narrow",
+        "pin+narrow", "classvar+narrow" or "keep+narrow".
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
     doc : bool | str, default=True
@@ -3767,9 +3789,12 @@ class Magic(metaclass=MetaMagic):
         chosen from the arguments it was given. With "strict", a call
         matching no subclass is refused.
     pin_discriminant : str, default="pin"
-        What a subclass does with a field it matches on exactly. "pin"
-        gives it a default, "classvar" makes it a class attribute,
-        "keep" leaves it alone.
+        What a subclass does with a field it matches on. "pin" gives it
+        that value as a default, "classvar" makes it a class attribute,
+        "keep" leaves it as the subclass wrote it. Add "+narrow" (or
+        write "narrow" for "pin+narrow") to also narrow the field's type
+        to what it stands for and reject any other value: "narrow",
+        "pin+narrow", "classvar+narrow" or "keep+narrow".
     reverse : bool, default=False
         Use the reverse MRO order to determine field order.
     doc : bool | str, default=True
