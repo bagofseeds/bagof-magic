@@ -105,6 +105,99 @@ Reaching `HarmonicMinor` means satisfying `MinorChord` first. Ask for
 Chord(root='A', mode='major', variant='harmonic')
 ```
 
+### A plain class in between
+
+A subclass written without `on=` stands for nothing, so it is never chosen.
+It can still sit between the root and the subclasses that are:
+
+```python
+class Seventh(Chord):
+    def notes(self) -> int:
+        return 4
+
+class DominantSeventh(Seventh, on={"variant": "dominant"}):
+    pass
+```
+
+```pycon
+>>> Chord(root="G", variant="dominant")
+DominantSeventh(root='G', mode='major', variant='dominant')
+>>> Seventh(root="G", variant="dominant")
+DominantSeventh(root='G', mode='major', variant='dominant')
+```
+
+### Combining two subclasses
+
+A class that inherits from two subclasses on different branches stands for
+what both of them stand for. It does not have to say it again:
+
+```python
+from typing import Optional
+
+class Axis(Magic, polymorphic=True):
+    name: str
+    unit: Optional[str] = None
+    direction: Optional[str] = None
+
+class SpatialAxis(Axis, on={"unit": "metre"}):
+    pass
+
+class OrientedAxis(Axis, on={"direction": {"up", "down"}}):
+    pass
+
+class OrientedSpatialAxis(SpatialAxis, OrientedAxis):
+    pass
+```
+
+It is reached from the root and from either parent, but only when both
+conditions hold. A missing argument is never guessed:
+
+```pycon
+>>> Axis("z", unit="metre", direction="up")
+OrientedSpatialAxis(name='z', unit='metre', direction='up')
+>>> SpatialAxis("z", direction="up")
+OrientedSpatialAxis(name='z', unit='metre', direction='up')
+>>> SpatialAxis("z")
+SpatialAxis(name='z', unit='metre', direction=None)
+>>> Axis("z", direction="up")
+OrientedAxis(name='z', unit=None, direction='up')
+```
+
+An `on=` of its own adds to what the two parents ask for; it can narrow the
+choice, never widen it. When both parents match equally well, the class
+below them settles it, because it asks for more than either.
+
+Two parents that cannot both hold, such as two different values for one
+field, make a class nothing could ever build. It is refused when it is
+written:
+
+```pycon
+>>> class TimeAxis(Axis, on={"unit": "second"}):
+...     pass
+...
+>>> class SpaceTime(SpatialAxis, TimeAxis):
+...     pass
+...
+Traceback (most recent call last):
+TypeError: Nothing can build SpaceTime: ...
+```
+
+### Leaving a class out
+
+`on=None` says a class stands for nothing, so no parent ever builds it. It
+works anywhere, and it is how to write a class that combines two subclasses
+without being chosen for them:
+
+```pycon
+>>> class SpaceTime(SpatialAxis, TimeAxis, on=None):
+...     pass
+...
+>>> SpaceTime("t", unit="second")
+SpaceTime(name='t', unit='second', direction=None)
+```
+
+A subclass of it can still say what it stands for, and is reached through it.
+
 ## Registering a class you did not write
 
 ```pycon

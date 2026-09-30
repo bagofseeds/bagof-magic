@@ -356,7 +356,7 @@ Three things it has to get right:
   ordinary spelling would go unrecognised on exactly the interpreters
   CI covers at the old end.
 
-**Nothing registers with a parameterisation.** `_polymorphic_base`
+**Nothing registers with a parameterisation.** `_polymorphic_levels`
 skips a class built by filling parameters in, and `register_polymorph`
 called on one hands the registration to its origin -- so
 `class Only(Signal[str], on=...)` registers with `Signal`, and the
@@ -382,6 +382,49 @@ Two things that follow, and are tested:
   "none has yet: the module has not been imported" report would send
   the reader the wrong way. `select` carries the left-out entries
   alongside the candidates for exactly that message.
+
+**Registration owners.** `_REGISTRATION` is `(owners, specs, priority)`,
+and `__post_new__` registers the class with every owner, in MRO order.
+`_registration_owners` works them out from the polymorphic ancestors
+the author wrote (parameterisations skipped): a *target* is one that
+carries its own `_REGISTRATION`, a *pass-through* one that does not.
+
+- **In a chain** the owners are every level up to and including the
+  nearest target, or up to the root when there is none. A target is
+  reached from above by its own registration, so stopping there keeps
+  one hop per level; a pass-through is reached by nothing, so a class
+  below it registers past it as well -- otherwise `Foo(kind=...)` could
+  never reach `FooBar` through a plain `Bar(Foo)`. A chain class with
+  no `on=` stays unregistered, as it always was.
+- **In a diamond** (two nearest targets, one per branch) the class is
+  registered even with no `on=`, standing for its own `on=` combined by
+  `conjoin` with every target ancestor's specs. The owners are every
+  level down each branch to its nearest target, *plus the root(s)*.
+  All the parents make it reachable from either branch -- a priority on
+  one branch would otherwise send the call where the class is not. The
+  root is needed as well to break ties: two siblings matching equally
+  well at the root raise before anything descends, and only an entry at
+  the root whose constraint covers both of theirs out-ranks them.
+- **`conjoin`** merges per field and never uses the MRO to drop a side:
+  a value has to satisfy all of it. `_Spec.parts` holds the written
+  specs a merged one came from, so one reaching the merge along two
+  branches (a diamond of diamonds) counts once by identity. A merge
+  that is provably empty -- unequal exact values, a value outside a
+  set, disjoint sets, a value or every member of a set failing the
+  other side's `matches` -- is refused at class creation. Everything
+  else is left to run time. Pinning and narrowing apply to a class's
+  *own* specs only; the inherited ones were applied by the classes that
+  said them, and re-applying would chain a validator twice.
+- **`on=None`** stands for nothing: never registered, even in a
+  diamond (the escape hatch for a contradiction), and a pass-through to
+  anything below it. `priority=` with it is refused.
+- **`register_polymorph`** registers only with the class it is called
+  on, then writes `((owner,), specs, priority)` onto a target that has
+  no record, so a later `class X(Target, on=...)` sees a target rather
+  than a pass-through. Writing it also disarms a strict target's
+  "required" flag and sets its invariant, as `arm` does for a class
+  statement -- without that, a strict leaf registered by hand refused
+  to be built at all.
 
 ## Conventions specific to this repo (do not regress)
 

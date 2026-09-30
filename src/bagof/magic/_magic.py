@@ -3844,7 +3844,8 @@ class MetaMagic(ABCMeta):
         after the fact -- for a class you did not write, or one whose
         constraints are only known at run time. Registering later only
         affects what is built later; instances that already exist are
-        untouched.
+        untouched. Only this class builds `target`; a subclass of
+        `target` written afterwards with `on=` is reached through it.
 
         Leave `target` out to use it as a decorator on the class
         statement, which registers the class and hands it back:
