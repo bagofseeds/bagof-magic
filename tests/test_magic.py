@@ -1787,6 +1787,118 @@ class TestField:
                 x = Field()
 
 
+class TestFieldKeywords:
+    """`_fields.field()` takes the keywords a type checker reads off it, and
+    refuses the ones it does not know rather than dropping them."""
+
+    def test_kw_only_true_is_keyword_only(self) -> None:
+        class C(Magic):
+            x: int = _fields.field(kw_only=True)
+            y: int = 0
+
+        kind = signature(C).parameters["x"].kind
+        assert kind is Parameter.KEYWORD_ONLY
+        assert C(x=1).x == 1
+        with pytest.raises(TypeError):
+            C(1)
+
+    def test_kw_only_is_what_the_annotation_does(self) -> None:
+        by_keyword = Field(kw_only=True)
+        by_annotation = KwOnly()
+        assert (by_keyword.kw, by_keyword.positional) == (
+            by_annotation.kw, by_annotation.positional
+        )
+
+    def test_kw_only_false_is_positional_or_keyword(self) -> None:
+        class C(Magic, kw_only=True):
+            x: int = _fields.field(kw_only=False)
+            y: int = 0
+
+        params = signature(C).parameters
+        assert params["x"].kind is Parameter.POSITIONAL_OR_KEYWORD
+        assert params["y"].kind is Parameter.KEYWORD_ONLY
+        assert C(1) == C(x=1)
+
+    def test_kw_only_false_on_a_positional_only_class(self) -> None:
+        class C(Magic, positional_only=True):
+            x: int = _fields.field(kw_only=False)
+
+        kind = signature(C).parameters["x"].kind
+        assert kind is Parameter.POSITIONAL_OR_KEYWORD
+
+    def test_kw_only_survives_an_overriding_subclass(self) -> None:
+        class Base(Magic):
+            x: int = _fields.field(kw_only=True)
+
+        class Sub(Base, positional_only=True, override=True):
+            pass
+
+        kind = signature(Sub).parameters["x"].kind
+        assert kind is Parameter.KEYWORD_ONLY
+
+    def test_init_false_wins_over_kw_only(self) -> None:
+        class C(Magic):
+            x: int = _fields.field(init=False, kw_only=True, default=3)
+
+        assert "x" not in signature(C).parameters
+        assert C().x == 3
+
+    def test_default_factory_builds_a_fresh_default(self) -> None:
+        class C(Magic):
+            tags: list = _fields.field(default_factory=list)
+
+        first, second = C(), C()
+        assert first.tags == [] and first.tags is not second.tags
+        assert Field(default_factory=list).factory is list
+
+    def test_factory_and_default_factory_together_are_refused(self) -> None:
+        with pytest.raises(TypeError, match="factory= or default_factory="):
+            _fields.field(factory=list, default_factory=dict)
+
+    def test_the_other_checker_keywords_still_work(self) -> None:
+        class C(Magic):
+            n: int = _fields.field(default="7", converter=int, alias="number")
+            tags: list = _fields.field(factory=list, init=False)
+
+        c = C(number="8")
+        assert c.n == 8 and c.tags == []
+        assert C().n == 7
+
+    @pytest.mark.parametrize(
+        "make,owner", [(_fields.field, "field"), (Field, "Field")]
+    )
+    def test_an_unknown_keyword_is_refused(
+        self, make: tx.Callable, owner: str
+    ) -> None:
+        with pytest.raises(TypeError) as caught:
+            make(bogus=1)
+        said = str(caught.value)
+        assert said.startswith(
+            f"{owner}() got an unexpected keyword argument 'bogus'."
+        )
+        assert "default_factory" in said and "kw_only" in said
+        assert "Did you mean" not in said
+
+    def test_a_misspelled_keyword_is_named_with_its_likely_spelling(
+        self
+    ) -> None:
+        with pytest.raises(TypeError, match="Did you mean 'default'"):
+            _fields.field(defaults=1)
+
+    def test_an_annotation_refuses_an_unknown_keyword_too(self) -> None:
+        with pytest.raises(TypeError, match=r"^Default\(\) got .* 'bogus'"):
+            Default(3, bogus=1)
+
+    def test_bookkeeping_is_not_a_keyword(self) -> None:
+        # Those attributes are set by the package itself, never passed in.
+        with pytest.raises(TypeError, match="'_declared'") as caught:
+            Field(_declared={})
+        accepted = str(caught.value).split("A field accepts: ")[1]
+        assert "_" not in accepted.replace("default_factory", "").replace(
+            "kw_only", ""
+        )
+
+
 # ======================================================================
 # Mapping
 # ======================================================================

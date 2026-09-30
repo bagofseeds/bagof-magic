@@ -50,6 +50,36 @@ The annotation form composes naturally. Several annotations stack on one
 field without nesting. The `field(...)` form covers anything the annotations
 cannot say.
 
+`field(...)` also takes the `dataclasses` spellings `kw_only=` and
+`default_factory=`, which mypy and pyright read the same way:
+
+```python
+from bagof.magic import Magic, field
+
+class Job(Magic):
+    command: str
+    env: dict = field(default_factory=dict)
+    retries: int = field(default=0, kw_only=True)
+```
+
+```pycon
+>>> Job("make", retries=2)
+Job(command='make', env={}, retries=2)
+>>> Job("make", {}, 2)
+Traceback (most recent call last):
+  ...
+TypeError: Job.__init__() takes from 2 to 3 positional arguments but 4 were given
+```
+
+A keyword `field(...)` does not know is refused, not ignored:
+
+```pycon
+>>> field(defaults=0)
+Traceback (most recent call last):
+  ...
+TypeError: field() got an unexpected keyword argument 'defaults'. Did you mean 'default'? ...
+```
+
 `Field(...)` is the same thing with a capital letter. Prefer the lowercase
 `field(...)` when using it as a default value: mypy reads
 `tags: list = Field(factory=list)` as assigning a `Field` to a `list` slot,
