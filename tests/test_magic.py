@@ -3534,10 +3534,16 @@ class TestMetaclassFeatures:
     def test_param_without_default_after_default(self) -> None:
         with pytest.raises(
             SyntaxError, match="parameter without a default follows"
-        ):
+        ) as caught:
             class Bad(Magic):
                 x: int = 0
                 y: int
+
+        # The message names the field, not the internal type local that
+        # the generated source uses for it.
+        message = str(caught.value)
+        assert "y" in message
+        assert "__magic_" not in message
 
     def test_fields_function(self) -> None:
         class C(Magic):

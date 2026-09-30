@@ -2479,9 +2479,13 @@ def _make_init(
             if "=" in elem:
                 has_default = True
             elif has_default:
+                # `elem` is the generated "<name>: <type local>" text, and
+                # the type local is an internal name a user never wrote.
+                # Name the field instead -- everything before the colon.
+                name = elem.split(":", 1)[0].strip()
                 raise _BadSignature(
                     f"parameter without a default follows parameter with a "
-                    f"default: {elem}"
+                    f"default: {name}"
                 )
 
     def _alias_param_elems() -> tx.List[str]:
