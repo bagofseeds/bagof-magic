@@ -203,7 +203,11 @@ def _shape(
     if spec is Ellipsis:
         return (lambda value: True), _LOOSE, MISSING, "anything"
     if isinstance(spec, (set, frozenset)):
-        return (lambda value: value in spec), _MEMBER, MISSING, repr(spec)
+        # A set has no order, so read it the same way every run: sorted
+        # by repr, so the message (and any narrowed Literal built from
+        # it) does not vary with the hash seed.
+        text = "{" + ", ".join(sorted(map(repr, spec))) + "}"
+        return (lambda value: value in spec), _MEMBER, MISSING, text
     if hasattr(spec, "fullmatch"):
         return (
             lambda value: spec.fullmatch(str(value)) is not None,
@@ -256,7 +260,9 @@ def _narrowed_type(spec: tx.Any) -> MaybeMissing[tx.Any]:
     if spec is Ellipsis:
         return MISSING
     if isinstance(spec, (set, frozenset)):
-        members = tuple(spec)
+        # Sorted by repr, so the Literal reads the same every run rather
+        # than in the set's hash-seeded order.
+        members = tuple(sorted(spec, key=repr))
         if members and all(_literal_legal(member) for member in members):
             return tx.Literal[members]
         return MISSING
@@ -917,6 +923,14 @@ def delegate(
     target = entry.target
     if plan is None:
         return target(*args, **kwargs)
+    # More positional arguments than the owner takes never bind to a
+    # name, so re-spelling them by name would drop them silently -- the
+    # verbatim path raises, and so must this one.
+    if len(args) > len(plan.positions):
+        raise TypeError(
+            f"{as_written(cls)}() takes {len(plan.positions)} positional "
+            f"arguments but {len(args)} were given"
+        )
     leading = args[: plan.positional_only]
     bound: tx.Dict[str, tx.Any] = {}
     for name, value in zip(

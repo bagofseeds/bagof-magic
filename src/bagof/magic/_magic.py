@@ -1184,6 +1184,12 @@ def _narrow_discriminants(
     # validator the field already carries, never in place of it, so a
     # base's own checking still runs. A field the subclass writes out
     # itself is left exactly as written, as it is for pinning.
+    #
+    # The added validator is recorded as the field's own preference and
+    # taken out of what was derived from the type, so that re-resolving
+    # (override) restores it rather than the option's, and substituting a
+    # type variable does not regenerate a plain validator over the field
+    # and drop the constraint.
     for spec in specs:
         field = fields[spec.name]
         if field.name in declared:
@@ -1193,10 +1199,15 @@ def _narrow_discriminants(
         added = spec.validate
         if added is None:
             continue
-        if callable(field.validator):
-            field.validator = _chain(field.validator, added)
-        else:
-            field.validator = added
+        chained = (
+            _chain(field.validator, added)
+            if callable(field.validator)
+            else added
+        )
+        field._redeclare(validator=chained)
+        field._derived = tuple(
+            attr for attr in (field._derived or ()) if attr != "validator"
+        )
 
 
 def _pin_discriminants(
@@ -1756,9 +1767,13 @@ def __pre_new__(
         # A discriminant this class redeclares with a default of its own
         # is pinned too, as far as the signature is concerned: a required
         # parameter behind it needs the same sentinel a registration's
-        # own pin gives. The filter below keeps only the ones that end up
-        # with a default, so the names that carry none fall away.
-        pinned.update(spec.name for spec in specs)
+        # own pin gives. Only a field this class actually redeclares
+        # counts -- an inherited discriminant that carries a default only
+        # because a base pinned it is already accounted for by that base's
+        # `_PINNED`, and one with no default here is filtered out below.
+        pinned.update(
+            spec.name for spec in specs if spec.name in cls_annotations
+        )
         _check_discriminants(clsname, polymorphic_base, fields, specs)
 
     # A subclass that declares the field again, with no default of its
@@ -3779,6 +3794,14 @@ class MetaMagic(ABCMeta):
         owner = cls.__dict__.get(_GENERIC_ORIGIN, cls)
         specs = _specifications(owner, getattr(target, "__name__", target),
                                 wanted)
+        # Registering after the fact goes through the same three-case
+        # rule a `class Sub(Base, on=...)` statement does, so a target
+        # that neither takes a discriminant nor holds a value it accepts
+        # is refused here rather than building the wrong class quietly.
+        if isinstance(target, type) and issubclass(target, owner):
+            _check_discriminants(
+                target.__name__, owner, getattr(target, _FIELDS), specs
+            )
         _register_polymorph(owner, target, specs, priority)
         return target
 

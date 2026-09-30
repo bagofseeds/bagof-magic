@@ -34,11 +34,20 @@ from bagof.magic import (
     NoInit,
     NoPolymorphError,
     PolymorphError,
+    PositionalOnly,
     asdict,
     field,
     magic,
     replace,
 )
+from bagof.magic._constants import _POLYMORPHS
+
+
+def _entry_for(base: type, target: type) -> object:
+    """The registration `base` holds for `target`, for the tests that
+    look at how a call to it is re-spelled."""
+    entries = base.__dict__[_POLYMORPHS].dispatch[0]
+    return next(entry for entry in entries if entry.target is target)
 
 # ======================================================================
 # Classes at module level, for the copies -- pickle can only find a
@@ -2032,9 +2041,19 @@ class TestCaseBDelegation:
         class Minor(base, on={"mode": "minor"}):
             pass
 
+        # Nothing to re-spell: the registration carries no plan, so the
+        # call is handed straight on.
+        assert _entry_for(base, Minor).respell is None
         assert type(base(root="A", mode="minor")) is Minor
         assert type(base("A", "minor")) is Minor
         assert Minor(root="A").mode == "minor"
+
+    def test_a_dropping_class_carries_a_plan(self, base: type) -> None:
+        class Minor(base, on={"mode": "minor"}):
+            mode: ClassVar[str] = "minor"
+
+        plan = _entry_for(base, Minor).respell
+        assert plan is not None and "mode" in plan.drops
 
     def test_a_grandchild_redispatches_through_a_dropped_parent(self) -> None:
         class Tune(Magic, polymorphic=True):
@@ -2051,3 +2070,168 @@ class TestCaseBDelegation:
         built = Tune(root="A", mode="minor", style="fancy")
         assert type(built) is Fancy
         assert built.style == "fancy" and built.root == "A"
+
+
+# ======================================================================
+# Regressions the review turned up
+# ======================================================================
+
+
+class TestNarrowSurvivesResolution:
+    """A narrow validator must survive override and generic filling."""
+
+    def test_override_keeps_the_narrow_validator(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        class Minor(Tune, on={"mode": "minor"}, pin_discriminant="narrow"):
+            pass
+
+        # `override` resolves every inherited field again; the constraint
+        # is the field's own preference now, so it is kept, not thrown
+        # away while the type still says `Literal["minor"]`.
+        class Fancy(Minor, override=True):
+            pass
+
+        assert Minor(root="A", mode="minor").mode == "minor"
+        with pytest.raises(Exception, match="not a valid"):
+            Minor(root="A", mode="major")
+        with pytest.raises(Exception, match="not a valid"):
+            Fancy(root="A", mode="major")
+
+    def test_generic_filling_keeps_a_non_literal_narrow_validator(
+        self
+    ) -> None:
+        # A pattern narrows no type, so the field keeps the type variable
+        # and is filled in -- but the validator is the field's own now
+        # and is not regenerated from the substituted type.
+        class Box(Magic, tx.Generic[_T], polymorphic=True, validate=True):
+            kind: _T
+            item: int = 0
+
+        class Re(Box[_T], on={"kind": re.compile("a+")},
+                 pin_discriminant="narrow"):
+            pass
+
+        with pytest.raises(Exception, match="not a valid"):
+            Re(kind="bbb")
+        with pytest.raises(Exception, match="not a valid"):
+            Re[str](kind="bbb")
+        # The matching value still builds, both ways.
+        assert Re(kind="aaa").kind == "aaa"
+        assert Re[str](kind="aaa").kind == "aaa"
+
+    def test_classvar_narrow_validates_the_discarded_value(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        class Sus(Tune, on={"mode": "sus"},
+                  pin_discriminant="classvar+narrow"):
+            pass
+
+        assert Sus.mode == "sus"
+        # The value is accepted and discarded, but still validated on the
+        # way through.
+        assert Sus(root="A", mode="sus").mode == "sus"
+        with pytest.raises(Exception, match="not a valid"):
+            Sus(root="A", mode="lydian")
+
+
+class TestSurplusPositionals:
+    """A re-spelled call rejects surplus positionals, like the verbatim
+    one does."""
+
+    @pytest.fixture
+    def base(self) -> type:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            mode: ClassVar[str] = "minor"
+
+        class Major(Tune, on={"mode": "major"}):
+            pass
+
+        return Tune
+
+    def test_verbatim_rejects_surplus(self, base: type) -> None:
+        with pytest.raises(TypeError):
+            base("A", "major", "extra")
+
+    def test_respell_rejects_surplus_naming_the_base(self, base: type) -> None:
+        # Would have bound `root` and dropped `mode`, silently losing the
+        # third argument, before the guard.
+        with pytest.raises(TypeError, match="Tune.*positional"):
+            base("A", "minor", "extra")
+
+
+class TestRegisterPolymorphChecks:
+    """register_polymorph goes through the same three-case rule."""
+
+    def test_a_non_matching_held_value_is_refused(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        class Wrong(Tune):
+            mode: ClassVar[str] = "major"
+
+        with pytest.raises(TypeError, match="holds 'major', which is not"):
+            Tune.register_polymorph(Wrong, mode="minor")
+
+    def test_a_matching_held_value_is_allowed(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        class Right(Tune):
+            mode: ClassVar[str] = "minor"
+
+        Tune.register_polymorph(Right, mode="minor")
+        assert type(Tune(root="A", mode="minor")) is Right
+
+    def test_a_positional_only_discriminant_is_refused(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            mode: PositionalOnly[str]
+            root: str = "r"
+
+        class Wrong(Tune):
+            mode: ClassVar[str] = "minor"
+
+        with pytest.raises(TypeError, match="positional-only"):
+            Tune.register_polymorph(Wrong, mode="minor")
+
+
+class TestRedefinedOnlyPinning:
+    """Only a discriminant the subclass redeclares counts as pinned for
+    the signature."""
+
+    def test_an_inherited_discriminant_does_not_pin_a_later_required(
+        self
+    ) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        # `mode` is inherited with a default and not redeclared, so a
+        # required field written after it follows a defaulted one, which
+        # is refused exactly as it is without a registration.
+        with pytest.raises(SyntaxError, match="without a default"):
+            class Child(Tune, on={"mode": "minor"}, pin_discriminant="keep"):
+                extra: int
+
+    def test_a_redeclared_discriminant_does_pin(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        # Redeclared here with a default, so the required `extra` behind
+        # it gets the sentinel and the class builds.
+        class Child(Tune, on={"mode": "minor"}):
+            mode: str = "minor"
+            extra: int
+
+        assert Child(root="A", extra=1).extra == 1
