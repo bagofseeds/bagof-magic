@@ -901,14 +901,50 @@ class TestPinnedSignature:
 
         assert type(base(mode="minor", root="A")) is Harmonic
 
-    def test_two_hand_written_fields_are_still_refused(self) -> None:
-        # Nothing here was pinned, so the class is refused as before.
+    def test_two_hand_written_fields_get_the_same_treatment(self) -> None:
+        # Nothing here was pinned: a required field after one written
+        # with a default is given the same sentinel as one after a pin.
         class First(Magic, polymorphic=True):
             a: int = 0
 
-        with pytest.raises(SyntaxError, match="without a default"):
-            class Second(First):
-                b: int
+        class Second(First):
+            b: int
+
+        assert Second(b=1) == Second(0, 1)
+        with pytest.raises(
+            TypeError, match="missing a required argument: 'b'"
+        ):
+            Second(1)
+
+
+class TestDispatchAfterADefault:
+    """A discriminant with no default may follow a field that has one."""
+
+    @pytest.fixture
+    def base(self) -> type:
+        class Tune(Magic, polymorphic=True):
+            tag: int = 0
+            mode: str
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        return Tune
+
+    def test_the_discriminant_is_read_by_position(self, base: type) -> None:
+        built = base(1, "minor")
+        assert type(built).__name__ == "Minor"
+        assert built.tag == 1
+
+    def test_the_discriminant_is_read_by_name(self, base: type) -> None:
+        assert type(base(mode="minor")).__name__ == "Minor"
+        assert type(base(mode="major")) is base
+
+    def test_a_missing_discriminant_is_named(self, base: type) -> None:
+        with pytest.raises(
+            TypeError, match=r"^Tune\(\) missing a required argument: 'mode'$"
+        ):
+            base(1)
 
 
 # ======================================================================
@@ -1998,15 +2034,18 @@ class TestRedefinedDiscriminantSignature:
 
         assert Minor(root="A").root == "A"
 
-    def test_two_hand_written_fields_without_on_still_refused(self) -> None:
-        # No registration, so nothing is pinned and the ordinary rule
-        # applies.
+    def test_two_hand_written_fields_without_on_are_built(self) -> None:
+        # No registration, so nothing is pinned; the required field
+        # after a defaulted one is built all the same.
         class First(Magic, polymorphic=True):
             a: int = 0
 
-        with pytest.raises(SyntaxError, match="without a default"):
-            class Second(First):
-                b: int
+        class Second(First):
+            b: int
+
+        assert list(signature(Second).parameters) == ["a", "b"]
+        assert signature(Second).parameters["b"].default is Parameter.empty
+        assert Second(b=2).a == 0
 
 
 class TestCaseBDelegation:
@@ -2247,22 +2286,32 @@ class TestRegisterPolymorphChecks:
 
 
 class TestRedefinedOnlyPinning:
-    """Only a discriminant the subclass redeclares counts as pinned for
-    the signature."""
+    """A required field after a discriminant, pinned by the subclass or
+    inherited with a default, is built either way."""
 
-    def test_an_inherited_discriminant_does_not_pin_a_later_required(
+    def test_an_inherited_discriminant_leaves_a_later_field_required(
         self
     ) -> None:
         class Tune(Magic, polymorphic=True):
             root: str
             mode: str = "major"
 
-        # `mode` is inherited with a default and not redeclared, so a
-        # required field written after it follows a defaulted one, which
-        # is refused exactly as it is without a registration.
-        with pytest.raises(SyntaxError, match="without a default"):
-            class Child(Tune, on={"mode": "minor"}, pin_discriminant="keep"):
-                extra: int
+        # `mode` is inherited with a default and not redeclared, so it
+        # is not pinned; the required field written after it is built
+        # as it is without a registration.
+        class Child(Tune, on={"mode": "minor"}, pin_discriminant="keep"):
+            extra: int
+
+        assert signature(Child).parameters["extra"].default is (
+            Parameter.empty
+        )
+        built = Child(root="A", extra=1)
+        assert (built.mode, built.extra) == ("major", 1)
+        assert type(Tune(root="A", mode="minor", extra=1)) is Child
+        with pytest.raises(
+            TypeError, match="missing a required argument: 'extra'"
+        ):
+            Child(root="A")
 
     def test_a_redeclared_discriminant_does_pin(self) -> None:
         class Tune(Magic, polymorphic=True):
