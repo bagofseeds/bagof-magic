@@ -1239,6 +1239,7 @@ def _pin_plan(
     spec: tx.Any,
     own: tx.Sequence,
     declared: tx.Container[str],
+    written: tx.Mapping[str, tx.Tuple[tx.Any, bool]],
 ) -> tx.Tuple[str, tx.Tuple, bool]:
     # How this class applies `spec` to the field it constrains: how the
     # field is stored ("pin", "classvar" or "keep"), which written parts
@@ -1248,11 +1249,14 @@ def _pin_plan(
     # A field's own `pin` decides for every part, on every class that
     # matches on it. Without one, each written part is applied the way
     # the class that wrote it says -- its `pin_discriminant`, carried on
-    # the part -- and the field is stored the way this class's own says
-    # when it constrains the field itself, and the way the first class
-    # in the MRO that constrains it says otherwise. That keeps a field
-    # the bottom of a diamond inherits stored the way the parent that
-    # matches on it stores it.
+    # the part -- and the field is stored the way the first part that
+    # names one exact value says: this class's own parts first, then
+    # the others in MRO order. A part that allows several values has
+    # nothing to pin, so its mode is never seen on its own class and
+    # does not decide the storage while another part pins. When no part
+    # names one value, the first part (own, else MRO) decides. That
+    # keeps a field the bottom of a diamond inherits stored the way the
+    # parent that pins it stores it.
     #
     # A field this class writes out itself is left exactly as written,
     # unless its annotation gives a `pin`.
@@ -1261,12 +1265,16 @@ def _pin_plan(
         storage, narrow = _pin_action(field.pin)
         narrowing = spec.parts if narrow else ()
         if field.name in declared:
-            _check_written_default(clsname, field, spec, storage, narrow)
+            _check_written_default(
+                clsname, field, spec, storage, narrow, *written[field.name]
+            )
             return storage, narrowing, True
         return storage, narrowing, bool(mine)
     if field.name in declared:
         return "keep", (), False
-    storage = _PIN_ACTIONS[(mine or spec.parts)[0].pin][0]
+    ordered = mine + [part for part in spec.parts if not _says(part, mine)]
+    exact = [part for part in ordered if part.value is not MISSING]
+    storage = _PIN_ACTIONS[(exact or ordered)[0].pin][0]
     narrowing = tuple(
         part for part in spec.parts if _PIN_ACTIONS[part.pin][1]
     )
@@ -1274,24 +1282,53 @@ def _pin_plan(
 
 
 def _check_written_default(
-    clsname: str, field: Field, spec: tx.Any, storage: str, narrow: bool
+    clsname: str,
+    field: Field,
+    spec: tx.Any,
+    storage: str,
+    narrow: bool,
+    default: tx.Any,
+    factory: bool,
 ) -> None:
-    # A field a class writes out with both a `pin` and a default of its
-    # own asks for two things. When the constraint accepts the default
-    # they agree. When it does not, pinning would replace the default,
-    # or narrowing would turn it down on every call that leaves the
-    # field out -- either way the default could never be used, so the
-    # class is refused rather than one of the two quietly dropped.
-    if field.default is MISSING or spec.matches(field.default):
+    # A field a class writes out with both a `pin` and a default (or a
+    # factory) of its own asks for two things. When the constraint
+    # accepts the default they agree. When it does not, pinning would
+    # replace the default, or narrowing would turn it down on every call
+    # that leaves the field out -- either way the default could never be
+    # used, so the class is refused rather than one of the two quietly
+    # dropped. `default` and `factory` are what the class wrote, before
+    # a mutable default was turned into a factory.
+    pins = storage != "keep" and spec.value is not MISSING
+    keep = "or take the pin off the field to keep {} as written."
+    if factory:
+        # A factory is not run here to find out what it builds. Pinning
+        # replaces it outright; narrowing checks what it builds on every
+        # call, which is as far as a factory can be checked.
+        if pins:
+            raise TypeError(
+                f"{clsname} stands for {spec.name}={spec.text}, and its "
+                f"field {spec.name!r} says pin={field.pin!r}, which gives "
+                f"the field that value, but it also has a factory. Take "
+                f"the factory out -- the pin gives the field its value -- "
+                + keep.format("the factory")
+            )
         return
-    if narrow or (storage != "keep" and spec.value is not MISSING):
-        raise TypeError(
-            f"{clsname} stands for {spec.name}={spec.text}, and its field "
-            f"{spec.name!r} says pin={field.pin!r}, but its default is "
-            f"{field.default!r}. Leave the default out -- the pin gives "
-            f"the field its value -- or take the pin off the field to "
-            f"keep {field.default!r} as written."
+    if default is MISSING or spec.matches(default):
+        return
+    if pins:
+        fix = "Leave the default out -- the pin gives the field its value -- "
+    elif narrow:
+        fix = (
+            f"Give it a default {clsname} stands for, or leave the default "
+            f"out, "
         )
+    else:
+        return
+    raise TypeError(
+        f"{clsname} stands for {spec.name}={spec.text}, and its field "
+        f"{spec.name!r} says pin={field.pin!r}, but its default is "
+        f"{default!r}. " + fix + keep.format(repr(default))
+    )
 
 
 def _check_discriminants(
@@ -1872,6 +1909,7 @@ def __pre_new__(
     # Now find fields in our class.  While doing so, validate some
     # things, and set the d
     cls_fields = []
+    written = {}
     for field_name, type_ in cls_annotations.items():
 
         if field_name[:2] == "__":
@@ -1909,6 +1947,15 @@ def __pre_new__(
                 f"'classvar', 'keep', 'narrow', 'pin+narrow', "
                 f"'classvar+narrow', 'keep+narrow', True or False, "
                 f"not {field.pin!r}"
+            )
+
+        # What a field with a `pin` of its own was written with, before
+        # the class options fill in a factory and a mutable default is
+        # turned into one -- `_check_written_default` compares the pin
+        # against what the author wrote, not against what was made of it.
+        if field.pin is not MISSING:
+            written[field.name] = (
+                field.default, field.factory not in (MISSING, False)
             )
 
         # Set unset field options from class options
@@ -2010,7 +2057,7 @@ def __pre_new__(
         for spec in specs:
             field = fields[spec.name]
             storage, narrowing, always = _pin_plan(
-                clsname, field, spec, own, cls_annotations
+                clsname, field, spec, own, cls_annotations, written
             )
             if storage != "keep" and (
                 always or not _stored_as(field, spec, storage)

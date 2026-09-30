@@ -210,8 +210,10 @@ class Field(SlotsBase):
             exposes the preferred public name with that access mode. "all"
             exposes every input alias the field accepts (bar the stored
             attribute and any name already in use), read/write.
-        pin : str or bool, default=`Options().pin_discriminant`
-            What a subclass that matches on this field does with it. It
+        pin : str or bool, optional
+            What a subclass that matches on this field does with it.
+            When left out, each such subclass uses its own
+            `pin_discriminant` setting. It
             takes the values the `pin_discriminant` setting takes --
             "pin", "classvar", "keep", "narrow", "pin+narrow",
             "classvar+narrow" or "keep+narrow" -- and also `True` (the

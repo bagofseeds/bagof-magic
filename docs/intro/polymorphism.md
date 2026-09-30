@@ -397,7 +397,8 @@ ValueValidationError: ...
 
 A default written beside a mode that pins or narrows the field has to be
 one the subclass stands for. Any other value could never be used, since the
-pin replaces it or the narrowing turns it down, so the class is refused:
+pin replaces it or the narrowing turns it down, so the class is refused. A
+factory beside a mode that pins one value is refused for the same reason:
 
 ```pycon
 >>> class Pentagon(Shape, on={"kind": "pentagon"}):
@@ -408,6 +409,11 @@ TypeError: Pentagon stands for kind='pentagon', ...
 ```
 
 A mode on a field that no subclass matches on does nothing.
+
+A linter reads the mode in `Pin[str, "classvar"]` as the name of a type,
+and reports it as undefined. `Pin[str]`, `Narrow[str]` and `NoPin[str]`
+have no such text; for the other modes, the spelling a linter accepts is
+`Annotated[str, Pin("classvar")]`.
 
 Pickling and copying rebuild through the class an instance already has.
 Neither goes back through the dispatch.

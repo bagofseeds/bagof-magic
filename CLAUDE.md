@@ -439,13 +439,16 @@ does not.
     not. Otherwise each written part carries its writer's
     `pin_discriminant` as `_Spec.pin`, stamped by `specifications` (a
     hand registration stamps the target's), and it survives `conjoin`
-    in `parts`. Storage comes from the class's own part when it
-    constrains the field, else from the first part -- the first
-    registering ancestor in MRO order, since `conjoin` lists own specs
-    first and then the targets in MRO order. Narrowing is per part. So
-    a diamond stores an inherited field the way the parent that matches
-    on it does, not the way the diamond's inherited option says; in a
-    chain every part is the class's own, so nothing changes there.
+    in `parts`. Storage comes from the first part that names one exact
+    value -- the class's own parts first, then the others in MRO order,
+    since `conjoin` lists own specs first and then the targets in MRO
+    order -- and from the first part (own, else MRO) when none does. A
+    part that allows several values pins nothing, so its mode is never
+    seen on its own class and must not decide a diamond's storage over
+    the parent that does pin. Narrowing is per part. So a diamond
+    stores an inherited field the way the parent that pins it does,
+    not the way the diamond's inherited option says; in a chain every
+    part is the class's own, so nothing changes there.
   - **Already applied.** A spec the class says itself is always
     applied. An inherited one is skipped when the copy already holds
     it stored that way (`_stored_as`: a fitting non-factory default,
@@ -462,7 +465,12 @@ does not.
     or narrow -- the pin would replace the default, or the validator
     would reject it on every call that leaves the field out -- rather
     than one of the two being dropped quietly. "keep" and a constraint
-    with no single value leave the default alone, so it stands.
+    with no single value leave the default alone, so it stands. The
+    check sees the default as written: `__pre_new__` records it (and
+    whether a factory was written) in `written` before a mutable
+    default is turned into a factory, which would otherwise hide it.
+    A written factory is refused when the mode pins an exact value,
+    since the pin replaces it; it is never run to see what it builds.
   - A `pin` value is checked where the field is declared, whether or
     not anything ever matches on it; `_pin_action` reads it, with
     `True`/`False` for "pin"/"keep" and nothing else that is not a

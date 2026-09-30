@@ -3496,6 +3496,32 @@ class TestFieldPin:
             SAB(a="q")
         assert type(R(a="x", b="y")) is SAB
 
+    def test_a_diamond_stores_a_field_as_the_parent_that_pins_it(
+        self
+    ) -> None:
+        # A set has nothing to pin, so SB's "classvar" is never seen on
+        # SB itself; SC is the one that pins `b`, and decides how it is
+        # stored whichever parent comes first.
+        class R(Magic, polymorphic=True):
+            b: str = ""
+            c: str = ""
+
+        class SB(R, on={"b": {"x", "y"}}, pin_discriminant="classvar"):
+            pass
+
+        class SC(R, on={"b": "x", "c": "k"}):
+            pass
+
+        class SBC(SB, SC):
+            pass
+
+        class SCB(SC, SB):
+            pass
+
+        assert self._stored(SB, "b") == "keep"
+        assert self._stored(SBC, "b") == self._stored(SCB, "b") == "pin"
+        assert SBC().b == SCB().b == "x"
+
     def test_the_diamonds_own_option_is_for_what_it_says(self) -> None:
         class R(Magic, polymorphic=True):
             a: str = ""
@@ -3696,18 +3722,91 @@ class TestFieldPin:
             Aeolian(mode="dorian")
 
     @pytest.mark.parametrize(
-        "annotation", [Pin[str], Pin[str, "classvar"], Pin[str, "keep+narrow"]]
+        "annotation, fix",
+        [
+            (Pin[str], "Leave the default out -- the pin gives"),
+            (Pin[str, "classvar"], "Leave the default out -- the pin gives"),
+            # "keep" gives no value, so the fix is a default that fits.
+            (Pin[str, "keep+narrow"], "Give it a default Minor stands for"),
+        ],
     )
     def test_a_redeclared_pin_with_another_default_is_refused(
-        self, annotation: tx.Any
+        self, annotation: tx.Any, fix: str
     ) -> None:
         class Tune(Magic, polymorphic=True):
             root: str = "C"
             mode: str = "major"
 
-        with pytest.raises(TypeError, match="Leave the default out"):
+        with pytest.raises(TypeError, match=fix):
             class Minor(Tune, on={"mode": "minor"}):
                 mode: annotation = "dorian"
+
+    def test_a_narrowed_set_is_not_told_the_pin_gives_a_value(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            mode: str = "major"
+
+        with pytest.raises(TypeError) as caught:
+            class Modal(Tune, on={"mode": {"dorian", "lydian"}}):
+                mode: Narrow[str] = "ionian"
+        assert "Give it a default Modal stands for" in str(caught.value)
+        assert "the pin gives" not in str(caught.value)
+
+    @pytest.mark.parametrize("mutable", ["factory", "allow"])
+    def test_a_mutable_default_is_checked_as_written(
+        self, mutable: str
+    ) -> None:
+        # A mutable default is turned into a factory before the pin is
+        # applied; the check still sees the value that was written.
+        class Config(Magic, polymorphic=True):
+            cfg: dict = field(factory=dict)
+            tags: list = field(factory=list)
+
+        with pytest.raises(TypeError, match="Leave the default out"):
+            class Pinned(
+                Config, on={"cfg": {"a": 1}}, mutable_default=mutable
+            ):
+                cfg: Pin[dict] = {"a": 2}
+
+        with pytest.raises(TypeError, match="Give it a default"):
+            class Kept(Config, on={"tags": ["a"]}, mutable_default=mutable):
+                tags: Pin[list, "keep+narrow"] = ["b"]  # noqa: F821
+
+        class Same(Config, on={"cfg": {"a": 1}}, mutable_default=mutable):
+            cfg: Pin[dict] = {"a": 1}
+
+        assert Same().cfg == {"a": 1}
+
+    def test_a_redeclared_pin_with_a_factory_is_refused(self) -> None:
+        class Tune(Magic, polymorphic=True):
+            mode: str = "major"
+
+        with pytest.raises(TypeError, match="it also has a factory"):
+            class Minor(Tune, on={"mode": "minor"}):
+                mode: Pin[str] = field(factory=lambda: "dorian")
+
+        # "keep" leaves the factory to build the value, and a set has no
+        # one value to replace it with.
+        class Kept(Tune, on={"mode": "minor"}):
+            mode: NoPin[str] = field(factory=lambda: "dorian")
+
+        class Modal(Tune, on={"mode": {"dorian", "lydian"}}):
+            mode: Pin[str] = field(factory=lambda: "dorian")
+
+        assert Kept().mode == Modal().mode == "dorian"
+
+    def test_an_inherited_pin_is_applied_to_a_default_that_fits(
+        self
+    ) -> None:
+        # The field already holds the value its subclass stands for, but
+        # its own `pin` still counts it as pinned -- which is what lets a
+        # required parameter follow it.
+        class Tune(Magic, polymorphic=True):
+            mode: Pin[str] = "minor"
+
+        class Minor(Tune, on={"mode": "minor"}):
+            pass
+
+        assert "mode" in getattr(Minor, _PINNED)
 
     def test_a_redeclared_pin_that_changes_nothing_keeps_its_default(
         self
