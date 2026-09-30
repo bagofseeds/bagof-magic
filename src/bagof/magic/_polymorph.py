@@ -507,7 +507,10 @@ def _delegation_plan(
     for spec in specs:
         owner_field = owner_fields.get(spec.name)
         target_field = target_fields.get(spec.name)
-        if owner_field is None or target_field is None:
+        if owner_field is None or target_field is None:  # pragma: no cover
+            # Defensive: a spec name is validated against the owner's
+            # fields, and the target is a subclass carrying all of them,
+            # so neither lookup misses.
             continue
         if owner_field.init and not target_field.init:
             drops.append(owner_field.public_name)

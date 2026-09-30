@@ -1907,6 +1907,9 @@ class TestNarrowValidation:
         # The base's validator still runs (it records what it saw)...
         assert Small(kind="s", n=2).n == 2
         assert seen == [2]
+        # ...it runs first, so its own rejection is what surfaces...
+        with pytest.raises(Exception, match="odd"):
+            Small(kind="s", n=3)
         # ...and the added one turns down a value the base would accept.
         with pytest.raises(Exception, match="not a valid"):
             Small(kind="s", n=4)
@@ -2235,3 +2238,64 @@ class TestRedefinedOnlyPinning:
             extra: int
 
         assert Child(root="A", extra=1).extra == 1
+
+
+class TestNarrowAndCheckSkips:
+    """The skip branches in the narrow and check machinery."""
+
+    def test_a_factory_held_discriminant_is_taken_on_trust(self) -> None:
+        # A discriminant the subclass holds with a factory is accepted
+        # unchecked -- building the factory to check it would build it
+        # twice, so the three-case rule skips it.
+        class Tune(Magic, polymorphic=True):
+            root: str = "r"
+            tag: TypingAny = None
+
+        class Tagged(Tune, on={"tag": ...}):
+            tag: list = field(factory=list, init=False)
+
+        # Defining it did not raise, and each instance gets its own.
+        assert Tagged().tag == []
+        assert Tagged().tag is not Tagged().tag
+
+    def test_narrow_leaves_a_redeclared_field_alone(self) -> None:
+        # A field the subclass writes out itself keeps its own type and
+        # is not narrowed.
+        class Tune(Magic, polymorphic=True):
+            root: str
+            mode: str = "major"
+
+        class Minor(Tune, on={"mode": "minor"}, pin_discriminant="narrow"):
+            mode: str = "minor"
+
+        assert signature(Minor).parameters["mode"].annotation is str
+        assert Minor(root="A").mode == "minor"
+
+    def test_narrow_adds_no_validator_for_presence(self) -> None:
+        # A bare `...` constrains no value, so narrow adds no validator
+        # and narrows no type: the field is only required to be there.
+        class Tune(Magic, polymorphic=True):
+            root: str
+            flag: TypingAny = None
+
+        class Present(Tune, on={"flag": ...}, pin_discriminant="narrow"):
+            pass
+
+        assert signature(Present).parameters["flag"].annotation is TypingAny
+        # Any value at all is accepted, since nothing was added to check.
+        assert Present(root="A", flag=object()).root == "A"
+
+    def test_narrow_leaves_a_non_literal_set_type_alone(self) -> None:
+        # Floats are not values a `Literal` can hold, so the field keeps
+        # its declared type while the membership check is still added.
+        class Value(Magic, polymorphic=True):
+            x: TypingAny = None
+            root: str = "r"
+
+        class Halves(Value, on={"x": {1.5, 2.5}}, pin_discriminant="narrow"):
+            pass
+
+        assert signature(Halves).parameters["x"].annotation is TypingAny
+        assert Halves(x=1.5).x == 1.5
+        with pytest.raises(Exception, match="not a valid"):
+            Halves(x=3.5)
