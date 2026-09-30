@@ -40,6 +40,7 @@ want the type hints to do.
 | Full set of ordering methods | yes | yes | no | **yes** |
 | `__slots__` | yes | yes | no | **yes** |
 | Keyword-only and positional-only fields | keyword only | keyword only | keyword only | **both** |
+| Required field after a defaulted one | refused | refused | keyword only | **yes** |
 | Rename a generated method | no | no | no | **yes** |
 | Dict-like instances | no | no | partly | **yes** |
 | Docstring built from the fields | no | no | no | **yes** |
@@ -245,6 +246,8 @@ times : int, default=3
   is the same standard the others use, so most of it should follow. The
   part that will not is a field written purely as an annotation
   (`tags: Factory[list]`), which a checker cannot see a default for.
+  Nor will a required field after one with a default, which checkers
+  report by the `dataclasses` rule even though the class works.
 
 [dataclasses]: https://docs.python.org/3/library/dataclasses.html
 [attrs]: https://www.attrs.org

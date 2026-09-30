@@ -3643,18 +3643,18 @@ class TestMetaclassFeatures:
 
         assert C(1, s=5).x == 6
 
-    def test_param_without_default_after_default(self) -> None:
-        with pytest.raises(
-            SyntaxError, match="parameter without a default follows"
-        ) as caught:
-            class Bad(Magic):
-                x: int = 0
-                y: int
+    def test_a_required_field_may_follow_a_defaulted_one(self) -> None:
+        class C(Magic):
+            x: int = 0
+            y: int
 
-        # The message names the field, not the internal type local that
-        # the generated source uses for it.
+        assert C(y=2) == C(0, 2)
+        with pytest.raises(TypeError) as caught:
+            C(5)
+        # The message names the field, not the internal local that the
+        # generated source uses for it.
         message = str(caught.value)
-        assert "y" in message
+        assert message == "C() missing a required argument: 'y'"
         assert "__magic_" not in message
 
     def test_fields_function(self) -> None:
@@ -4557,8 +4557,8 @@ class TestOrderRequiresEq:
         assert not C(1, 0) < C(1, 9)
 
 
-class TestInitFalseIsAnEscapeHatch:
-    """`init=False` must not be blocked by the generated signature."""
+class TestInitFalseKeepsAHandWrittenInit:
+    """`init=False` keeps a hand-written `__init__`, whatever the order."""
 
     def test_a_non_default_after_a_default(self) -> None:
         class D(Magic, init=False):
@@ -4571,11 +4571,13 @@ class TestInitFalseIsAnEscapeHatch:
 
         assert D(5).y == 5
 
-    def test_the_same_layout_still_raises_when_init_is_on(self) -> None:
-        with pytest.raises(SyntaxError, match="without a default"):
-            class D(Magic):
-                x: int = 0
-                y: int
+    def test_the_same_layout_is_generated_when_init_is_on(self) -> None:
+        class D(Magic):
+            x: int = 0
+            y: int
+
+        assert D(y=5).y == 5
+        assert D(1, 5).x == 1
 
     def test_a_name_collision_is_refused_even_without_an_init(self) -> None:
         # Two fields under one name are a problem wherever that name is
@@ -4584,6 +4586,328 @@ class TestInitFalseIsAnEscapeHatch:
             class X(Magic, init=False):
                 a: Annotated[int, Field(alias="v")]
                 b: Annotated[int, Field(alias="v")]
+
+
+class PickleAfterDefault(Magic):
+    x: int = 0
+    y: int
+
+
+class TestARequiredFieldAfterADefault:
+    """A positional field without a default may follow one that has one.
+
+    Python's syntax cannot write `def f(x=0, y)`, but the generated
+    `__init__` takes that shape: arguments fill the parameters left to
+    right, as in any function, and one left unfilled is reported the
+    way Python reports a missing argument.
+    """
+
+    @pytest.fixture
+    def cls(self) -> type:
+        class C(Magic):
+            x: int = 0
+            y: int
+
+        return C
+
+    def test_the_class_is_built(self, cls: type) -> None:
+        assert list(getattr(cls, _FIELDS)) == ["x", "y"]
+
+    def test_by_keyword_the_default_is_used(self, cls: type) -> None:
+        built = cls(y=2)
+        assert (built.x, built.y) == (0, 2)
+
+    def test_positional_arguments_fill_from_the_left(
+        self, cls: type
+    ) -> None:
+        built = cls(1, 2)
+        assert (built.x, built.y) == (1, 2)
+        built = cls(1, y=2)
+        assert (built.x, built.y) == (1, 2)
+
+    def test_one_positional_argument_leaves_the_second_missing(
+        self, cls: type
+    ) -> None:
+        with pytest.raises(TypeError) as caught:
+            cls(5)
+        assert str(caught.value) == "C() missing a required argument: 'y'"
+
+    def test_no_argument_at_all_is_missing_the_required_one(
+        self, cls: type
+    ) -> None:
+        with pytest.raises(
+            TypeError, match=r"^C\(\) missing a required argument: 'y'$"
+        ):
+            cls()
+
+    def test_every_required_field_behind_the_default_is_checked(
+        self
+    ) -> None:
+        class C(Magic):
+            x: int = 0
+            y: int
+            z: int
+
+        assert C(1, 2, 3) == C(x=1, y=2, z=3)
+        with pytest.raises(TypeError, match="argument: 'z'"):
+            C(1, 2)
+
+    def test_the_signature_shows_the_real_shape(self, cls: type) -> None:
+        found = signature(cls)
+        assert str(found) == "(x: int = 0, y: int) -> None"
+        assert found.parameters["y"].default is Parameter.empty
+
+    def test_the_signature_binds_like_the_call(self, cls: type) -> None:
+        found = signature(cls)
+        assert found.bind(1, 2).arguments == {"x": 1, "y": 2}
+        assert found.bind(y=2).arguments == {"y": 2}
+        with pytest.raises(TypeError, match="missing a required argument"):
+            found.bind(1)
+
+    def test_a_factory_default_counts_as_a_default(self) -> None:
+        class C(Magic):
+            tags: Factory[list]
+            y: int
+
+        first, second = C(y=1), C(y=1)
+        assert first.tags == [] and first.tags is not second.tags
+        assert C(["a"], 2).tags == ["a"]
+        with pytest.raises(TypeError, match="argument: 'y'"):
+            C(["a"])
+        assert str(signature(C)) == "(tags: list = <factory>, y: int) -> None"
+
+    def test_positional_only_fields(self) -> None:
+        class C(Magic):
+            x: PositionalOnly[int] = 0
+            y: PositionalOnly[int]
+
+        assert str(signature(C)) == "(x: int = 0, y: int, /) -> None"
+        built = C(1, 2)
+        assert (built.x, built.y) == (1, 2)
+        with pytest.raises(TypeError, match="argument: 'y'"):
+            C(1)
+        with pytest.raises(TypeError):
+            C(1, y=2)
+
+    def test_a_positional_only_default_before_a_required_field(
+        self
+    ) -> None:
+        class C(Magic):
+            x: PositionalOnly[int] = 0
+            y: int
+
+        assert str(signature(C)) == "(x: int = 0, /, y: int) -> None"
+        assert C(y=2).x == 0
+        assert C(1, 2).x == 1
+        with pytest.raises(TypeError, match="argument: 'y'"):
+            C(1)
+
+    def test_a_keyword_only_field_gets_no_sentinel(self) -> None:
+        # No ordering rule applies to keyword-only parameters, so one
+        # without a default is left as Python compiles it.
+        class C(Magic):
+            x: int = 0
+            y: KwOnly[int]
+
+        assert not C.__init__.__kwdefaults__
+        assert C(y=2).x == 0
+        with pytest.raises(TypeError, match="keyword-only argument: 'y'"):
+            C(1)
+
+    def test_a_subclass_adds_a_required_field(self) -> None:
+        class Base(Magic):
+            x: int = 0
+
+        class Child(Base):
+            y: int
+
+        assert str(signature(Child)) == "(x: int = 0, y: int) -> None"
+        assert Child(y=2) == Child(0, 2)
+        with pytest.raises(
+            TypeError, match=r"^Child\(\) missing a required argument: 'y'$"
+        ):
+            Child(1)
+
+    def test_reverse_still_puts_the_subclass_fields_first(self) -> None:
+        class Base(Magic):
+            x: int = 0
+
+        class Child(Base, reverse=True):
+            y: int
+
+        assert str(signature(Child)) == "(y: int, x: int = 0) -> None"
+        assert REQUIRED not in Child.__init__.__defaults__
+        built = Child(2)
+        assert (built.x, built.y) == (0, 2)
+
+    def test_an_aliased_default_before_a_required_field(self) -> None:
+        class C(Magic):
+            name: Annotated[str, Field(alias=("name", "label"))] = "n"
+            y: int
+
+        assert str(signature(C)) == "(name: str = 'n', y: int) -> None"
+        assert C(y=2).name == "n"
+        assert C(label="z", y=2).name == "z"
+        assert C("q", 2).name == "q"
+        with pytest.raises(TypeError, match="argument: 'y'"):
+            C("q")
+
+    def test_a_default_left_unconverted(self) -> None:
+        class C(Magic, convert_defaults=False):
+            x: ConvertTo[int] = "7"
+            y: int
+
+        assert C(y=1).x == "7"
+        assert C("8", 1).x == 8
+        found = signature(C)
+        assert found.parameters["x"].default == "7"
+        assert found.parameters["y"].default is Parameter.empty
+        with pytest.raises(TypeError, match="argument: 'y'"):
+            C("8")
+
+    def test_a_default_left_unvalidated(self) -> None:
+        class C(Magic, validate_defaults=False):
+            x: Validate[int] = "bad"
+            y: int
+
+        assert C(y=1).x == "bad"
+        assert C(3, 1).x == 3
+        with pytest.raises(ValidationError):
+            C("worse", 1)
+        with pytest.raises(TypeError, match="argument: 'y'"):
+            C(3)
+
+    def test_frozen(self) -> None:
+        class C(Magic, frozen=True):
+            x: int = 0
+            y: int
+
+        built = C(y=2)
+        with pytest.raises(AttributeError, match="frozen"):
+            built.y = 3
+        assert hash(built) == hash(C(0, 2))
+
+    def test_slots(self) -> None:
+        class C(Magic, slots=True):
+            x: int = 0
+            y: int
+
+        built = C(1, 2)
+        assert not hasattr(built, "__dict__")
+        assert (built.x, built.y) == (1, 2)
+        with pytest.raises(TypeError, match="argument: 'y'"):
+            C(1)
+
+    def test_replace_goes_back_through_init(self, cls: type) -> None:
+        assert _api.replace(cls(y=2), x=5) == cls(5, 2)
+        assert _api.replace(cls(1, 2), y=3) == cls(1, 3)
+
+    def test_replace_with_positional_only_fields(self) -> None:
+        class C(Magic):
+            x: PositionalOnly[int] = 0
+            y: PositionalOnly[int]
+
+        assert _api.replace(C(1, 2), y=3) == C(1, 3)
+
+    def test_pickle_and_copy(self) -> None:
+        built = PickleAfterDefault(y=2)
+        assert pickle.loads(pickle.dumps(built)) == built
+        assert copy.copy(built) == built
+        assert copy.deepcopy(built) == built
+
+    def test_the_decorator(self) -> None:
+        @magic()
+        class C:
+            x: int = 0
+            y: int
+
+        assert C(y=2).x == 0
+        assert str(signature(C)) == "(x: int = 0, y: int) -> None"
+        with pytest.raises(TypeError, match="argument: 'y'"):
+            C(1)
+
+    def test_a_hand_written_init_is_left_alone(self) -> None:
+        class C(Magic, init=False):
+            x: int = 0
+            y: int
+
+            def __init__(self, y: int) -> None:
+                self.__magic_init__(y=y)
+
+        assert str(signature(C)) == "(y: int) -> None"
+        built = C(4)
+        assert (built.x, built.y) == (0, 4)
+
+    def test_the_first_missing_argument_is_the_one_named(self) -> None:
+        # Two are missing; the one named is the first the caller left
+        # out, not the first alphabetically.
+        class Pair(Magic):
+            x: int = 0
+            z: int
+            a: int
+
+        with pytest.raises(
+            TypeError, match=r"^Pair\(\) missing a required argument: 'z'$"
+        ):
+            Pair(1)
+
+    def test_the_hooks_never_see_a_missing_argument(self) -> None:
+        seen = []
+
+        class C(Magic):
+            x: int = 0
+            y: int
+
+            def __post_init__(self, arguments: Arguments) -> None:
+                seen.append((arguments.x, arguments.y))
+
+        with pytest.raises(TypeError, match="missing a required argument"):
+            C(5)
+        assert seen == []
+        C(5, 6)
+        assert seen == [(5, 6)]
+
+    def test_a_parameterised_generic(self) -> None:
+        T = tx.TypeVar("T")
+
+        class Box(Magic, tx.Generic[T]):
+            tag: int = 0
+            item: T
+
+        with pytest.raises(
+            TypeError,
+            match=r"^Box\[int\]\(\) missing a required argument: 'item'$",
+        ):
+            Box[int](5)
+        assert Box[int](0, 1) == Box(0, 1)
+
+
+class TestACompliantSignatureIsUnchanged:
+    """A class whose required fields all come first compiles exactly the
+    `__init__` it always has: no sentinel, and no check for one."""
+
+    def test_no_sentinel_among_the_defaults(self) -> None:
+        class C(Magic):
+            x: int
+            y: int = 0
+
+        assert C.__init__.__defaults__ == (0,)
+        assert m._REQUIRED_ARG not in C.__init__.__code__.co_freevars
+
+    def test_the_sentinel_appears_only_when_needed(self) -> None:
+        class C(Magic):
+            x: int = 0
+            y: int
+
+        assert C.__init__.__defaults__ == (0, REQUIRED)
+        assert m._REQUIRED_ARG in C.__init__.__code__.co_freevars
+
+    def test_no_signature_is_written_over_the_compiled_one(self) -> None:
+        class C(Magic):
+            x: int
+            y: int = 0
+
+        assert "__signature__" not in vars(C.__init__)
 
 
 class TestInitFalseLeavesPlainPython:
@@ -4832,12 +5156,14 @@ class TestDecoratingAPlainClass:
 
 class TestPrivateInitIsNeverInherited:
 
-    def test_an_unbuildable_init_raises_rather_than_falling_through(
+    def test_the_private_init_covers_the_class_own_fields(
         self,
     ) -> None:
         # Regression: with no `__magic_init__` of its own, the
         # documented delegation resolved to the *base's* -- built over
         # different fields -- and silently set the wrong attributes.
+        # A required field after a defaulted one is no reason for the
+        # class to go without one.
         class P(Magic):
             x: int
 
@@ -4846,16 +5172,20 @@ class TestPrivateInitIsNeverInherited:
             z: int
 
             def __init__(self, z: int) -> None:
-                self.__magic_init__(z)
+                self.__magic_init__(1, z=z)
 
         assert C.__magic_init__ is not P.__dict__["__magic_init__"]
-        with pytest.raises(TypeError, match="no __init__ could be generated"):
-            C(7)
+        built = C(7)
+        assert (built.x, built.y, built.z) == (1, 0, 7)
+        with pytest.raises(
+            TypeError, match="missing a required argument: 'z'"
+        ):
+            built.__magic_init__(1)
 
     def test_an_unrelated_error_is_not_swallowed(self) -> None:
-        # The tolerant path must catch the two signature errors, not
-        # every TypeError -- `_make_init` renders each default's repr,
-        # which runs user code.
+        # `_make_init` renders each default's repr, which runs user
+        # code; whatever that raises reaches the class statement, even
+        # for a class that turns `init` off.
         class Boom:
             def __repr__(self) -> str:
                 raise TypeError("boom from user __repr__")
