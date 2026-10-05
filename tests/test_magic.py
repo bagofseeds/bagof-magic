@@ -7781,3 +7781,34 @@ class TestKeyTests:
         assert dict(C()) == {}
         assert repr(C(1)) == "C(x=1)"
         assert dict(C(1)) == {"x": 1}
+
+
+class TestSettingsAsWritten:
+    # The normalising helpers, fed the shapes a hand-built Field can hold.
+
+    def test_repr_unwraps_a_nested_repr(self) -> None:
+        test = ShowIf(bool)
+        assert _fields._repr_setting(Repr(test), False) is test
+
+    def test_repr_reads_any_other_value_as_a_bool(self) -> None:
+        assert _fields._repr_setting(1, False) is True
+        assert _fields._repr_setting(0, False) is False
+
+    def test_key_unwraps_a_key(self) -> None:
+        assert _fields._key_setting(Key("id")) == "id"
+
+    def test_key_reads_any_other_value_as_a_bool(self) -> None:
+        assert _fields._key_setting(1) is True
+        assert _fields._key_setting(0) is False
+
+    def test_key_refuses_a_malformed_pair(self) -> None:
+        with pytest.raises(TypeError, match="a name and a test"):
+            _fields._key_setting(("a", "b", "c"))
+
+    def test_the_no_argument_tests_read_as_written(self) -> None:
+        assert repr(HideIfNone()) == "HideIfNone()"
+        assert repr(HideIfDefault()) == "HideIfDefault()"
+
+    def test_hide_if_default_needs_a_field(self) -> None:
+        with pytest.raises(TypeError, match="only works on a field"):
+            HideIfDefault()(1)
