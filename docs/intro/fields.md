@@ -106,6 +106,10 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | `PositionalOnly[T]` | by position only | `NotPositionalOnly` |
 | `Frozen[T]` | cannot be changed afterwards | `NotFrozen` |
 | `Repr[T]` | show in `repr()` | `NoRepr` |
+| `Repr[T, fn]` | show `fn(value)` in `repr()` | -- |
+| `ShowIf[T, test]` | show in `repr()` while `test(value)` is true | `HideIf` |
+| `HideIfNone[T]` | hide from `repr()` while it is `None` | -- |
+| `HideIfDefault[T]` | hide from `repr()` while it holds its default | -- |
 | `Eq[T]` | count towards `==` | `NoEq` |
 | `Order[T]` | count towards `<` | `NoOrder` |
 | `Compare[T]` | both of the above | `NoCompare` |
@@ -163,6 +167,33 @@ Point(a=2, x=1)
 ```
 
 `x` is declared second but becomes the first positional argument.
+
+## Choosing what `repr()` shows
+
+A field's repr setting can be a function of its value. A string it
+returns is shown as the value. `None` or `False` hides the field. Any
+other answer shows `repr(value)` when it is true, and hides the field when
+it is false.
+
+```pycon
+>>> money = "${:,.2f}".format
+>>> class Invoice(Magic):
+...     total: Repr[float, money]
+...     note: ShowIf[str, bool] = ""
+...     paid_by: HideIfNone[tx.Optional[str]] = None
+...     currency: HideIfDefault[str] = "USD"
+...
+>>> Invoice(1234.5)
+Invoice(total=$1,234.50)
+>>> Invoice(10.0, "rush", "ada", "EUR")
+Invoice(total=$10.00, note='rush', paid_by='ada', currency='EUR')
+```
+
+A test given as a class setting applies to every field:
+`class Invoice(Magic, repr=HideIfNone())`. On a dict-like class, a test
+also works as a key setting, alone or with a new name:
+`Key("labels", ShowIf(bool))` keeps the key only while the value is true.
+A key is kept or left out, never reformatted, so it takes only a test.
 
 ## A required field after one with a default
 

@@ -28,6 +28,8 @@ _WHAT = {
     "build": "could not build a value",
     "convert": "could not convert {value!r}",
     "validate": "{value!r} is not a valid value",
+    "repr": "could not decide how to show {value!r}",
+    "key": "could not decide whether {value!r} keeps its key",
 }
 
 
@@ -48,7 +50,9 @@ def field_error(
     name : str
         Name of the field.
     action : str
-        What was being done: "build", "convert" or "validate".
+        What was being done: "build", "convert", "validate", "repr"
+        (deciding how the value is shown) or "key" (deciding whether it
+        is in the dict-like view).
     error : Exception
         What was raised while doing it.
     value : Any, optional

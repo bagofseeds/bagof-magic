@@ -25,6 +25,10 @@ __all__ = [
     "ClassVar",
     "Repr",
     "NoRepr",
+    "ShowIf",
+    "HideIf",
+    "HideIfNone",
+    "HideIfDefault",
     "Compare",
     "NoCompare",
     "Eq",
@@ -48,6 +52,7 @@ __all__ = [
     "KEEP_NARROW",
 ]
 import difflib
+from functools import partial
 
 import typing_extensions as tx
 
@@ -58,7 +63,7 @@ from ._aliases import (
     property_option,
     readonly_property,
 )
-from ._constants import HIDE_IF_NONE, MISSING, REQUIRED, SHOW_ATTR
+from ._constants import MISSING, REQUIRED
 from ._options import Options
 from ._resolve import Hints
 from ._resolve import make_converter as _make_converter
@@ -107,7 +112,7 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     'type',             # Field type (or type hint)
     'default',          # Default value for this field.
     'factory',          # Default: False (none), True (from hint), callable.
-    'repr',             # Include this field in the generated __repr__ method.
+    'repr',             # In __repr__: True, False, or a function of the value.
     'hash',             # Include this field in the generated __hash__ method.
     'eq',               # Include this field in the generated __eq__ method.
     'order',            # Include this field in the generated __lt__ methods.
@@ -160,8 +165,14 @@ class Field(SlotsBase):
             nothing (a field is a parameter unless something says
             otherwise). Assigning `field.init = value` afterwards sets
             both `kw` and `positional`.
-        repr : bool, default=True (False for a pseudo-field)
-            Include this field in the generated `__repr__`.
+        repr : bool or Callable[[any], any], default=True
+            Include this field in the generated `__repr__`. A function
+            of the value decides how: a string it returns is shown as
+            the value, `None` or `False` hides the field, and any other
+            answer shows `repr(value)` when true and hides the field
+            when false. `ShowIf`, `HideIf`, `HideIfNone` and
+            `HideIfDefault` are ready-made tests. A pseudo-field
+            defaults to False.
         hash : bool, default=None (follows `eq`)
             Include this field in the generated `__hash__`. Defaults to
             following `eq`, since equal instances must hash equally.
@@ -202,9 +213,11 @@ class Field(SlotsBase):
         doc : str, optional
             Documentation for this field. Also settable through the
             `Doc` annotation.
-        key : bool | str, default=`Options().mapping`
+        key : bool | str | ShowIf | tuple, default=`Options().mapping`
             Include this field in the dict-like interface. A string
-            value is used as the key name.
+            value is used as the key name. A test such as `ShowIf(bool)`
+            or `HideIfNone()` keeps the key only while it passes, and a
+            `(name, test)` pair does both.
         alias : str | sequence[str] | bool, optional
             Input name or ordered input names. The first is preferred in
             signatures, repr and mapping keys. By default the field is
@@ -294,6 +307,19 @@ class Field(SlotsBase):
             kwargs["alias"] = alias_option(kwargs["alias"])
         if "property" in kwargs:
             kwargs["property"] = property_option(kwargs["property"])
+        # `repr=Repr(...)` and `key=Key(...)` take the setting the
+        # annotation carries, so wrapping one in another never stacks.
+        # A test (`ShowIf(...)`) is its own setting and is kept.
+        value = kwargs.get("repr", MISSING)
+        while isinstance(value, Repr) and value.repr is not value:
+            value = value.repr
+        if value is not MISSING:
+            kwargs["repr"] = value
+        value = kwargs.get("key", MISSING)
+        while isinstance(value, Key):
+            value = value.key
+        if value is not MISSING:
+            kwargs["key"] = value
         # set slots from keywords
         super().__init__(**kwargs)
 
@@ -397,12 +423,15 @@ class Field(SlotsBase):
     def public_key(self) -> tx.Optional[str]:
         """The key to use for this field in the generated dict-like
         interface."""
-        if not self.key:
+        key = self.key
+        if key is MISSING or key is False:
             return None
-        if isinstance(self.key, SHOW_ATTR) and isinstance(self.key.key, str):
-            return self.key.key
-        if isinstance(self.key, str):
-            return self.key
+        if isinstance(key, tuple):
+            key = key[0]
+        elif isinstance(key, HIDE_IF_NONE):
+            key = key._key
+        if isinstance(key, str):
+            return key
         return self.public_name
 
     @classmethod
@@ -557,37 +586,24 @@ class Field(SlotsBase):
         # The class option decides whether the method is generated. The
         # field attribute decides whether this field takes part in it.
         if self.repr is MISSING:
-            # A sentinel on the class option is a per-field instruction
-            # ("show only when it has a value"), so it propagates. A
-            # plain bool controls whether __repr__ is generated at all.
-            sentinel = (
-                isinstance(options.repr, SHOW_ATTR)
-                or options.repr is HIDE_IF_NONE
-            )
-            self.repr = (
-                options.repr if sentinel and not self.var else not self.var
-            )
+            # A test on the class option (`repr=HideIfNone()`) is a
+            # per-field instruction, so it propagates. A plain bool
+            # controls whether __repr__ is generated at all.
+            test = _test(options.repr, "repr")
+            if test is not None and not self.var:
+                self.repr = test._spread()
+            else:
+                self.repr = not self.var
         if self.hash is MISSING:
             # None means "follow eq", which _hash_add reads.
             self.hash = None
-        # `repr` and `key` encode both "whether" and "under which name",
-        # so once resolved they are stored as a SHOW_ATTR.
-        if self.repr is HIDE_IF_NONE:
-            if self.var:
-                self.repr = SHOW_ATTR(False)
-            else:
-                self.repr = HIDE_IF_NONE(self.public_name)
-        if not isinstance(self.repr, SHOW_ATTR):
-            self.repr = SHOW_ATTR(self.repr)
+        self.repr = _repr_setting(self.repr, self.var)
         if self.key is MISSING:
             # The class option controls whether the dict-like view
             # exists. A real field defaults to being in the view, so
             # it is already included when mapping is turned on later.
             self.key = not self.var
-        if self.key is HIDE_IF_NONE:
-            self.key = HIDE_IF_NONE(self.public_name)
-        if not isinstance(self.key, SHOW_ATTR):
-            self.key = SHOW_ATTR(self.key)
+        self.key = _key_setting(self.key)
         if self.eq is MISSING:
             self.eq = True
         if self.order is MISSING:
@@ -656,6 +672,81 @@ _KEYWORDS = (
     "build", "compare", "convert", "default_factory", "init", "kw_only",
     "validate",
 )
+
+
+def _test(value: tx.Any, setting: str) -> tx.Optional["ShowIf"]:
+    # The test a repr or key setting stands for, or None when it is not
+    # one. A test that needs nothing to be built (`HideIfNone`) may be
+    # written as the bare class.
+    if isinstance(value, type) and issubclass(value, ShowIf):
+        if value._takes_test:
+            raise TypeError(
+                f"{setting}={value.__name__} needs a test to call: write "
+                f"{value.__name__}(test), for example "
+                f"{value.__name__}(bool)."
+            )
+        return value()
+    if isinstance(value, ShowIf):
+        return value
+    return None
+
+
+def _repr_setting(value: tx.Any, var: bool) -> tx.Any:
+    # A field's repr setting as the generated `__repr__` reads it: True,
+    # False, or a function of the value.
+    if isinstance(value, type) and issubclass(value, ShowIf):
+        # The bare class says "show it only while it has a value", which
+        # a pseudo-field never has on the instance.
+        return False if var else _test(value, "repr")
+    while isinstance(value, Repr) and value.repr is not value:
+        value = value.repr
+    if value is True or value is False or callable(value):
+        return value
+    return bool(value)
+
+
+def _key_setting(value: tx.Any) -> tx.Any:
+    # A field's key setting as the dict-like view reads it: True, False,
+    # a name, a test, or a (name, test) pair.
+    while isinstance(value, Key):
+        value = value.key
+    if isinstance(value, tuple):
+        if len(value) != 2 or not isinstance(value[0], (str, bool)):
+            raise TypeError(
+                f"A key setting given as a pair is a name and a test, "
+                f"like Key('labels', ShowIf(bool)); got {value!r}."
+            )
+        name, test = value
+        return (name, _key_test(test))
+    if isinstance(value, HIDE_IF_NONE) and isinstance(value._key, str):
+        return (value._key, value)
+    if value is True or value is False or isinstance(value, str):
+        return value
+    if callable(value) or isinstance(value, type):
+        return _key_test(value)
+    return bool(value)
+
+
+def _key_test(value: tx.Any) -> "ShowIf":
+    test = _test(value, "key")
+    if test is None:
+        raise TypeError(
+            f"A key setting takes True, False, a name, or a test such as "
+            f"ShowIf(...) or HideIfNone(); got {value!r}. A key is kept or "
+            f"left out, never reformatted, so a function that formats the "
+            f"value belongs on repr instead."
+        )
+    return test
+
+
+def _field_key_test(field: Field) -> tx.Optional["ShowIf"]:
+    """The test that decides whether a field is in the dict-like view."""
+    key = field.key
+    if isinstance(key, tuple):
+        return key[1]
+    if isinstance(key, ShowIf):
+        return key
+    return None
 
 
 def _check_keywords(
@@ -1165,9 +1256,19 @@ class ClassVar(Var, NoInit): ...
 @slots
 class Repr(BoolAnnotatedField):
     """
-    Show a field in the generated `__repr__`, or hide it.
+    Show a field in the generated `__repr__`, hide it, or choose how.
 
-    Use `HIDE_IF_NONE` to show it only when it has a value.
+    Besides `True` and `False`, a field's repr setting can be a function
+    of the value. Its answer decides what is shown:
+
+    - a string is shown as the value's text, in place of `repr(value)`;
+    - `None` or `False` hides the field;
+    - `True`, or anything else that is true, shows `repr(value)`;
+    - anything else that is false hides the field.
+
+    So a function can format the value, or decide whether it is shown.
+    `ShowIf`, `HideIf`, `HideIfNone` and `HideIfDefault` are ready-made
+    tests of the second kind.
 
     !!! example "How it lowers"
         ```pycon
@@ -1188,14 +1289,293 @@ class Repr(BoolAnnotatedField):
         >>> User("ada", "hunter2")
         User(name='ada')
         ```
+
+    !!! example "Formatting the value"
+        ```pycon
+        >>> one_place = "{:.1f}".format
+        >>> class Reading(Magic):
+        ...     celsius: Repr[float, one_place]
+        ...
+        >>> Reading(21.456)
+        Reading(celsius=21.5)
+        ```
     """
 
     __set_slots__ = ('repr',)
+
+    def __class_getitem__(
+        cls, args: tx.Union[type, tx.Tuple]
+    ) -> tx.TypeAlias:
+        # `Repr[float, "{:.2f}".format]` puts the function in the repr
+        # setting. Anything after the type that is not callable stays as
+        # metadata, as it does on every other member of the family.
+        if (
+            isinstance(args, tuple) and len(args) > 1 and callable(args[1])
+            and not issubclass(cls, InversedBoolAnnotatedField)
+        ):
+            t, how, *rest = args
+            return tx.Annotated[(t, cls(how)) + tuple(rest)]
+        # Named rather than `super()`: the `slots` decorator rebuilds the
+        # class, and before 3.10 a classmethod's `super()` keeps pointing
+        # at the class it was first written in.
+        return BoolAnnotatedField.__dict__["__class_getitem__"].__func__(
+            cls, args
+        )
 
 
 @slots
 class NoRepr(Repr, InversedBoolAnnotatedField):
     __set_slots__ = ('repr',)
+
+
+@slots('_predicate')
+class ShowIf(Repr):
+    """
+    Show a field in `__repr__` only while a test of its value passes.
+
+    `ShowIf(test)` calls `test(value)` and shows the field when the
+    answer is true. It also works as a key setting on a dict-like class
+    (`Key(ShowIf(test))`), where it leaves the key out while the test
+    fails.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> ShowIf(bool)
+        ShowIf(<class 'bool'>)
+        >>> ShowIf[int, bool]
+        typing.Annotated[int, ShowIf(<class 'bool'>)]
+        >>> Repr(ShowIf(bool))
+        Repr(repr=ShowIf(<class 'bool'>))
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Order(Magic):
+        ...     item: str
+        ...     notes: ShowIf[str, bool] = ""
+        ...
+        >>> Order("tea")
+        Order(item='tea')
+        >>> Order("tea", "no sugar")
+        Order(item='tea', notes='no sugar')
+        ```
+    """
+
+    __set_slots__ = ('repr',)
+
+    def __init__(self, predicate: tx.Callable[[tx.Any], tx.Any], /) -> None:
+        if not callable(predicate):
+            raise TypeError(
+                f"{type(self).__name__}() takes a function of the value, "
+                f"called to decide whether the field is shown; got "
+                f"{predicate!r}."
+            )
+        super().__init__()
+        self._predicate = predicate
+        # The setting a field takes from this is the test itself.
+        self.repr = self
+
+    def __call__(self, value: tx.Any) -> bool:
+        return bool(self._predicate(value))
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._predicate!r})"
+
+    def __class_getitem__(
+        cls, args: tx.Union[type, tx.Tuple]
+    ) -> tx.TypeAlias:
+        # `ShowIf[int, test]` is `Annotated[int, ShowIf(test)]`. The
+        # subclasses that need no test (`HideIfNone`, `HideIfDefault`)
+        # take only the type. Anything further stays as metadata.
+        if not isinstance(args, tuple):
+            args = (args,)
+        if cls._takes_test:
+            if len(args) < 2:
+                raise TypeError(
+                    f"{cls.__name__}[] takes a type and a test: "
+                    f"{cls.__name__}[int, bool]."
+                )
+            t, test, *rest = args
+            return tx.Annotated[(t, cls(test)) + tuple(rest)]
+        t, *rest = args
+        return tx.Annotated[(t, cls()) + tuple(rest)]
+
+    # Whether the constructor and the subscription take a test.
+    _takes_test = True
+
+    def _spread(self) -> tx.Self:
+        # The test a class setting hands to each of its fields.
+        return self
+
+    def _bind(self, field: Field, owner: str) -> tx.Callable:
+        # The test as it applies to one field of one class. Only
+        # `HideIfDefault` depends on the field; every other test is
+        # already complete.
+        return self
+
+
+@slots
+class HideIf(ShowIf):
+    """
+    Hide a field from `__repr__` while a test of its value passes.
+
+    The opposite of `ShowIf`: `HideIf(test)` hides the field when
+    `test(value)` is true.
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Retry(Magic):
+        ...     attempts: HideIf[int, lambda n: n < 0] = -1
+        ...
+        >>> Retry()
+        Retry()
+        >>> Retry(3)
+        Retry(attempts=3)
+        ```
+    """
+
+    __set_slots__ = ('repr',)
+
+    def __call__(self, value: tx.Any) -> bool:
+        return not self._predicate(value)
+
+
+def _is_none(value: tx.Any) -> bool:
+    return value is None
+
+
+@slots
+class HideIfNone(HideIf):
+    """
+    Hide a field from `__repr__` while it holds `None`.
+
+    The class itself can be written wherever an instance can:
+    `Field(repr=HideIfNone)` is `Field(repr=HideIfNone())`. As a class
+    setting, `class C(Magic, repr=HideIfNone())`, it applies to every
+    field.
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Person(Magic):
+        ...     name: str
+        ...     nickname: HideIfNone[tx.Optional[str]] = None
+        ...
+        >>> Person("Margaret")
+        Person(name='Margaret')
+        >>> Person("Margaret", "Peggy")
+        Person(name='Margaret', nickname='Peggy')
+        ```
+    """
+
+    __set_slots__ = ('repr',)
+    _takes_test = False
+
+    def __init__(self) -> None:
+        super().__init__(_is_none)
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}()"
+
+
+def _equals(default: tx.Any, value: tx.Any) -> bool:
+    # Whether a value is the field's default. A comparison that cannot
+    # give a yes or a no -- an array compares element by element, and
+    # the answer has no single truth -- counts as "not the default", so
+    # the field is shown rather than hidden on a guess.
+    if value is default:
+        return True
+    try:
+        return bool(value == default)
+    except Exception:
+        return False
+
+
+@slots('_lenient')
+class HideIfDefault(HideIf):
+    """
+    Hide a field from `__repr__` while it holds its default.
+
+    A value counts as the default when it is the default, or compares
+    equal to it. A value that cannot be compared with it is shown. The
+    field needs a plain default to compare with: one built by a factory
+    is refused, since each instance has its own.
+
+    As a class setting, `class C(Magic, repr=HideIfDefault())`, it
+    applies to every field that has a plain default, and the others are
+    always shown.
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Request(Magic):
+        ...     url: str
+        ...     method: HideIfDefault[str] = "GET"
+        ...
+        >>> Request("/home")
+        Request(url='/home')
+        >>> Request("/home", "POST")
+        Request(url='/home', method='POST')
+        ```
+    """
+
+    __set_slots__ = ('repr',)
+    _takes_test = False
+
+    def __init__(self) -> None:
+        super().__init__(_equals)
+        self._lenient = False
+
+    def __call__(self, value: tx.Any) -> bool:
+        raise TypeError(
+            "HideIfDefault compares a value with a field's default, so it "
+            "only works on a field of a Magic class."
+        )
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}()"
+
+    def _spread(self) -> tx.Self:
+        # The copy a class setting hands to each of its fields: one with
+        # no plain default is shown rather than refused.
+        copy = HideIfDefault()
+        copy._lenient = True
+        return copy
+
+    def _bind(self, field: Field, owner: str) -> tx.Callable:
+        if field.default is MISSING or field.build:
+            if self._lenient:
+                return True
+            has = (
+                "a default built afresh for each instance (a factory, or"
+                " a mutable default such as [])"
+                if field.build else "no default"
+            )
+            raise TypeError(
+                f"{owner}.{field.name} uses HideIfDefault, but has {has}, "
+                f"so there is no single value to compare with. Give it a "
+                f"plain default, or use HideIf with a test of your own."
+            )
+        return HideIf(partial(_equals, field.default))
+
+
+@slots('_key')
+class HIDE_IF_NONE(HideIfNone):
+    """
+    The original spelling of `HideIfNone`, still accepted.
+
+    `HIDE_IF_NONE("name")` as a key setting also renames the key, the
+    way `Key("name", HideIfNone())` does.
+    """
+
+    __set_slots__ = ('repr',)
+
+    def __init__(self, key: tx.Optional[str] = None) -> None:
+        super().__init__()
+        self._key = key
+
+    def __repr__(self) -> str:
+        if isinstance(self._key, str):
+            return f"{type(self).__name__}({self._key!r})"
+        return f"{type(self).__name__}()"
 
 
 @slots
@@ -1341,9 +1721,30 @@ class Key(BoolAnnotatedField):
         >>> dict(Row("ada"))
         {'name': 'ada'}
         ```
+
+    A test such as `ShowIf(bool)` or `HideIfNone()` keeps the key only
+    while it passes. Give a name first to rename the key as well.
+
+    !!! example "With a test"
+        ```pycon
+        >>> class Post(Magic, mapping=True):
+        ...     title: str
+        ...     tags: tx.Annotated[tuple, Key("labels", ShowIf(bool))] = ()
+        ...
+        >>> dict(Post("hi"))
+        {'title': 'hi'}
+        >>> dict(Post("hi", ("news",)))
+        {'title': 'hi', 'labels': ('news',)}
+        ```
     """
 
     __set_slots__ = ('key',)
+
+    def __init__(self, *values, **kwvalues) -> None:
+        # `Key("labels", ShowIf(bool))`: a name and a test together.
+        if len(values) == 2:
+            values = (tuple(values),)
+        super().__init__(*values, **kwvalues)
 
 
 @slots

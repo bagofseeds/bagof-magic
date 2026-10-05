@@ -30,6 +30,9 @@ from bagof.magic import (
     Factory,
     Field,
     Frozen,
+    HideIf,
+    HideIfDefault,
+    HideIfNone,
     Init,
     InitVar,
     Key,
@@ -50,6 +53,8 @@ from bagof.magic import (
     NotPositionalOnly,
     Positional,
     PositionalOnly,
+    Repr,
+    ShowIf,
     Validate,
     magic,
 )
@@ -59,9 +64,8 @@ from bagof.magic._constants import (
     _OPTIONS,
     MISSING,
     REQUIRED,
-    SHOW_ATTR,
 )
-from bagof.magic._constants import (
+from bagof.magic._fields import (
     HIDE_IF_NONE as HideIfNoneCls,
 )
 from bagof.magic._options import Options
@@ -2646,33 +2650,15 @@ class TestConstants:
         from bagof.magic._constants import _RequiredType
         assert _RequiredType() is REQUIRED
 
-    def test_show_attr_call_false(self) -> None:
-        assert SHOW_ATTR(False)("anything") is False
-
-    def test_show_attr_call_hide_if_none(self) -> None:
-        show = SHOW_ATTR("k", hide_if_none=True)
-        assert show(None) is False
-        assert show(1) is True
-
-    def test_show_attr_str(self) -> None:
-        assert str(SHOW_ATTR("k")) == "k"
-
-    def test_show_attr_repr_false(self) -> None:
-        assert repr(SHOW_ATTR(False)) == "False"
-
-    def test_show_attr_repr_true_hide(self) -> None:
-        assert repr(SHOW_ATTR(True, hide_if_none=True)) == "<if not None>"
-
-    def test_show_attr_repr_key_hide(self) -> None:
-        assert repr(SHOW_ATTR("k", hide_if_none=True)) == "'k' <if not None>"
-
-    def test_show_attr_repr_key(self) -> None:
-        assert repr(SHOW_ATTR("k")) == "'k'"
-
     def test_hide_if_none_init(self) -> None:
+        # The old spelling is the new test, carrying a key name.
         h = HideIfNoneCls("k")
-        assert h.hide_if_none is True
-        assert h.key == "k"
+        assert isinstance(h, m.HideIfNone)
+        assert h(None) is False
+        assert h(1) is True
+        assert h._key == "k"
+        assert repr(h) == "HIDE_IF_NONE('k')"
+        assert repr(HideIfNoneCls()) == "HIDE_IF_NONE()"
 
 
 # ======================================================================
@@ -2768,8 +2754,8 @@ class TestFieldInternals:
     def test_public_key_none(self) -> None:
         assert Field(name="x", key=False).public_key is None
 
-    def test_public_key_show_attr_str(self) -> None:
-        f = Field(name="x", key=SHOW_ATTR("thekey"))
+    def test_public_key_hide_if_none_str(self) -> None:
+        f = Field(name="x", key=HIDE_IF_NONE("thekey"))
         assert f.public_key == "thekey"
 
     def test_public_key_str(self) -> None:
@@ -7391,3 +7377,407 @@ class TestFieldNamesThatShadowGeneratedLocals:
             Box(-1)
         assert "Box.object" in str(caught.value)
         assert "must be positive" in str(caught.value)
+
+
+# ======================================================================
+# repr settings that are functions of the value: ShowIf and friends
+# ======================================================================
+
+
+class _ArrayLike:
+    """Compares element-wise, like a numpy array: `==` has no truth."""
+
+    def __init__(self, *items: int) -> None:
+        self.items = items
+
+    def __eq__(self, other: object) -> "_ArrayLike":
+        return _Ambiguous()
+
+    __hash__ = object.__hash__
+
+    def __repr__(self) -> str:
+        return f"_ArrayLike{self.items!r}"
+
+
+class _Ambiguous:
+    def __bool__(self) -> bool:
+        raise ValueError("the truth value is ambiguous")
+
+
+class TestReprAnswers:
+    """What each answer of a repr function does, on both repr paths."""
+
+    @staticmethod
+    def build(how: object, looped: bool) -> type:
+        # A field only ever set by hand sends repr down the looped path.
+        if looped:
+            class C(Magic):
+                x: Annotated[int, Field(repr=how)] = 1
+                y: NoInit[int]
+        else:
+            class C(Magic):
+                x: Annotated[int, Field(repr=how)] = 1
+        return C
+
+    @pytest.mark.parametrize("looped", [False, True])
+    @pytest.mark.parametrize(
+        "answer, shown",
+        [
+            ("<one>", "C(x=<one>)"),
+            ("", "C(x=)"),
+            (None, "C()"),
+            (False, "C()"),
+            (True, "C(x=1)"),
+            (1, "C(x=1)"),
+            ([0], "C(x=1)"),
+            (0, "C()"),
+            ([], "C()"),
+        ],
+    )
+    def test_answer(self, answer: object, shown: str, looped: bool) -> None:
+        C = self.build(lambda value: answer, looped)
+        assert repr(C()) == shown
+
+    @pytest.mark.parametrize("looped", [False, True])
+    def test_the_function_is_given_the_value(self, looped: bool) -> None:
+        C = self.build(lambda v: f"<{v}>", looped)
+        assert repr(C(7)) == "C(x=<7>)"
+
+    @pytest.mark.parametrize("looped", [False, True])
+    def test_a_failure_names_the_class_and_the_field(
+        self, looped: bool
+    ) -> None:
+        def broken(value: int) -> str:
+            raise ValueError("no way")
+
+        C = self.build(broken, looped)
+        with pytest.raises(ValueError) as caught:
+            repr(C())
+        assert "C.x" in str(caught.value)
+        assert "no way" in str(caught.value)
+        assert isinstance(caught.value.__cause__, ValueError)
+
+    @pytest.mark.parametrize("looped", [False, True])
+    def test_an_answer_with_no_truth_names_the_field(
+        self, looped: bool
+    ) -> None:
+        C = self.build(lambda v: _Ambiguous(), looped)
+        with pytest.raises(ValueError) as caught:
+            repr(C())
+        assert "C.x" in str(caught.value)
+
+    def test_a_shown_field_compiles_without_a_call(self) -> None:
+        class C(Magic):
+            x: int
+            y: ShowIf[int, bool] = 0
+
+        names = C.__repr__.__globals__
+        assert "__magic_y_repr__" in names
+        assert "__magic_x_repr__" not in names
+        assert repr(C(1)) == "C(x=1)"
+        assert repr(C(1, 2)) == "C(x=1, y=2)"
+
+    def test_the_looped_path_is_taken_with_a_hand_set_field(self) -> None:
+        class C(Magic):
+            x: HideIfNone[Optional[int]] = None
+            y: NoInit[int]
+
+        assert not hasattr(C.__repr__, "__globals__") or (
+            "__magic_x_repr__" not in C.__repr__.__globals__
+        )
+        c = C()
+        assert repr(c) == "C()"
+        c.y, c.x = 2, 1
+        assert repr(c) == "C(x=1, y=2)"
+
+
+class TestShowIfSpellings:
+
+    @pytest.mark.parametrize(
+        "hint",
+        [
+            ShowIf[int, bool],
+            Repr[int, ShowIf(bool)],
+            Annotated[int, ShowIf(bool)],
+            Annotated[int, Repr(ShowIf(bool))],
+            Annotated[int, Field(repr=ShowIf(bool))],
+            Annotated[int, Field(repr=Repr(ShowIf(bool)))],
+        ],
+    )
+    def test_every_spelling_shows_while_the_test_passes(
+        self, hint: object
+    ) -> None:
+        class C(Magic):
+            x: hint = 0
+
+        assert repr(C()) == "C()"
+        assert repr(C(3)) == "C(x=3)"
+
+    def test_nesting_does_not_stack(self) -> None:
+        test = ShowIf(bool)
+        assert Repr(test).repr is test
+        assert Repr(Repr(test)).repr is test
+        assert Field(repr=Repr(Repr(test))).repr is test
+
+    def test_the_subscription_lowers_to_the_test(self) -> None:
+        hint = ShowIf[int, bool, "note"]
+        _, test, note = tx.get_args(hint)
+        assert isinstance(test, ShowIf)
+        assert test.repr is test
+        assert note == "note"
+        assert repr(test) == "ShowIf(<class 'bool'>)"
+
+    def test_a_test_is_required(self) -> None:
+        with pytest.raises(TypeError):
+            ShowIf[int]
+        with pytest.raises(TypeError):
+            ShowIf(3)
+
+    def test_the_bare_class_without_a_test_is_refused(self) -> None:
+        with pytest.raises(TypeError, match=r"ShowIf\(test\)"):
+            class C(Magic):
+                x: Annotated[int, Field(repr=ShowIf)] = 0
+
+    def test_hide_if(self) -> None:
+        class C(Magic):
+            x: HideIf[int, lambda v: v < 0] = -1
+
+        assert repr(C()) == "C()"
+        assert repr(C(2)) == "C(x=2)"
+
+    def test_a_formatter(self) -> None:
+        two_places = "{:.2f}".format
+
+        class C(Magic):
+            x: Repr[float, two_places] = 1.0
+
+        assert repr(C(3.14159)) == "C(x=3.14)"
+
+    def test_repr_still_keeps_plain_metadata(self) -> None:
+        hint = Repr[int, "note"]
+        assert tx.get_args(hint)[2] == "note"
+
+    def test_hide_if_none_sugar(self) -> None:
+        class C(Magic):
+            x: HideIfNone[Optional[int]] = None
+
+        assert repr(C()) == "C()"
+        assert repr(C(0)) == "C(x=0)"
+
+    def test_the_bare_hide_if_none_class(self) -> None:
+        class C(Magic):
+            x: Annotated[Optional[int], Field(repr=HideIfNone)] = None
+
+        assert repr(C()) == "C()"
+        assert repr(C(1)) == "C(x=1)"
+
+    def test_a_repr_test_leaves_the_key_alone(self) -> None:
+        class C(Magic, mapping=True):
+            x: ShowIf[int, bool] = 0
+
+        assert repr(C()) == "C()"
+        assert dict(C()) == {"x": 0}
+
+    def test_a_predicate_failure_names_the_field(self) -> None:
+        def broken(value: int) -> bool:
+            raise KeyError("boom")
+
+        class C(Magic):
+            x: ShowIf[int, broken] = 0
+
+        with pytest.raises(KeyError) as caught:
+            repr(C())
+        assert "C.x" in str(caught.value)
+
+
+class TestClassLevelTests:
+
+    @pytest.mark.parametrize(
+        "setting", [HideIfNone(), HideIfNone, HIDE_IF_NONE, HIDE_IF_NONE()]
+    )
+    def test_hide_if_none_reaches_every_field(self, setting: object) -> None:
+        class C(Magic, repr=setting):
+            x: Optional[int] = None
+            y: int = 1
+            z: TypingClassVar[int] = 3
+
+        assert repr(C()) == "C(y=1)"
+        assert repr(C(5)) == "C(x=5, y=1)"
+
+    def test_show_if_reaches_every_field(self) -> None:
+        class C(Magic, repr=ShowIf(bool)):
+            x: int = 0
+            y: str = ""
+
+        assert repr(C()) == "C()"
+        assert repr(C(1, "a")) == "C(x=1, y='a')"
+
+    def test_a_field_setting_wins(self) -> None:
+        class C(Magic, repr=HideIfNone()):
+            x: Optional[int] = None
+            y: Annotated[Optional[int], Field(repr=True)] = None
+
+        assert repr(C()) == "C(y=None)"
+
+    def test_hide_if_default_skips_fields_without_a_plain_default(
+        self
+    ) -> None:
+        class C(Magic, repr=HideIfDefault()):
+            name: str
+            tags: list = Field(factory=list)
+            size: int = 3
+
+        assert repr(C("a")) == "C(name='a', tags=[])"
+        assert repr(C("a", [1], 4)) == "C(name='a', tags=[1], size=4)"
+
+
+class TestHideIfDefault:
+
+    def test_identity_and_equality(self) -> None:
+        marker = object()
+
+        class C(Magic):
+            x: HideIfDefault[object] = marker
+            y: HideIfDefault[float] = 1.0
+
+        assert repr(C()) == "C()"
+        assert repr(C(marker, 1)) == "C()"
+        assert repr(C(None, 2.0)) == "C(x=None, y=2.0)"
+
+    def test_an_uncomparable_value_is_shown(self) -> None:
+        default = _ArrayLike(1, 2)
+
+        class C(Magic):
+            x: HideIfDefault[object] = default
+
+        assert repr(C()) == "C()"
+        assert repr(C(_ArrayLike(1, 2))) == "C(x=_ArrayLike(1, 2))"
+
+    def test_a_raising_comparison_is_shown(self) -> None:
+        class Touchy:
+            def __eq__(self, other: object) -> bool:
+                raise RuntimeError("no comparing")
+
+            __hash__ = object.__hash__
+
+            def __repr__(self) -> str:
+                return "Touchy()"
+
+        class C(Magic):
+            x: HideIfDefault[object] = 0
+
+        assert repr(C(Touchy())) == "C(x=Touchy())"
+
+    def test_a_factory_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="C.x uses HideIfDefault"):
+            class C(Magic):
+                x: HideIfDefault[list] = Field(factory=list)
+
+    def test_a_mutable_default_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="mutable default"):
+            class C(Magic):
+                x: HideIfDefault[list] = []
+
+    def test_no_default_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="no default"):
+            class C(Magic):
+                x: HideIfDefault[int]
+
+    def test_a_subclass_compares_with_its_own_default(self) -> None:
+        class Base(Magic):
+            x: HideIfDefault[int] = 1
+
+        class Sub(Base):
+            x: HideIfDefault[int] = 2
+
+        assert repr(Base(1)) == "Base()"
+        assert repr(Sub(1)) == "Sub(x=1)"
+        assert repr(Sub(2)) == "Sub()"
+
+    def test_unbound_it_cannot_be_called(self) -> None:
+        with pytest.raises(TypeError):
+            HideIfDefault()(1)
+
+    def test_as_a_key(self) -> None:
+        class C(Magic, mapping=True):
+            x: Annotated[int, Key(HideIfDefault())] = 0
+            y: int = 1
+
+        assert dict(C()) == {"y": 1}
+        assert dict(C(5)) == {"x": 5, "y": 1}
+
+
+class TestKeyTests:
+
+    def test_show_if_on_a_key(self) -> None:
+        class C(Magic, mapping=True):
+            x: Annotated[list, Key(ShowIf(bool))] = ()
+            y: int = 1
+
+        assert dict(C()) == {"y": 1}
+        assert len(C()) == 1
+        assert dict(C([1])) == {"x": [1], "y": 1}
+        with pytest.raises(KeyError):
+            C()["x"]
+
+    @pytest.mark.parametrize(
+        "annotation",
+        [
+            Key("labels", ShowIf(bool)),
+            Field(key=("labels", ShowIf(bool))),
+            Field(key=Key("labels", ShowIf(bool))),
+        ],
+    )
+    def test_a_name_and_a_test(self, annotation: object) -> None:
+        class C(Magic, mapping=True):
+            x: Annotated[tuple, annotation] = ()
+
+        assert dict(C()) == {}
+        assert dict(C((1,))) == {"labels": (1,)}
+        assert C((1,))["labels"] == (1,)
+
+    def test_hide_if_none_bare_and_instance(self) -> None:
+        class C(Magic, mapping=True):
+            x: Annotated[Optional[int], Field(key=HideIfNone)] = None
+            y: Annotated[Optional[int], Field(key=HideIfNone())] = None
+
+        assert dict(C()) == {}
+        assert dict(C(1, 2)) == {"x": 1, "y": 2}
+
+    def test_hide_if_none_renames_the_key(self) -> None:
+        class C(Magic, mapping=True):
+            x: Annotated[Optional[int], Field(key=HIDE_IF_NONE("id"))] = None
+
+        assert dict(C()) == {}
+        assert dict(C(1)) == {"id": 1}
+
+    def test_a_formatter_is_refused(self) -> None:
+        with pytest.raises(TypeError, match="belongs on repr"):
+            class C(Magic, mapping=True):
+                x: Annotated[int, Field(key=str)] = 0
+
+    def test_a_failure_names_the_field(self) -> None:
+        def broken(value: int) -> bool:
+            raise ValueError("bad key test")
+
+        class C(Magic, mapping=True):
+            x: Annotated[int, Key(ShowIf(broken))] = 0
+
+        with pytest.raises(ValueError) as caught:
+            dict(C())
+        assert "C.x" in str(caught.value)
+        assert "bad key test" in str(caught.value)
+
+    def test_hide_if_none_as_key_and_repr_old_spelling(self) -> None:
+        # The old spelling passed a key name to repr= as well; there it
+        # means nothing and is ignored.
+        class C(Magic, mapping=True):
+            x: Annotated[
+                Optional[int],
+                Field(repr=HIDE_IF_NONE("ignored"), key=HIDE_IF_NONE),
+            ] = None
+
+        assert repr(C()) == "C()"
+        assert dict(C()) == {}
+        assert repr(C(1)) == "C(x=1)"
+        assert dict(C(1)) == {"x": 1}
