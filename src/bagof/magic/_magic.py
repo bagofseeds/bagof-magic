@@ -1782,8 +1782,10 @@ def __pre_new__(
 
     fnbuilder = _FuncBuilder(globals)
 
-    # Save qualified name -- we will use it when generating methods.
-    qualname = namespace.get("__qualname__", None)
+    # Save qualified name -- we will use it when generating methods. A
+    # class statement puts it in the namespace; `type(name, bases, ns)`
+    # does not, and then names the class after its name, as done here.
+    qualname = namespace.setdefault("__qualname__", clsname)
 
     # Now that dicts retain insertion order, there's no reason to use
     # an ordered dict.  I am leveraging that ordering here, because
