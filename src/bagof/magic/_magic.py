@@ -32,8 +32,9 @@ Parameters
 ----------
 init : bool | str, default=True
     Generate ``__init__`` method.
-repr : bool | str, default=True
+repr : bool | str | ShowIf, default=True
     Generate ``__repr__`` method. A field holding no value is left out.
+    A test such as ``HideIfNone()`` is applied to every field.
 eq : bool | str, default=True
     Generate ``__eq__`` method. Two objects are equal when the same
     fields hold values and those values match.
@@ -151,23 +152,31 @@ from ._constants import (
     _POST_INIT_NAME,
     _PRE_INIT_NAME,
     _REGISTRATION,
+    _REPR,
     _REQUIRED_ARG,
     _RETURN_TYPE,
     _SELF,
+    _SHOWN,
     _TYPE,
     _VALIDATOR,
     _VALUE,
-    HIDE_IF_NONE,
     MISSING,
     REQUIRED,
-    SHOW_ATTR,
     MaybeMissing,
     _HasDefault,
     _HasFactory,
 )
 from ._errors import field_error
 from ._fields import *  # noqa: F401, F403
-from ._fields import _OVERRIDABLE, Field, _chain, _stored
+from ._fields import (
+    _OVERRIDABLE,
+    HIDE_IF_NONE,
+    Field,
+    ShowIf,
+    _chain,
+    _field_key_test,
+    _stored,
+)
 from ._fields import __all__ as __all_fields__
 from ._fields import field as _field
 from ._generics import substitute as _substitute
@@ -1496,8 +1505,8 @@ def _pin_discriminant(
     field.factory = False
     if storage == "classvar":
         field.var = True
-        field.repr = SHOW_ATTR(False)
-        field.key = SHOW_ATTR(False)
+        field.repr = False
+        field.key = False
         field.eq = field.order = False
         field.hash = False
         # A class attribute is meant to be shared, so a mutable one is
@@ -3152,25 +3161,67 @@ def _make_init(
     }, required, set(alias_params), alias_defaults
 
 
-def _compile_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
+def _bound(field: Field, setting: tx.Any, owner: str) -> tx.Any:
+    # A repr or key setting as it applies to this field of this class:
+    # a test that depends on the field (`HideIfDefault`) is completed
+    # here, when the class is built, against the field's own default.
+    if isinstance(setting, ShowIf):
+        return setting._bind(field, owner.rsplit(".", 1)[-1])
+    return setting
+
+
+def _shown(
+    how: tx.Callable, value: tx.Any, owner: str, name: str
+) -> tx.Optional[str]:
+    """How a field's value appears in `repr`, or None when it is hidden.
+
+    `how` is the field's repr setting when it is a function of the
+    value. A string it answers is the text to show; `None` or `False`
+    hides the field; `True` or any other true answer shows
+    `repr(value)`, and any other false one hides it. Whatever it raises
+    is raised again naming the class and the field.
+    """
+    try:
+        answer = how(value)
+        if answer is None or answer is False:
+            return None
+        if isinstance(answer, str):
+            return answer
+        if answer is not True and not answer:
+            return None
+    except Exception as error:
+        field_error(owner, name, "repr", error, value)
+    return repr(value)
+
+
+def _compile_repr(
+    qualname: str, fields: tx.Dict[str, Field], settings: tx.Dict[str, tx.Any]
+) -> tx.Callable:
     # With every shown field always set, `repr` reads each field directly
     # rather than looping and guarding a `getattr` per field. A field
-    # shown only when it is not `None` keeps that one check; a field shown
-    # unconditionally has none. The label is the public name, the value
-    # the stored one, exactly as the looped version reports them.
+    # whose setting is a function of the value calls it, through
+    # `_shown`, and is left out when it says so; a field shown
+    # unconditionally has no call at all. The label is the public name,
+    # the value the stored one, exactly as the looped version reports
+    # them.
     lines = ["def __repr__(self):", "    parts = []"]
+    namespace: tx.Dict[str, tx.Any] = {_SHOWN: _shown}
     for field in fields.values():
         label, name = field.public_name, field.name
-        append = f'parts.append("{label}=" + repr(self.{name}))'
-        if field.repr.hide_if_none:
-            lines.append(f"    if self.{name} is not None:")
-            lines.append(f"        {append}")
-        else:
-            lines.append(f"    {append}")
+        how = settings[name]
+        if how is True:
+            lines.append(f'    parts.append("{label}=" + repr(self.{name}))')
+            continue
+        namespace[_REPR(name)] = how
+        lines.append(
+            f"    text = {_SHOWN}({_REPR(name)}, self.{name}, "
+            f"self.__class__.__name__, {name!r})"
+        )
+        lines.append("    if text is not None:")
+        lines.append(f'        parts.append("{label}=" + text)')
     lines.append(
         '    return self.__class__.__name__ + "(" + ", ".join(parts) + ")"'
     )
-    namespace: tx.Dict[str, tx.Any] = {}
     exec("\n".join(lines), namespace)
     __repr__ = namespace["__repr__"]
     __repr__.__qualname__ = f"{qualname}.__repr__"
@@ -3184,18 +3235,32 @@ def _make_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     instance shows is a question about that instance rather than about
     its class. A field holds nothing when the constructor does not take
     it and it has no default -- one like that is only ever set by hand
-    -- and a field can also ask to be left out for as long as its value
-    is `None`.
+    -- and a field's repr setting can be a function of the value, which
+    may hide it or give the text to show.
     """
+    settings = {
+        name: _bound(field, field.repr, qualname)
+        for name, field in fields.items()
+    }
+    fields = {
+        name: field for name, field in fields.items() if settings[name]
+    }
     if all(_always_set(field) for field in fields.values()):
-        return _compile_repr(qualname, fields)
+        return _compile_repr(qualname, fields, settings)
 
     def __repr__(self: tx.Self) -> str:
         params = []
-        for field in fields.values():
+        for name, field in fields.items():
             has_value, value = _stored(self, field)
-            if has_value and field.repr(value):
+            if not has_value:
+                continue
+            how = settings[name]
+            if how is True:
                 params.append(f"{field.public_name}={value!r}")
+                continue
+            text = _shown(how, value, type(self).__name__, name)
+            if text is not None:
+                params.append(f"{field.public_name}={text}")
         params = ", ".join(params)
         return f"{self.__class__.__name__}({params})"
 
@@ -3539,10 +3604,27 @@ def _make_mapping(
     as its value is `None`.
     """
 
-    def _is_key(self: "Magic", field: Field) -> bool:
+    # The test each key is kept by, completed for this class, or None
+    # for a key that is there whenever its field holds a value.
+    tests = {
+        key: _bound(field, _field_key_test(field), qualname)
+        for key, field in fields.items()
+    }
+
+    def _passes(self: "Magic", key: str, field: Field, value: tx.Any) -> bool:
+        """Whether a field holding `value` keeps its key."""
+        test = tests[key]
+        if test is None or test is True:
+            return True
+        try:
+            return bool(test(value))
+        except Exception as error:
+            field_error(type(self).__name__, field.name, "key", error, value)
+
+    def _is_key(self: "Magic", key: str, field: Field) -> bool:
         """Whether a field is one of the keys as things stand."""
         has_value, value = _stored(self, field)
-        return has_value and bool(field.key(value))
+        return has_value and _passes(self, key, field, value)
 
     def _value(self: "Magic", key: str, field: Field) -> tx.Any:
         """The value behind a key, or a `KeyError` saying why there is none.
@@ -3558,7 +3640,7 @@ def _make_mapping(
                 f"{key!r} is not one of the keys. Give the field a "
                 f"default, or set it in __post_init__."
             )
-        if not field.key(value):
+        if not _passes(self, key, field, value):
             raise KeyError(key)
         return value
 
@@ -3607,7 +3689,7 @@ def _make_mapping(
     def __iter__(self: tx.Self) -> tx.Iterator[str]:
         """The keys that have a value, in field order."""
         for key, field in fields.items():
-            if _is_key(self, field):
+            if _is_key(self, key, field):
                 yield key
 
     def __len__(self: tx.Self) -> int:
@@ -3617,7 +3699,7 @@ def _make_mapping(
         the same class can be of different lengths, and one instance's
         length can change as it is filled in.
         """
-        return sum(_is_key(self, field) for field in fields.values())
+        return sum(_is_key(self, key, field) for key, field in fields.items())
 
     __getitem__.__qualname__ = f"{qualname}.__getitem__"
     __setitem__.__qualname__ = f"{qualname}.__setitem__"
@@ -3840,10 +3922,11 @@ class MetaMagic(ABCMeta):
     ----------------
     init : bool | str, default=True
         Generate ``__init__`` method.
-    repr : bool | str, default=True
+    repr : bool | str | ShowIf, default=True
         Generate ``__repr__`` method. A field is shown while it holds
         a value. A field the constructor does not take, with no
-        default, is left out until something sets it.
+        default, is left out until something sets it. A test such as
+        ``HideIfNone()`` or ``ShowIf(bool)`` is applied to every field.
     eq : bool | str, default=True
         Generate ``__eq__`` method. Two objects are equal when the
         same fields hold values and those values match.
@@ -4172,10 +4255,11 @@ class Magic(metaclass=MetaMagic):
     ----------
     init : bool | str, default=True
         Generate ``__init__`` method.
-    repr : bool | str, default=True
+    repr : bool | str | ShowIf, default=True
         Generate ``__repr__`` method. A field is shown while it holds
         a value. A field the constructor does not take, with no
-        default, is left out until something sets it.
+        default, is left out until something sets it. A test such as
+        ``HideIfNone()`` or ``ShowIf(bool)`` is applied to every field.
     eq : bool | str, default=True
         Generate ``__eq__`` method. Two objects are equal when the
         same fields hold values and those values match.

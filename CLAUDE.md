@@ -35,7 +35,7 @@ src/bagof/magic/
   _fields.py    # Field, and the annotation family (Default, Factory,
                 #   ConvertTo, Validate, Init, KwOnly, ClassVar, Doc, ...)
   _options.py   # Options -- the resolved per-class option set
-  _constants.py # sentinels (MISSING, REQUIRED, SHOW_ATTR) and the
+  _constants.py # sentinels (MISSING, REQUIRED) and the
                 #   `__magic_*__` attribute names
   _utils.py     # SlotsBase, rebuild_cls, the `slots` decorator
   _resolve.py   # adapters to bagof-converters / -validators / -factories,
@@ -123,6 +123,28 @@ Tests that exercise internals import them from the module that defines them
   a direct read of an unset field raises. A forwarding property's accessors
   are compiled the same way, to `self.<target>` rather than
   `getattr(self, name)`.
+- **A field's `repr` setting is `True`, `False` or a function of the
+  value**, and its answer decides the output: a `str` (even `""`) is the
+  text shown, `None`/`False` hides the field, `True` shows `repr(value)`,
+  and anything else is read with `bool()`. `ShowIf` (and `HideIf`,
+  `HideIfNone`, `HideIfDefault`) is a `Repr` whose `repr` slot is the
+  instance itself, so it lowers through the ordinary annotation merge,
+  and `Field.__init__` unwraps `Repr(...)`/`Key(...)` so wrappers never
+  stack. `_repr_setting` / `_key_setting` in `_fields.py` normalise the
+  slots in `setdefault`; `key` holds `True`, `False`, a name, a test or
+  a `(name, test)` pair, and takes tests only, never formatters. A test
+  that depends on the field (`HideIfDefault`) is completed by
+  `_bound` in `_magic.py` each time the methods are generated, so a
+  subclass that changes the default compares with its own; a class-level
+  `HideIfDefault` is the lenient copy `_spread` makes, which shows a
+  field with no plain default instead of refusing it. `_compile_repr`
+  puts each function in the exec namespace as `__magic_<name>_repr__`
+  and calls it through `_shown`; a field set to `True` compiles to the
+  plain `repr(self.x)` with no call. The looped `_make_repr` goes
+  through the same `_shown`, and a failure in either path, or in a key
+  test, goes through `field_error`. `HIDE_IF_NONE` is a subclass of
+  `HideIfNone` kept for compatibility; its key name is used only as a
+  key setting.
 - **A class installs `__setattr__` / `__delattr__` only when it needs
   them** -- to freeze a field, or run a converter or a validator on
   assignment (or because a base installs one). A class that does none of

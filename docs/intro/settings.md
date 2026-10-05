@@ -53,7 +53,7 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `init` | `True` | generate `__init__` |
-| `repr` | `True` | generate `__repr__` |
+| `repr` | `True` | generate `__repr__`; a test such as `HideIfNone()` applies to every field |
 | `eq` | `True` | generate `__eq__` |
 | `order` | `False` | generate the comparisons |
 | `hash` | `None` | generate `__hash__`; decides for itself by default |
