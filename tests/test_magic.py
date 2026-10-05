@@ -7812,3 +7812,32 @@ class TestSettingsAsWritten:
     def test_hide_if_default_needs_a_field(self) -> None:
         with pytest.raises(TypeError, match="only works on a field"):
             HideIfDefault()(1)
+
+
+class TestBuiltWithType:
+    # `type(name, bases, namespace)` puts no `__qualname__` in the
+    # namespace, unlike a class statement.
+
+    def test_a_shown_if_setting_on_a_class_built_with_type(self) -> None:
+        Base = type(
+            "Base", (Magic,),
+            {"__annotations__": {"x": Optional[int]}, "x": None},
+            repr=HIDE_IF_NONE,
+        )
+        Sub = type("Sub", (Base,), {})
+        assert repr(Sub()) == "Sub()"
+        assert repr(Sub(1)) == "Sub(x=1)"
+
+    def test_hide_if_default_on_a_class_built_with_type(self) -> None:
+        C = type(
+            "C", (Magic,),
+            {"__annotations__": {"x": HideIfDefault[int]}, "x": 0},
+        )
+        assert repr(C()) == "C()"
+        assert repr(C(2)) == "C(x=2)"
+
+    def test_generated_methods_are_named_after_the_class(self) -> None:
+        C = type("C", (Magic,), {"__annotations__": {"x": int}})
+        assert C.__qualname__ == "C"
+        assert C.__repr__.__qualname__ == "C.__repr__"
+        assert C.__init__.__qualname__ == "C.__init__"
