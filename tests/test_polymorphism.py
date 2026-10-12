@@ -4587,6 +4587,26 @@ class TestInheritingADiscriminant:
         assert Fixed.__dict__[_FIELDS]["kind"].frozen is True
         assert type(Signal(kind="inverse")) is Inverse
 
+    def test_a_patch_on_the_registering_class_is_pinned(self) -> None:
+        # A patch that writes no default leaves the value to the pin.
+        Signal, Inverse = self._signals()
+
+        class Fixed(Signal, on={"kind": "fixed"}):
+            kind: Frozen[...]
+
+        assert Fixed().kind == "fixed"
+        assert Fixed.__dict__[_FIELDS]["kind"].frozen is True
+        assert type(Signal(kind="fixed")) is Fixed
+        assert "kind" in Fixed.__dict__[_PINNED]
+
+    def test_a_patch_with_its_own_default_keeps_it(self) -> None:
+        Signal, Inverse = self._signals()
+
+        class Fixed(Signal, on={"kind": "fixed"}):
+            kind: ... = "mine"
+
+        assert Fixed().kind == "mine"
+
     def test_a_patch_keeps_a_class_attribute_pin(self) -> None:
         class Signal(Magic, polymorphic=True, pin_discriminant=CLASSVAR):
             kind: str = ""

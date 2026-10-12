@@ -2749,10 +2749,19 @@ def __pre_new__(
         # honours is skipped, and the rest is applied the way the field's
         # own `pin` says, or else the way the class that wrote each
         # constraint says (see `_pin_plan`).
+        # The fields this class writes out itself. One built from an
+        # inherited field without a default of its own (`kind:
+        # Frozen[...]`) leaves the value to the pin, as an inherited
+        # field does.
+        writes_out = {
+            name for name, record in declared.items()
+            if record.get("inherit") in (None, False)
+            or "default" in record or "factory" in record
+        }
         for spec in specs:
             field = fields[spec.name]
             storage, narrowing, always = _pin_plan(
-                clsname, field, spec, own, cls_annotations, written,
+                clsname, field, spec, own, writes_out, written,
                 options.convert_defaults,
             )
             if storage != "keep" and (
@@ -2776,7 +2785,7 @@ def __pre_new__(
         # because a base pinned it is already accounted for by that base's
         # `_PINNED`, and one with no default here is filtered out below.
         pinned.update(
-            spec.name for spec in own if spec.name in cls_annotations
+            spec.name for spec in own if spec.name in writes_out
         )
         for owner in reachable:
             _check_discriminants(
