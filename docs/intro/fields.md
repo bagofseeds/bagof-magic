@@ -542,3 +542,64 @@ See [Settings](settings.md) for the class-wide switches these annotations
 override, [Conversion and validation](conversion.md) for `ConvertTo` and
 `Validate`, and [Aliases and properties](aliases.md) for `Alias`,
 `Property` and `ReadOnlyProperty`.
+
+## What a type checker sees
+
+mypy and pyright read an annotation from this family as the type in its
+brackets. A checker reads `count: Frozen[int] = 0` as `count: int = 0`, so
+the constructor takes an `int` for `count` and `obj.count` is an `int`.
+This holds for every annotation in the table above that is written with a
+type alone, such as `KwOnly[int]`, `ConvertTo[int]`, `NoRepr[str]` or
+`Narrow[str]`, and for annotations nested inside one another.
+
+The checker sees the type, but not what the annotation does to the class.
+A field written as `KwOnly[int]` or `NoInit[int]` is still an ordinary
+parameter to a checker. The exceptions are `ClassVar` and `InitVar`, which
+mypy reads as the standard `ClassVar` and `InitVar`, so a class variable is
+left out of the constructor. pyright recognises those two only when they
+are imported from `typing` and `dataclasses`, and otherwise reads them as
+the type alone.
+
+A checker reports an annotation that carries a value after the type, such
+as `Alias[str, "label"]`, `Default[int, 3]`, `Doc[int, "..."]`,
+`Pin[str, "classvar"]`, `Repr[float, fn]`, `ShowIf[int, bool]` or
+`Inherit[..., "x"]`, because the value is not a type. The class still
+works. For code that a checker accepts, write the type alone and give the
+setting to `Field(...)` inside `Annotated`, or write a default as an
+ordinary default:
+
+=== "Accepted by a checker"
+
+    ```python
+    from typing_extensions import Annotated
+
+    from bagof.magic import Field, Magic
+
+    class Item(Magic):
+        label: Annotated[str, Field(alias="name")] = ""
+        retries: Annotated[int, Field(doc="how many times to retry")] = 3
+        price: Annotated[float, Field(repr="{:.2f}".format)] = 0.0
+    ```
+
+=== "Reported by a checker"
+
+    ```python
+    from bagof.magic import Alias, Default, Doc, Magic, Repr
+
+    class Item(Magic):
+        label: Alias[str, "name"] = ""
+        retries: Doc[Default[int, 3], "how many times to retry"]
+        price: Repr[float, "{:.2f}".format] = 0.0
+    ```
+
+`Default`, `Doc`, `ShowIf`, `HideIf`, `HideIfNone`, `HideIfDefault`, `Key`,
+`Inherit` and `Forget` are usually written as calls or on their own, as in
+`Annotated[int, Doc("...")]`, `repr=HideIfNone()` and `= Inherit("x")`,
+and a checker accepts them in those places. A checker reports them when
+they are written with a type in brackets, as in `HideIfNone[int]`. The
+other annotations work the other way round: a checker accepts them with a
+type in brackets and reports a call such as `Frozen()`, for which
+`Field(frozen=True)` is the equivalent that a checker accepts.
+
+mypy also reports `...` used as the type, as in `x: Frozen[...]`, while
+pyright accepts it.
