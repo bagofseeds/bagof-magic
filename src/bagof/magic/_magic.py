@@ -4873,7 +4873,8 @@ class MetaMagic(ABCMeta):
         fields, so `Box[int]("1")` converts and validates exactly as
         `class IntBox(Box[int])` does. A subscription that leaves a type
         variable free, as in `Pair[int, S]`, returns the ordinary typing
-        alias, and so does a class with a variadic type parameter.
+        alias, and so does a class with a variadic or `ParamSpec` type
+        parameter.
 
         A polymorphic class still chooses which subclass to build. The
         subclass is chosen from the arguments, and it comes back with the
@@ -5112,7 +5113,7 @@ class Magic(metaclass=MetaMagic):
     `__repr__` and `__eq__`, among other methods. The options below are
     class keyword arguments, and subclasses inherit them. Most options
     that generate a method also accept a string in place of `True`, and
-    the generated method is then bound under that name instead.
+    the generated method is then bound under that name.
 
     !!! example
         ```python

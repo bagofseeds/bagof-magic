@@ -79,8 +79,8 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `doc` | `True` | add the field table to the class docstring |
 
 Most of the settings that generate a method also accept a string in place
-of `True`. The generated method is then bound under that name instead, so
-that a hand-written method can call it.
+of `True`. The generated method is then bound under that name, so that a
+hand-written method can call it.
 <!-- --8<-- [end:settings] -->
 
 `convert` and `validate` are described in

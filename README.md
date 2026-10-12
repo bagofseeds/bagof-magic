@@ -81,8 +81,8 @@ The same class can also be written with the `magic` decorator:
 ## How it compares
 
 `magic` is close to [attrs][attrs] in spirit. Like [pydantic][pydantic], it
-does real work with the type hints, and it uses inheritance where the others
-use decorators.
+does real work with the type hints, and like pydantic it uses inheritance
+where dataclasses and attrs use decorators.
 
 |  | dataclasses | attrs | pydantic | magic |
 | --- | --- | --- | --- | --- |
@@ -134,8 +134,8 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `doc` | `True` | add the field table to the class docstring |
 
 Most of the settings that generate a method also accept a string in place
-of `True`. The generated method is then bound under that name instead, so
-that a hand-written method can call it.
+of `True`. The generated method is then bound under that name, so that a
+hand-written method can call it.
 <!-- --8<-- [end:settings] -->
 
 The [Settings][settings] page explains how settings are inherited and how a

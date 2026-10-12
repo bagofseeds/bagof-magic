@@ -368,9 +368,10 @@ class is what lets the ordinary constructor run with `T` already filled in,
 with nothing wrapping `__call__`. `Box[int](1)` equals `Box(1)`, because
 `__eq__`/order compare against the class as it was written -- the origin
 kept in `_GENERIC_ORIGIN` -- not the parameterised one, matching what
-`dataclasses` and `pydantic` both do. Still out of scope, and refused with
-a clear error rather than built wrong: a variadic/`ParamSpec` generic (the
-substitution engine pairs one argument to one variable). Pickling leans on
+`dataclasses` and `pydantic` both do. Still out of scope: a
+variadic/`ParamSpec` generic (the substitution engine pairs one argument to
+one variable). Subscripting one is not refused; it returns the plain
+`typing` alias, so no subclass is built and no field is filled in. Pickling leans on
 the same trick pydantic uses -- the
 built class is made findable under its name on its module, since pickle
 saves a class (and an instance's class) by name and a metaclass
