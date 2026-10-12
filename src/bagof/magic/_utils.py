@@ -93,11 +93,17 @@ def rebuild_cls(
     return newcls
 
 
-@tx.overload
-def slots(cls: type, *_slots: tx.Tuple[str]) -> type: ...
+# The class comes back as the class it was, not as a bare `type`, so a
+# type checker still sees `Field` and the annotation family -- which it
+# has to, to read them as field specifiers.
+_C = tx.TypeVar("_C", bound=type)
+
 
 @tx.overload
-def slots(*_slots: tx.Tuple[str]) -> tx.Callable[[type], type]: ...
+def slots(cls: _C, *_slots: str) -> _C: ...
+
+@tx.overload
+def slots(*_slots: str) -> tx.Callable[[_C], _C]: ...
 
 
 def slots(*aslots, **kwslots):

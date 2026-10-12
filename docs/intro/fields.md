@@ -81,6 +81,99 @@ TypeError: field() got an unexpected keyword argument 'defaults'. Did you mean '
 `tags: list = Field(factory=list)` as assigning a `Field` to a `list` slot,
 while `field(...)` says it produces whatever the annotation requires.
 
+## What a type checker can see
+
+Type checkers such as mypy and pyright work out the constructor of a
+`Magic` class the way they do for `dataclasses`. They read a field's
+default, the name it is passed by, and whether it is keyword-only or left
+out of the constructor, but they read these only from a call written as
+the field's value. An annotation such as `KwOnly[int]` changes nothing that
+a checker can see.
+
+Every annotation in the table below can therefore also be written as the
+value, and a checker reads it there as declaring the field. Written there,
+each one takes the keywords that a checker reads: `alias=`, `default=`,
+`factory=`, `kw_only=`, `init=` and, for pyright, `converter=`.
+
+=== "In the annotation"
+
+    ```python
+    from bagof.magic import Magic, Alias, Factory, KwOnly, NoInit
+
+    class Job(Magic):
+        _command: Alias[str, "command"]
+        env: Factory[dict]
+        retries: KwOnly[int] = 0
+        attempts: NoInit[int] = 0
+    ```
+
+=== "As the value"
+
+    ```python
+    from bagof.magic import Magic, Alias, Factory, KwOnly, NoInit
+
+    class Job(Magic):
+        _command: str = Alias(alias="command")
+        env: dict = Factory(factory=dict)
+        retries: int = KwOnly(kw_only=True, default=0)
+        attempts: int = NoInit(init=False, default=0)
+    ```
+
+=== "With field()"
+
+    ```python
+    from bagof.magic import Magic, field
+
+    class Job(Magic):
+        _command: str = field(alias="command")
+        env: dict = field(factory=dict)
+        retries: int = field(kw_only=True, default=0)
+        attempts: int = field(init=False, default=0)
+    ```
+
+The three spellings build the same class, and each one refuses `retries`
+by position:
+
+```pycon
+>>> Job("make", retries=2)
+Job(command='make', env={}, retries=2, attempts=0)
+>>> Job("make", {}, 2)
+Traceback (most recent call last):
+  ...
+TypeError: __init__() takes from 2 to 3 positional arguments but 4 were given
+```
+
+A checker reads the keyword and never the annotation's own meaning, so
+`KwOnly()` without `kw_only=True` looks to a checker like a field that may
+be passed by position. For the same reason, a keyword that contradicts the
+annotation is refused rather than letting the checker and the class
+disagree:
+
+```pycon
+>>> KwOnly(kw_only=False)
+Traceback (most recent call last):
+  ...
+TypeError: KwOnly(kw_only=False) says two different things: ...
+```
+
+An annotation that does not shape the constructor, such as `Frozen()` or
+`Repr(False)`, is read the same way: the field is required unless the call
+also gives `default=` or `factory=`. So `x: int = Frozen()` is a required
+field to a checker, as it is to the class, and `x: int = Frozen(default=0)`
+is an optional one. The annotations that take an argument of their own,
+such as `Doc("...")`, `ShowIf(test)` and `HideIfNone()`, take the same
+keywords after it, as in `nickname: Optional[str] = HideIfNone(default=None)`.
+
+When the annotation and the value both say something about the same field,
+the value is read second. A setting that both of them give takes the
+value's answer, and the names given to `Alias` in each place are all
+accepted.
+
+pyright accepts the annotations as values. mypy reads the constructor from
+them correctly but still reports each one as assigning, say, a `KwOnly` to
+an `int`, as it does for `Field(...)`. The `field(...)` spelling takes the
+same keywords and is accepted by both checkers without an error.
+
 ## The annotations
 
 Each of these can be used bare (`x: Frozen[int]`) or with a value
