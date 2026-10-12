@@ -240,8 +240,9 @@ Inverted(kind='inverse', grade=3)
 ```
 
 It cannot stand for a value of the field it forgot, so `on={"kind": ...}`
-on `Graded` or below is refused. A subclass that declares `kind` again is
-not chosen for it on its own. Give it `on=`, or register it by hand:
+is refused on `Graded`, and below it while `kind` stays forgotten. A
+subclass that declares `kind` again is not chosen for it on its own.
+Give it `on=`, or register it by hand:
 
 ```python
 @Voice.register_polymorph(kind="again")
