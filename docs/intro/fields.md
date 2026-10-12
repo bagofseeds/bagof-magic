@@ -248,7 +248,10 @@ Cached(size=3)
 ```
 
 The constructor accepts `_size` under the name `size`, because the
-constructor drops a leading underscore from a field's name.
+constructor drops a leading underscore from a field's name. Type checkers
+do not apply that rule; the
+[page on aliases](aliases.md#fields-that-start-with-an-underscore)
+explains how to make them agree.
 
 A forgotten name is no longer a field, but it can still be an ordinary
 class attribute, and reading it follows the usual Python lookup through the

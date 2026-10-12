@@ -113,5 +113,54 @@ Signatures show the preferred name, and constructor documentation lists
 alternatives. Static type checkers do not infer all accepted synonyms or
 generated properties from these annotations.
 
+## Fields that start with an underscore
+
+A field written as `_size` is passed to the constructor as `size`. The
+leading underscore is dropped from the input name, and the stored attribute
+keeps the underscore:
+
+```pycon
+>>> class Cached(Magic):
+...     _size: int
+>>> Cached(size=3)
+Cached(size=3)
+>>> Cached(_size=3)
+Traceback (most recent call last):
+TypeError: ...
+```
+
+Static type checkers do not know this rule. The dataclass-transform
+standard that pyright and mypy follow takes the parameter name from the
+attribute name, so both checkers believe that `Cached.__init__` accepts
+`_size`. They therefore report an error on the correct call
+`Cached(size=3)`, and they report nothing on the call `Cached(_size=3)`,
+which fails when it runs.
+
+Declaring the input name explicitly makes the checkers agree with the
+constructor. Both pyright and mypy honour the `alias` argument of `field`:
+
+```python
+from bagof.magic import Magic, field
+
+class Cached(Magic):
+    _size: int = field(alias="size")
+```
+
+With this declaration, both checkers show the constructor as taking `size`
+and report `Cached(_size=3)` as an unexpected keyword argument. At runtime
+nothing changes, because `size` was already the preferred input name.
+
+A class that would rather use the same name for the attribute and the
+constructor argument can set `alias=False`, either on the class or on a
+single field. The underscore is then kept in the input name, and the
+checkers need no help:
+
+```pycon
+>>> class Kept(Magic, alias=False):
+...     _size: int
+>>> Kept(_size=3)
+Kept(_size=3)
+```
+
 See [Settings](settings.md) for the `alias` and `property` class settings,
 and [Extras](extras.md) for `mapping`, which these aliases also feed into.
