@@ -754,20 +754,32 @@ class, never a parameter's default: pyright 1.1.414 and mypy 2.4 were
 both tried with `Literal` defaults on `__init__`, overloads and
 `__new__`, and neither reads them. So `x: int = KwOnly()` builds a
 keyword-only field but reads as positional; `KwOnly(kw_only=True)` is
-the spelling both agree on, and `AnnotatedField.__init__`
-(`_check_agrees`) refuses an `init=`/`kw_only=` that contradicts the
-marker, so the two can never describe different constructors.
+the spelling both agree on.
+
+`AnnotatedField.__init__` (`_check_agrees`) refuses an `init=` or
+`kw_only=` that contradicts what the call sets -- the marker's own
+slots, and any `kw=`/`positional=` given by position or by name -- and
+refuses any value of either that is not a bool. That is all it
+guarantees. A call that leaves the keyword out (a bare `KwOnly()`) is
+still read by a checker as an ordinary positional-or-keyword field, and
+positional-only cannot be said in PEP 681 at all, so a checker never
+agrees with `PositionalOnly` or `NotKw`.
 
 Three things make the markers visible at all:
 
 - **`slots` is typed to return the class it is given.** Typed as
   returning `type`, it erased every `@slots` class, `Field` included,
   and pyright then matched no specifier.
-- **`_Specifier`, the metaclass of `Field`, declares `__call__ -> Any`
-  for checkers only.** pyright otherwise reports `x: int =
-  KwOnly(...)` as assigning a `KwOnly` to an `int`. mypy ignores a
-  metaclass `__call__` and still reports it, as it always did for
-  `Field(...)`; `field()` is the mypy-clean spelling.
+- **`_Specifier` exists for checkers only.** Under `TYPE_CHECKING` it
+  is a metaclass of `Field` declaring `__call__ -> Any`; at run time
+  it is `type`, because `@slots` rebuilds each class with `type(...)`
+  and would drop any other metaclass. Without it pyright reports `x:
+  int = KwOnly(...)` as assigning a `KwOnly` to an `int`. mypy
+  ignores a metaclass `__call__` and still reports it, as it always
+  did for `Field(...)`; `field()` is the mypy-clean spelling. The
+  price is that a `Field(...)` or a marker built outside a class body
+  is `Any` to a checker too, so a misspelt attribute on one goes
+  unreported.
 - **The tuple is a literal, written four times** (the metaclass and
   the three `magic` signatures): mypy refuses anything but a tuple
   literal there. `tests/test_dataclass_transform.py` reads the source

@@ -140,18 +140,18 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     return chained
 
 
-class _Specifier(type):
-    """The metaclass of `Field` and of the annotation family.
-
-    It does nothing when the program runs. It is there for type
-    checkers: `x: int = KwOnly(kw_only=True)` assigns a `KwOnly` to an
-    `int`, which a checker would report, so to a checker calling one of
-    these classes gives back whatever the field is annotated as -- the
-    same thing `field()` says about itself.
-    """
-
-    if tx.TYPE_CHECKING:  # pragma: no cover
+# What a type checker takes for the metaclass of `Field` and the
+# annotation family. To a checker, calling one of these classes gives
+# back whatever the field is annotated as -- the same thing `field()`
+# says about itself -- so `x: int = KwOnly(kw_only=True)` is not read as
+# assigning a `KwOnly` to an `int`. When the program runs it is plain
+# `type`: `@slots` rebuilds each class with `type(...)`, which would drop
+# any other metaclass, and there is nothing for one to do.
+if tx.TYPE_CHECKING:  # pragma: no cover
+    class _Specifier(type):
         def __call__(cls, *args: tx.Any, **kwargs: tx.Any) -> tx.Any: ...
+else:
+    _Specifier = type
 
 
 @slots(
@@ -897,10 +897,19 @@ def _check_agrees(
     In the value position a type checker reads the keyword and ignores
     the class, while the class reads both. `KwOnly(kw_only=False)` would
     therefore describe one constructor to the checker and build another.
+    `kwvalues` already holds the values given by position, so the check
+    reads what the call sets, not only what the class declares.
     """
+    for key in ("init", "kw_only"):
+        if key in kwvalues and not isinstance(kwvalues[key], bool):
+            raise TypeError(
+                f"{cls.__name__}({key}=...) takes True or False, not "
+                f"{kwvalues[key]!r}."
+            )
     marked = {
-        slot: set_slots[slot]
-        for slot in ("kw", "positional") if slot in set_slots
+        slot: kwvalues.get(slot, set_slots.get(slot))
+        for slot in ("kw", "positional")
+        if slot in set_slots or slot in kwvalues
     }
     if not marked:
         return
@@ -914,7 +923,7 @@ def _check_agrees(
             and getattr(asked, slot) != wanted
             for slot, wanted in marked.items()
         )
-        # `init=True` changes nothing, so it only contradicts a class
+        # `init=True` changes nothing, so it only contradicts a call
         # that takes the field out of the constructor.
         if key == "init" and value is True:
             clash = marked.get("kw") is False and (

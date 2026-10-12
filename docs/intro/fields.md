@@ -119,7 +119,20 @@ reads: `alias=`, `default=`, `factory=` (or `default_factory=`), `kw_only=`,
         attempts: int = NoInit(init=False, default=0)
     ```
 
-The two spellings build the same class, and both refuse `retries` by position:
+=== "With field()"
+
+    ```python
+    from bagof.magic import Magic, field
+
+    class Job(Magic):
+        _command: str = field(alias="command")
+        env: dict = field(factory=dict)
+        retries: int = field(kw_only=True, default=0)
+        attempts: int = field(init=False, default=0)
+    ```
+
+The three spellings build the same class, and each one refuses `retries`
+by position:
 
 ```pycon
 >>> Job("make", retries=2)
@@ -127,7 +140,7 @@ Job(command='make', env={}, retries=2, attempts=0)
 >>> Job("make", {}, 2)
 Traceback (most recent call last):
   ...
-TypeError: Job.__init__() takes from 2 to 3 positional arguments but 4 were given
+TypeError: __init__() takes from 2 to 3 positional arguments but 4 were given
 ```
 
 A checker reads the keyword and never the annotation's own meaning, so
@@ -148,11 +161,10 @@ the value is read second. A setting that both of them give takes the
 value's answer, and the names given to `Alias` in each place are all
 accepted.
 
-pyright accepts these calls as values. mypy reads the constructor from them
-correctly but still reports each one as assigning, say, a `KwOnly` to an
-`int`, as it does for `Field(...)`. For code that mypy accepts as well, use
-`field(...)`, which takes the same keywords:
-`retries: int = field(kw_only=True, default=0)`.
+pyright accepts the annotations as values. mypy reads the constructor from
+them correctly but still reports each one as assigning, say, a `KwOnly` to
+an `int`, as it does for `Field(...)`. The `field(...)` spelling takes the
+same keywords and is accepted by both checkers without an error.
 
 ## The annotations
 

@@ -302,28 +302,48 @@ class TestAMarkerAsTheValue:
     ) -> None:
         assert isinstance(marker(**keyword), marker)
 
-    @pytest.mark.parametrize("marker,keyword", [
-        (KwOnly, {"kw_only": False}),
-        (NotKwOnly, {"kw_only": True}),
-        (NoInit, {"init": True}),
-        (NoInit, {"kw_only": True}),
-        (PositionalOnly, {"kw_only": True}),
-        (PositionalOnly, {"init": False}),
-        (NotKw, {"kw_only": True}),
-        (Kw, {"init": False}),
+    @pytest.mark.parametrize("marker,args,keyword", [
+        (KwOnly, (), {"kw_only": False}),
+        (NotKwOnly, (), {"kw_only": True}),
+        (NoInit, (), {"init": True}),
+        (NoInit, (), {"kw_only": True}),
+        (PositionalOnly, (), {"init": False}),
+        (PositionalOnly, (), {"kw_only": True}),
+        (NotKw, (), {"kw_only": True}),
+        (Kw, (), {"init": False}),
+        # What the call sets counts, not only what the class declares.
+        (Kw, (False,), {"kw_only": True}),
+        (Positional, (False,), {"kw_only": False}),
+        (KwOnly, (), {"positional": True, "kw_only": True}),
+        (Init, (), {"kw": False, "positional": False, "init": True}),
     ])
     def test_a_keyword_that_disagrees_is_refused(
-        self, marker: type, keyword: dict
+        self, marker: type, args: tuple, keyword: dict
     ) -> None:
         # A checker would read the keyword and the class the marker, and
         # the two would describe different constructors.
-        [(key, value)] = keyword.items()
+        key, value = list(keyword.items())[-1]
         with pytest.raises(TypeError) as caught:
-            marker(**keyword)
+            marker(*args, **keyword)
         assert f"{marker.__name__}({key}={value!r}) says two" in str(
             caught.value
         )
         assert f"field({key}={value!r})" in str(caught.value)
+
+    @pytest.mark.parametrize("marker", [KwOnly, NoInit, Init, Positional])
+    @pytest.mark.parametrize("key", ["init", "kw_only"])
+    @pytest.mark.parametrize("value", [None, 0, "yes"])
+    def test_a_keyword_that_is_not_a_bool_is_refused(
+        self, marker: type, key: str, value: tx.Any
+    ) -> None:
+        # PEP 681 defines these keywords as booleans; a checker reads
+        # nothing else from them.
+        with pytest.raises(TypeError) as caught:
+            marker(**{key: value})
+        assert str(caught.value) == (
+            f"{marker.__name__}({key}=...) takes True or False, not "
+            f"{value!r}."
+        )
 
 
 MARKERS_FIXTURE = '''\
