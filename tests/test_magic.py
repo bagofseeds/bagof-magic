@@ -9078,6 +9078,46 @@ class TestInheritErrors:
 
         assert _table(Sub)["x"].type.__forward_arg__ == "int"
 
+    def test_the_field_s_own_name_as_a_type(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError,
+            match=r'^Sub\.x: Inherit\["x"\] reads "x" as the field\'s type\. '
+            r"To change the inherited field x, write `x: Inherit` or "
+            r"`x: \.\.\.`\.$",
+        ):
+            class Sub(Base):
+                x: Inherit["x"]  # noqa: F821
+
+    def test_a_public_name_as_a_type(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError, match=r'take over the inherited field y, write '
+            r'Inherit\[\.\.\., "_y"\]',
+        ):
+            class Sub(Base):
+                _w: Inherit["y"]  # noqa: F821
+
+    def test_a_type_written_as_text_is_left_alone(
+        self, recwarn: pytest.WarningsRecorder
+    ) -> None:
+        # A dotted name, or a class defined further down the module, is
+        # a type carried by name: nothing is said about it here.
+        Base = self._base()
+
+        class Dotted(Base):
+            x: Inherit["proper.stringified.Type"]  # noqa: F821
+
+        class Later(Base):
+            x: Inherit["_DefinedLater"]
+
+        assert len(recwarn) == 0
+        assert _table(Dotted)["x"].type.__forward_arg__ == (
+            "proper.stringified.Type"
+        )
+        assert _table(Later)["x"].type.__forward_arg__ == "_DefinedLater"
+        assert _table(Later)["x"].default == 3
+
     def test_taking_over_a_field_the_class_declares(self) -> None:
         Base = self._base()
         with pytest.raises(
@@ -9112,3 +9152,7 @@ class TestInheritErrors:
         ):
             class Sub(Base):
                 x: int = Field(inherit=3)
+
+
+class _DefinedLater:
+    """Named in an annotation above, before it is defined."""

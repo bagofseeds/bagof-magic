@@ -580,23 +580,40 @@ def _inherited_source(
             f"False or the name of an inherited field."
         )
     # `Inherit["x"]` reads "x" as a type, like any annotation in the
-    # family. A name that is no type here but is one of the inherited
-    # fields was almost certainly meant as the field to take over.
+    # family. Text that is exactly the name of this field or of an
+    # inherited one, and that names no type here, was almost certainly
+    # meant as a field: this one, which a bare `Inherit` already means,
+    # or another one to take over. Any other text -- a dotted name, a
+    # class defined further down -- is a type carried by name, and is
+    # left to be looked up when it is first needed.
     text = field.type
     if isinstance(text, tx.ForwardRef):
         text = text.__forward_arg__
     if (
         inherit is True
         and isinstance(text, str)
-        and text != field.name
-        and text in fields
-        and _lookup_dotted(text.split("."), globals) is MISSING
+        and text.isidentifier()
+        and _lookup_dotted([text], globals) is MISSING
     ):
-        raise TypeError(
-            f'{where}: Inherit["{text}"] reads "{text}" as the field\'s '
-            f'type. To take over the inherited field {text}, write '
-            f'Inherit[..., "{text}"].'
+        stored = next(
+            (
+                other for other, each in fields.items()
+                if text == other or text in each.aliases
+            ),
+            None,
         )
+        if text == field.name:
+            raise TypeError(
+                f'{where}: Inherit["{text}"] reads "{text}" as the '
+                f"field's type. To change the inherited field {text}, "
+                f"write `{text}: Inherit` or `{text}: ...`."
+            )
+        if stored is not None:
+            raise TypeError(
+                f'{where}: Inherit["{text}"] reads "{text}" as the '
+                f"field's type. To take over the inherited field "
+                f'{text}, write Inherit[..., "{stored}"].'
+            )
     name = field.name if inherit is True else inherit
     source = fields.get(name)
     if source is None:
