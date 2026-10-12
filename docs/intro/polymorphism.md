@@ -30,6 +30,8 @@ built on its own:
 ```pycon
 >>> MinorChord(root="A")
 MinorChord(root='A', mode='minor', variant='natural')
+>>> MinorChord.mode
+'minor'
 ```
 
 ## Saying what a subclass stands for
@@ -47,6 +49,10 @@ type to fit, or a question to answer:
 | `...` | the argument was given at all |
 
 A subclass is in the running when every constraint it declares matches.
+
+A field is named the way the constructor takes it. A field written `_mode`
+in the class body is passed as `mode`, so `on={"mode": "minor"}` names
+it. `on={"_mode": "minor"}` works too.
 
 ## Which subclass wins
 
@@ -203,6 +209,38 @@ SpaceTime(name='t', unit='second', direction=None)
 ```
 
 A subclass of it can still say what it stands for, and is reached through it.
+
+### Forgetting a field a parent chooses by
+
+A subclass can forget a field even when its parents choose by it:
+
+```python
+class Voice(Magic, polymorphic=True):
+    kind: str = "plain"
+    grade: int = 0
+
+class Inverted(Voice, on={"kind": "inverse"}):
+    pass
+
+class Graded(Voice):
+    kind: Forget
+
+class Third(Graded, on={"grade": 3}):
+    pass
+```
+
+A subclass that forgot a field is passed over by any call that hands it
+that field, and is chosen as usual when the call leaves it out:
+
+```pycon
+>>> Voice(grade=3)
+Third(grade=3)
+>>> Voice(grade=3, kind="inverse")
+Inverted(kind='inverse', grade=3)
+```
+
+It cannot stand for a value of the field it forgot, so `on={"kind": ...}`
+on `Graded` or below is refused.
 
 ## Registering a class you did not write
 
