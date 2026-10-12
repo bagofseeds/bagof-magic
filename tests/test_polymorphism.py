@@ -489,6 +489,97 @@ class TestReadingTheArguments:
         assert type(Aliased(mode="minor")) is Minor
 
 
+class TestDiscriminantsByPublicName:
+    """`on=` names a field the way the constructor takes it."""
+
+    @staticmethod
+    def _base() -> type:
+        class Aliased(Magic, polymorphic=True):
+            _mode: str = "major"
+            other: int = 0
+
+        return Aliased
+
+    def test_the_public_name_is_accepted(self) -> None:
+        Aliased = self._base()
+
+        class Minor(Aliased, on={"mode": "minor"}):
+            pass
+
+        assert type(Aliased(mode="minor")) is Minor
+        assert type(Aliased("minor")) is Minor
+        assert type(Aliased()) is Aliased
+        # It is still the stored field that carries the value, and the
+        # one the registration is recorded against.
+        assert Minor()._mode == "minor"
+        assert Minor.__dict__[_REGISTRATION][1][0].name == "_mode"
+
+    def test_the_stored_name_is_still_accepted(self) -> None:
+        Aliased = self._base()
+
+        class Minor(Aliased, on={"_mode": "minor"}):
+            pass
+
+        assert type(Aliased(mode="minor")) is Minor
+
+    def test_any_name_the_constructor_takes_is_accepted(self) -> None:
+        class Base(Magic, polymorphic=True):
+            mode: tx.Annotated[str, field(alias=("mode", "kind"))] = "a"
+
+        class B(Base, on={"kind": "b"}):
+            pass
+
+        assert type(Base(kind="b")) is B
+        assert type(Base(mode="b")) is B
+
+    def test_a_hand_registration_takes_the_public_name(self) -> None:
+        Aliased = self._base()
+
+        class Minor(Aliased):
+            pass
+
+        Aliased.register_polymorph(Minor, mode="minor")
+        assert type(Aliased(mode="minor")) is Minor
+
+    def test_an_unknown_name_is_still_refused(self) -> None:
+        Aliased = self._base()
+        with pytest.raises(TypeError, match="'nope', which is not a field") \
+                as caught:
+            class Typo(Aliased, on={"nope": 1}):
+                pass
+        # The fields are listed by the names the constructor takes.
+        assert "'mode', 'other'" in str(caught.value)
+
+    def test_both_names_for_one_field_are_refused(self) -> None:
+        Aliased = self._base()
+        with pytest.raises(
+            TypeError, match="'_mode' and on 'mode', which are two names "
+            "for the same field"
+        ):
+            class Twice(Aliased, on={"_mode": "minor", "mode": "minor"}):
+                pass
+
+    def test_both_names_are_refused_by_hand_too(self) -> None:
+        Aliased = self._base()
+
+        class Minor(Aliased):
+            pass
+
+        with pytest.raises(TypeError, match="two names for the same field"):
+            Aliased.register_polymorph(
+                Minor, on={"mode": "minor"}, _mode="minor"
+            )
+
+    def test_a_name_two_fields_answer_to_is_refused(self) -> None:
+        class Base(Magic, polymorphic=True):
+            mode: tx.Annotated[str, field(alias="style")] = "a"
+            _mode: str = "b"
+
+        with pytest.raises(TypeError, match="could mean either of two"):
+            class Sub(Base, on={"mode": "x"}):
+                pass
+
+
 # ======================================================================
 # More than one level
 # ======================================================================

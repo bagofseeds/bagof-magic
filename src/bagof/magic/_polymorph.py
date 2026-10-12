@@ -343,23 +343,73 @@ def specifications(
     )
 
 
+def stored_names(
+    clsname: str, on: tx.Any, table: tx.Mapping[str, tx.Any]
+) -> tx.Any:
+    """
+    Name each field of an `on={...}` mapping the way the class stores it.
+
+    A key may be the name the constructor takes the field by -- its
+    public name, or any other name it accepts -- or the name it is
+    declared under in the class body. Everything downstream reads a
+    field by the second, so it is worked out once here, against
+    `table`. A key that names no field is kept as written, for
+    `check_fields` to refuse.
+    """
+    if not isinstance(on, tx.Mapping):
+        return on
+    accepted = {}
+    for name, field in table.items():
+        for public in field.aliases:
+            accepted.setdefault(public, name)
+    resolved = {}
+    written = {}
+    for key, spec in on.items():
+        stored = key
+        if key in table:
+            other = accepted.get(key, key)
+            if other != key:
+                raise TypeError(
+                    f"{clsname} registers on {key!r}, which could mean "
+                    f"either of two fields: {key!r} itself, or {other!r}, "
+                    f"which the constructor takes as {key!r}. Rename one "
+                    f"of them, or give one different aliases."
+                )
+        elif key in accepted:
+            stored = accepted[key]
+        if stored in written:
+            raise TypeError(
+                f"{clsname} registers on {written[stored]!r} and on "
+                f"{key!r}, which are two names for the same field. "
+                f"Name it once, as "
+                f"{table[stored].public_name!r}."
+            )
+        written[stored] = key
+        resolved[stored] = spec
+    return resolved
+
+
 def check_fields(
     owner: type, clsname: str, specs: tx.Iterable[_Spec]
 ) -> None:
     """
     Refuse a registration naming a field `owner` does not have.
 
-    The keys of `on={...}` name fields the way the class registering
-    with declares them, so a misspelled one is refused when the class is
-    written, rather than the first time something is built.
+    The keys of `on={...}` name fields by the name the constructor
+    takes them by (or the one the class body declares them under), so a
+    misspelled one is refused when the class is written, rather than
+    the first time something is built.
     """
     table = getattr(owner, _FIELDS)
     for spec in specs:
         if spec.name not in table:
+            names = ", ".join(
+                repr(field.public_name) for field in table.values()
+            )
             raise TypeError(
                 f"{clsname} registers on {spec.name!r}, which is not a "
                 f"field of {owner.__name__}. Its fields are: "
-                f"{', '.join(repr(field) for field in table) or 'none'}."
+                f"{names or 'none'}."
             )
 
 

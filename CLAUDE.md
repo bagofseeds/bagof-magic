@@ -561,6 +561,16 @@ does not.
   refused to be built at all. A parameterisation reads `required` and
   `invariant` off its origin's registry on every call (like `dispatch`),
   so one built before the hand registration follows it too.
+- **`on=` keys name a field by its public name.** `on={"mode": ...}`
+  reaches the field `_mode`, as does any other name the constructor
+  takes it by; the stored name is still accepted. `stored_names` in
+  `_polymorph.py` turns each key into the stored name once, before
+  `specifications` -- against the class's own field table in a class
+  statement, against the owner's in `register_polymorph` -- so every
+  `_Spec.name` downstream is a stored name, as before. A key naming
+  one field twice (`_mode` and `mode`), or a stored name that is also
+  another field's public name, is refused; an unknown key is kept as
+  written for `check_fields`, whose message lists public names.
 
 ## Conventions specific to this repo (do not regress)
 

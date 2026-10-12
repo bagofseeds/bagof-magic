@@ -200,6 +200,7 @@ from ._polymorph import mark_registered as _mark_registered
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
 from ._polymorph import specifications as _specifications
+from ._polymorph import stored_names as _stored_names
 from ._resolve import POLICIES as _HINT_POLICIES
 from ._resolve import Hints, _Deferred
 from ._utils import _get_origin, rebuild_cls
@@ -2059,7 +2060,9 @@ def __pre_new__(
                 f"should -- `class Chord(Magic, polymorphic=True)`."
             )
         own = _specifications(
-            clsname, on if speaks else {}, options.pin_discriminant
+            clsname,
+            _stored_names(clsname, on, fields) if speaks else {},
+            options.pin_discriminant,
         )
         if diamond:
             specs = claim = _conjoin(clsname, own, _registered(targets))
@@ -4215,7 +4218,7 @@ class MetaMagic(ABCMeta):
         owner = cls.__dict__.get(_GENERIC_ORIGIN, cls)
         name = getattr(target, "__name__", target)
         specs = _specifications(
-            name, wanted,
+            name, _stored_names(name, wanted, getattr(owner, _FIELDS)),
             getattr(
                 getattr(target, _OPTIONS, None), "pin_discriminant", "pin"
             ),
