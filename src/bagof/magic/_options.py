@@ -38,15 +38,15 @@ from ._utils import SlotsBase, slots
 )
 class Options(SlotsBase):
     """
-    The resolved set of class-level options for a Magic class.
+    The resolved class options of a Magic class.
 
-    Each Magic class gets one ``Options`` instance, built from the
-    keyword arguments on the class statement (or the ``@magic``
-    decorator), merged with the options inherited from base classes in
-    MRO order. A base class's value is used unless a derived class
-    explicitly sets its own.
+    Each Magic class has one `Options` instance. The instance is built
+    from the keyword arguments of the class statement, or of the `magic`
+    decorator, and merged with the options that the class inherits from
+    its bases. A base class's value is used unless the derived class
+    sets its own.
 
-    See ``Magic`` for the full list of options and their defaults.
+    [`Magic`][bagof.magic.Magic] lists every option with its default.
     """
 
     _DEFAULTS: tx.Dict[str, tx.Any] = dict(
