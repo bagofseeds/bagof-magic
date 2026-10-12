@@ -171,9 +171,10 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
 class Field(SlotsBase):
     """A single field in a Magic class.
 
-    Every annotation in a Magic class body becomes a `Field`. You rarely
-    create one directly. The annotation family (`Factory`, `KwOnly`,
-    `ConvertTo`, ...) and the `field()` function are the usual ways in.
+    Every annotation in a Magic class body becomes a `Field`. A `Field`
+    is rarely created directly: the annotation family, such as
+    [`Factory`][], [`KwOnly`][] and [`ConvertTo`][], and the `field()`
+    function are the usual ways to declare one.
     """
 
     def __init__(self, *arg, **kwargs) -> None:
@@ -183,102 +184,112 @@ class Field(SlotsBase):
         name : str
             The field's name in the class body.
         type : type or type hint
-            The field's type. Used for conversion, validation and
-            factory defaults when those are turned on.
+            The field's type, from which the converter, the validator
+            and the default factory are worked out when those are
+            turned on.
         default : any
             The default value.
         factory : bool or Callable[[], any], default=`Options().factory`
-            How a fresh default is built per instance, rather than one
-            value shared across instances: `False` builds nothing,
-            `True` works the factory out from the type, and a callable
-            is called to build it. The `build` property reads this as a
-            plain "is a default built?" boolean. The `build=` keyword is
-            an alias that sets this: `build=True`/`build=False`.
+            How a fresh default is built for each instance, instead of
+            one value being shared between instances. `False` builds
+            nothing, `True` works the factory out from the type, and a
+            callable is called to build the default. The `build`
+            property reads this slot as a boolean that says whether a
+            default is built, and the `build=` keyword is an alias that
+            sets it.
         init : bool, optional
-            Whether this field appears in `__init__`. Not stored
-            directly: it reads as `kw or positional`. Setting
-            `init=False` forbids both ways. Setting `init=True` changes
-            nothing (a field is a parameter unless something says
-            otherwise). Assigning `field.init = value` afterwards sets
-            both `kw` and `positional`.
+            Whether the field is a parameter of `__init__`. It is not
+            stored, but read as `kw or positional`. `init=False` forbids
+            both ways of passing the field, and `init=True` changes
+            nothing, because a field is a parameter unless something says
+            otherwise. Assigning `field.init = value` later sets both
+            `kw` and `positional`.
         repr : bool or Callable[[any], any], default=True
-            Include this field in the generated `__repr__`. A function
-            of the value decides how: a string it returns is shown as
-            the value, `None` or `False` hides the field, and any other
-            answer shows `repr(value)` when true and hides the field
-            when false. `ShowIf`, `HideIf`, `HideIfNone` and
-            `HideIfDefault` are ready-made tests. A pseudo-field
-            defaults to False.
+            Whether the field is shown in the generated `__repr__`. A
+            function of the value decides how the field is shown: a
+            string that it returns is shown in place of the value,
+            `None` or `False` hides the field, and any other result
+            shows `repr(value)` if it is true and hides the field if it
+            is false. [`ShowIf`][], [`HideIf`][], [`HideIfNone`][] and
+            [`HideIfDefault`][] are ready-made tests. For a pseudo-field
+            the default is `False`.
         hash : bool, default=None (follows `eq`)
-            Include this field in the generated `__hash__`. Defaults to
-            following `eq`, since equal instances must hash equally.
+            Whether the field counts towards the generated `__hash__`.
+            By default it follows `eq`, since equal instances must have
+            equal hashes.
         eq : bool, default=True
-            Include this field in the generated `__eq__`.
+            Whether the field counts towards the generated `__eq__`.
         order : bool, default=follows `eq`
-            Include this field in the generated ordering. A field out
-            of `__eq__` is out of ordering too. Setting `eq=False` with
-            `order=True` is an error.
+            Whether the field counts towards the generated ordering
+            methods. A field left out of `__eq__` is left out of the
+            ordering too, and `eq=False` together with `order=True` is an
+            error.
         metadata : dict, optional
             Arbitrary user-defined metadata.
         kw : bool, default=`not Options().positional_only`
-            Allow this field to be passed by keyword. To make it
-            keyword-only, also set `positional=False`. With both set to
-            False, the field takes its default (same as `init=False`).
+            Whether the field may be passed by keyword. Together with
+            `positional=False`, it makes the field keyword-only. When
+            both are `False`, the field takes its default, as with
+            `init=False`.
         positional : bool, default=`not Options().kw_only`
-            Allow this field to be passed by position. To make it
-            positional-only, also set `kw=False`.
+            Whether the field may be passed by position. Together with
+            `kw=False`, it makes the field positional-only.
         frozen : bool, default=`Options().frozen`
             Forbid assignment after construction.
         converter : bool or Callable[[any], any], default=`Options().convert`
-            How the incoming value is converted: `False` not at all,
-            `True` using a converter worked out from the type, or a
-            callable that converts it. The `convert` property reads this
-            as a boolean. The `convert=` keyword is an alias that sets
-            this: `convert=True`/`convert=False`.
+            How an incoming value is converted. `False` leaves it
+            unconverted, `True` uses a converter worked out from the
+            type, and a callable converts the value itself. The
+            `convert` property reads this slot as a boolean, and the
+            `convert=` keyword is an alias that sets it.
         validator : bool or Callable[[any], any], default=`Options().validate`
-            How the incoming value is validated, in the same three forms
-            as `converter` (a validator returns the value unchanged when
-            valid and raises when not). The `validate` property reads
-            this as a boolean; `validate=` is an alias that sets it.
+            How an incoming value is validated, in the same three forms
+            as `converter`. A validator returns the value unchanged when
+            it is valid and raises an error when it is not. The
+            `validate` property reads this slot as a boolean, and the
+            `validate=` keyword is an alias that sets it.
         var : bool, default=False
-            Mark this as a pseudo-field. An `InitVar` is passed to the
-            constructor but not stored. A `ClassVar` is a class
-            attribute, shared by every instance and absent from the
-            constructor. Using the `InitVar` and `ClassVar` annotations
-            is usually clearer.
+            Whether the field is a pseudo-field. An `InitVar` is passed
+            to the constructor but not stored, and a `ClassVar` is a
+            class attribute, shared by every instance and absent from
+            the constructor. The [`InitVar`][] and [`ClassVar`][]
+            annotations are usually clearer.
         doc : str, optional
-            Documentation for this field. Also settable through the
-            `Doc` annotation.
+            The field's documentation, which can also be given with the
+            [`Doc`][] annotation.
         key : bool | str | ShowIf | tuple, default=`Options().mapping`
-            Include this field in the dict-like interface. A string
-            value is used as the key name. A test such as `ShowIf(bool)`
-            or `HideIfNone()` keeps the key only while it passes, and a
-            `(name, test)` pair does both.
+            Whether the field is a key of the dict-like interface. A
+            string is used as the key name. A test such as
+            `ShowIf(bool)` or `HideIfNone()` keeps the key only while the
+            test passes, and a `(name, test)` pair gives both a name and
+            a test.
         alias : str | sequence[str] | bool, optional
-            Input name or ordered input names. The first is preferred in
-            signatures, repr and mapping keys. By default the field is
-            known by its own name with any leading underscore removed.
-            True adds enabled property names after that default public
-            name. False keeps the stored name, including leading
-            underscores.
+            The input name, or the input names in order of preference.
+            The first name is used in the signature, in the repr and as
+            the mapping key. By default the field is known by its own
+            name without any leading underscore. `True` adds the names
+            of the enabled properties after that default public name,
+            and `False` keeps the stored name, leading underscore
+            included.
         property : str | sequence[str] | mapping | bool, default=False
-            Forwarding attributes. A name or sequence creates read/write
-            properties. A mapping chooses True (or "readwrite"),
-            "readonly", or False for each name. True or "readonly" alone
-            exposes the preferred public name with that access mode. "all"
-            exposes every input alias the field accepts (bar the stored
-            attribute and any name already in use), read/write.
+            Forwarding attributes. A name or a sequence of names creates
+            properties that can be read and written. A mapping chooses
+            `True` (or "readwrite"), "readonly" or `False` for each name.
+            `True` or "readonly" on its own exposes the preferred public
+            name with that access. "all" exposes every input alias that
+            the field accepts, other than the stored attribute and any
+            name already in use, for reading and writing.
         pin : str or bool, optional
             What a subclass that matches on this field does with it.
-            When left out, each such subclass uses its own
-            `pin_discriminant` setting. It
-            takes the values the `pin_discriminant` setting takes --
-            "pin", "classvar", "keep", "narrow", "pin+narrow",
-            "classvar+narrow" or "keep+narrow" -- and also `True` (the
-            same as "pin") and `False` (the same as "keep"). It wins
+            When it is left out, each such subclass uses its own
+            `pin_discriminant` setting. It takes the same values as
+            `pin_discriminant`, which are "pin", "classvar", "keep",
+            "narrow", "pin+narrow", "classvar+narrow" and "keep+narrow",
+            and also `True` for "pin" and `False` for "keep". It wins
             over `pin_discriminant` on every class that matches on the
-            field, including subclasses that inherit it. Also settable
-            through the `Pin`, `Narrow` and `NoPin` annotations.
+            field, including subclasses that inherit the field. It can
+            also be given with the [`Pin`][], [`Narrow`][] and
+            [`NoPin`][] annotations.
         inherit : bool or str, optional
             How the field relates to a field the class inherits. `False`
             removes the inherited field of this name instead of
@@ -302,7 +313,7 @@ class Field(SlotsBase):
         Other Parameters
         ----------------
         compare : bool, optional
-            Shorthand for setting both `eq` and `order` at once.
+            A shorthand that sets both `eq` and `order`.
         kw_only : bool, optional
             The `dataclasses` spelling. `kw_only=True` makes the field
             keyword-only, as the `KwOnly` annotation does. `kw_only=False`
@@ -315,8 +326,8 @@ class Field(SlotsBase):
         Raises
         ------
         TypeError
-            When given a keyword not listed here, or both `factory` and
-            `default_factory`.
+            If a keyword that is not listed here is given, or if both
+            `factory` and `default_factory` are given.
         """
         _check_keywords(type(self), kwargs)
         # The positional argument lets Field act as the opposite of Var.
@@ -390,14 +401,14 @@ class Field(SlotsBase):
     def init(self) -> bool:
         """Whether the generated `__init__` takes this field.
 
-        True when the field can be passed by keyword, by position, or
-        both. False when it can be passed neither way. Computed from
-        `kw` and `positional`.
+        The property is computed from `kw` and `positional`. It is
+        `True` when the field can be passed by keyword, by position or
+        both, and `False` when it can be passed neither way.
 
-        Setting `field.init = True` or `field.init = False` sets both
-        `kw` and `positional` to that value. `Field(init=False)` (or
-        `NoInit`) forbids both ways. `Field(init=True)` (or `Init`)
-        changes nothing, since a field is a parameter by default.
+        Assigning `True` or `False` to `field.init` sets both `kw` and
+        `positional` to that value. `Field(init=False)`, like `NoInit`,
+        forbids both ways, while `Field(init=True)`, like `Init`, changes
+        nothing, since a field is a parameter by default.
         """
         return bool(self.kw or self.positional)
 
@@ -407,34 +418,37 @@ class Field(SlotsBase):
 
     @property
     def convert(self) -> bool:
-        """Whether the incoming value is converted.
+        """Whether an incoming value is converted.
 
-        Reads `converter`: `True` for a converter worked out from the
-        type or a callable given directly, `False` when conversion is
-        off. Set conversion through `converter`, or the `convert=`
-        keyword when building the field.
+        The property reads `converter`. It is `True` for a converter
+        worked out from the type and for a callable given directly, and
+        `False` when conversion is off. Conversion is set through
+        `converter`, or through the `convert=` keyword when the field is
+        built.
         """
         return self.converter is not False
 
     @property
     def validate(self) -> bool:
-        """Whether the incoming value is validated.
+        """Whether an incoming value is validated.
 
-        Reads `validator`, the same way `convert` reads `converter`.
+        The property reads `validator`, in the same way that `convert`
+        reads `converter`.
         """
         return self.validator is not False
 
     @property
     def build(self) -> bool:
-        """Whether a fresh default is built for this field per instance.
+        """Whether a fresh default is built for this field for each instance.
 
-        Reads `factory`, the same way `convert` reads `converter`.
+        The property reads `factory`, in the same way that `convert`
+        reads `converter`.
         """
         return self.factory is not False
 
     @property
     def aliases(self) -> tx.Tuple[str, ...]:
-        """Accepted input names, with the preferred public name first."""
+        """The accepted input names, with the preferred public name first."""
         if self.alias is False:
             return (self.name,)
         if isinstance(self.alias, str):
@@ -449,7 +463,7 @@ class Field(SlotsBase):
 
     @property
     def properties(self) -> tx.Mapping[str, tx.Union[bool, str]]:
-        """Forwarding attribute names and their access modes, as a copy."""
+        """A copy of the forwarding attribute names and their access modes."""
         if self.property is MISSING or self.property is False:
             return {}
         if isinstance(self.property, tuple):
@@ -471,13 +485,12 @@ class Field(SlotsBase):
 
     @property
     def public_name(self) -> str:
-        """The preferred public name, used in generated methods."""
+        """The preferred public name, which the generated methods use."""
         return self.aliases[0]
 
     @property
     def public_key(self) -> tx.Optional[str]:
-        """The key to use for this field in the generated dict-like
-        interface."""
+        """The key of this field in the generated dict-like interface."""
         key = self.key
         if key is MISSING or key is False:
             return None
@@ -865,11 +878,12 @@ def field(**kwargs: tx.Any) -> tx.Any:
         retries: int = field(default=0, kw_only=True)
     ```
 
-    Takes the same arguments as `Field` and produces the same object,
-    and refuses a keyword it does not know.
-    The difference is for type checkers: `field(...)` declares its
-    return type as the annotated type, so `tags: list = field(...)` reads
-    cleanly. `Field(...)` in that position also works.
+    `field()` takes the same arguments as [`Field`][] and returns the
+    same object, and it refuses a keyword that it does not recognise.
+    The two differ only for type checkers: `field(...)` declares its
+    return type as the annotated type, so a checker accepts
+    `tags: list = field(...)`. `Field(...)` in that position also works
+    when the program runs.
     """
     _check_keywords(Field, kwargs, "field")
     return Field(**kwargs)
@@ -963,10 +977,11 @@ class InversedBoolAnnotatedField(BoolAnnotatedField):
 
 @slots
 class Alias(AnnotatedField):
-    """Accept a name or ordered sequence of names in the constructor.
+    """Accept one or more input names for a field, in order of preference.
 
-    Write ``Alias[str, ("label", "name")]`` to accept either keyword,
-    with ``label`` preferred. ``Alias[str]`` includes property names.
+    `Alias[str, ("label", "name")]` accepts either keyword, and `label`
+    is preferred. `Alias[str]` adds the names of the field's enabled
+    properties.
     """
 
     __set_slots__ = {"alias": True}
@@ -976,11 +991,12 @@ class Alias(AnnotatedField):
 class Property(AnnotatedField):
     """Expose forwarding attributes for a stored field.
 
-    Write ``Property[str, "label"]`` for read/write access, or
-    ``Property[str, {"label": "readonly"}]`` for read-only access.
-    A sequence gives every name read/write access. With no configuration,
-    expose the preferred public name; ``Property[str, "all"]`` exposes
-    every input alias the field accepts.
+    `Property[str, "label"]` makes `label` an attribute that reads and
+    writes the field, and `Property[str, {"label": "readonly"}]` makes
+    it read-only. A sequence of names gives every name read and write
+    access. Without names, the preferred public name is exposed, and
+    `Property[str, "all"]` exposes every input alias that the field
+    accepts.
     """
 
     __set_slots__ = {"property": True}
@@ -990,13 +1006,12 @@ class Property(AnnotatedField):
 class ReadOnlyProperty(Property):
     """Expose read-only forwarding attributes for a stored field.
 
-    Write ``ReadOnlyProperty[str, "label"]`` to read the field through
-    ``label`` without allowing assignment to it. A sequence exposes every
-    name read-only. With no configuration, expose the preferred public
-    name read-only; ``ReadOnlyProperty[str, "all"]`` exposes every input
-    alias. It is the read-only counterpart of ``Property``, so
-    ``ReadOnlyProperty[str, names]`` matches ``Property[str, names]`` but
-    forbids writes.
+    `ReadOnlyProperty` is the read-only counterpart of [`Property`][]:
+    `ReadOnlyProperty[str, names]` exposes the same attributes as
+    `Property[str, names]`, but forbids assignment through them.
+    `ReadOnlyProperty[str, "label"]` reads the field through `label`.
+    Without names, the preferred public name is exposed, and
+    `ReadOnlyProperty[str, "all"]` exposes every input alias.
     """
 
     __set_slots__ = {"property": "readonly"}
@@ -1038,10 +1053,10 @@ class Default(AnnotatedField):
 @slots
 class Factory(AnnotatedField):
     """
-    Build a field's default by calling something, once per instance.
+    Build a field's default by calling a factory, once for each instance.
 
-    Use this instead of a plain default for anything mutable: every instance
-    gets its own object. With no argument, the factory is worked out from
+    A factory suits any mutable default, because every instance receives
+    its own object. Without an argument, the factory is worked out from
     the field's type.
 
     !!! example "How it lowers"
@@ -1074,8 +1089,8 @@ class ConvertTo(AnnotatedField):
     """
     Convert whatever is passed in to the field's type.
 
-    With no argument the converter is worked out from the type; pass a
-    callable to use your own.
+    Without an argument, the converter is worked out from the type. A
+    callable given as the argument is used as the converter instead.
 
     !!! example "How it lowers"
         ```pycon
@@ -1105,9 +1120,10 @@ class Validate(AnnotatedField):
     """
     Reject a value that does not match the field's type.
 
-    With no argument the check is worked out from the type; pass a callable
-    to use your own. Unlike `ConvertTo`, the value is left exactly as it
-    was given.
+    Without an argument, the check is worked out from the type. A
+    callable given as the argument is used as the validator instead.
+    Unlike [`ConvertTo`][], `Validate` leaves the value exactly as it was
+    given.
 
     !!! example "How it lowers"
         ```pycon
@@ -1138,14 +1154,15 @@ class Init(BoolAnnotatedField):
     """
     Include a field in the generated `__init__`, or leave it out.
 
-    `NoInit` lets a field be passed neither by name nor by position: it
-    still exists and takes its default or factory value, it just cannot
-    be passed in.
+    `NoInit` lets a field be passed neither by name nor by position. The
+    field still exists and takes its default or factory value, but it
+    cannot be passed to the constructor.
 
-    `Init` is the other way round and says nothing new -- a field is a
-    parameter unless something says otherwise -- so it changes nothing
-    and is there to say so out loud. How the field may be passed stays
-    with the class, or with `Kw` and `Positional` if you want to say.
+    `Init` says the opposite, which is already true of every field
+    unless something says otherwise. It therefore changes nothing, and
+    it serves to state the intent explicitly. How the field may be
+    passed is still decided by the class, or by [`Kw`][] and
+    [`Positional`][].
 
     !!! example "How it lowers"
         ```pycon
@@ -1171,9 +1188,9 @@ class Kw(BoolAnnotatedField):
     """
     Allow a field to be passed by keyword, or forbid it.
 
-    Pair it with `Positional` to say exactly how a field may be given.
-    `KwOnly` and `PositionalOnly` are the two useful combinations, ready
-    made; forbidding both is `NoInit`.
+    Together with [`Positional`][], `Kw` says exactly how a field may be
+    passed. [`KwOnly`][] and [`PositionalOnly`][] are the two useful
+    combinations, ready-made, and forbidding both ways is [`NoInit`][].
 
     !!! example "How it lowers"
         ```pycon
@@ -1201,9 +1218,9 @@ class Positional(BoolAnnotatedField):
     """
     Allow a field to be passed by position, or forbid it.
 
-    Pair it with `Kw` to say exactly how a field may be given.
-    `PositionalOnly` and `KwOnly` are the two useful combinations, ready
-    made.
+    Together with [`Kw`][], `Positional` says exactly how a field may be
+    passed. [`PositionalOnly`][] and [`KwOnly`][] are the two useful
+    combinations, ready-made.
 
     !!! example "How it lowers"
         ```pycon
@@ -1248,7 +1265,7 @@ class Frozen(BoolAnnotatedField):
     """
     Forbid assignment to a field after the object is built.
 
-    Useful for freezing part of an otherwise mutable class.
+    `Frozen` freezes part of an otherwise mutable class.
 
     !!! example "How it lowers"
         ```pycon
@@ -1285,12 +1302,12 @@ class NotFrozen(Frozen, InversedBoolAnnotatedField):
 @slots
 class Var(BoolAnnotatedField):
     """
-    Declare something that is not stored on each instance.
+    Declare a pseudo-field, which is not stored on each instance.
 
-    `InitVar` is passed to `__init__`, used, and not kept -- it reaches
-    `__pre_init__` and `__post_init__` like any other argument;
-    `ClassVar` is a plain class attribute, shared by every instance and
-    absent from `__init__`.
+    An [`InitVar`][] is passed to `__init__` and used, but not kept. It
+    reaches `__pre_init__` and `__post_init__` like any other argument.
+    A [`ClassVar`][] is a plain class attribute, shared by every
+    instance and absent from `__init__`.
 
     !!! example "How it lowers"
         ```pycon
@@ -1334,16 +1351,16 @@ class Repr(BoolAnnotatedField):
     Show a field in the generated `__repr__`, hide it, or choose how.
 
     Besides `True` and `False`, a field's repr setting can be a function
-    of the value. Its answer decides what is shown:
+    of the value, and the function's result decides what is shown:
 
     - a string is shown as the value's text, in place of `repr(value)`;
     - `None` or `False` hides the field;
     - `True`, or anything else that is true, shows `repr(value)`;
     - anything else that is false hides the field.
 
-    So a function can format the value, or decide whether it is shown.
-    `ShowIf`, `HideIf`, `HideIfNone` and `HideIfDefault` are ready-made
-    tests of the second kind.
+    A function can therefore either format the value or decide whether
+    the field is shown. [`ShowIf`][], [`HideIf`][], [`HideIfNone`][] and
+    [`HideIfDefault`][] are ready-made functions of the second kind.
 
     !!! example "How it lowers"
         ```pycon
@@ -1409,8 +1426,8 @@ class ShowIf(Repr):
     Show a field in `__repr__` only while a test of its value passes.
 
     `ShowIf(test)` calls `test(value)` and shows the field when the
-    answer is true. It also works as a key setting on a dict-like class
-    (`Key(ShowIf(test))`), where it leaves the key out while the test
+    result is true. On a dict-like class it also works as a key setting,
+    as in `Key(ShowIf(test))`, where it leaves the key out while the test
     fails.
 
     !!! example "How it lowers"
@@ -1494,8 +1511,8 @@ class HideIf(ShowIf):
     """
     Hide a field from `__repr__` while a test of its value passes.
 
-    The opposite of `ShowIf`: `HideIf(test)` hides the field when
-    `test(value)` is true.
+    `HideIf` is the opposite of [`ShowIf`][]: `HideIf(test)` hides the
+    field when `test(value)` is true.
 
     !!! example "In a class"
         ```pycon
@@ -1524,10 +1541,10 @@ class HideIfNone(HideIf):
     """
     Hide a field from `__repr__` while it holds `None`.
 
-    The class itself can be written wherever an instance can:
-    `Field(repr=HideIfNone)` is `Field(repr=HideIfNone())`. As a class
-    setting, `class C(Magic, repr=HideIfNone())`, it applies to every
-    field.
+    The class can be written wherever an instance can, so
+    `Field(repr=HideIfNone)` is the same as `Field(repr=HideIfNone())`.
+    Given as a class setting, as in `class C(Magic, repr=HideIfNone())`,
+    it applies to every field.
 
     !!! example "In a class"
         ```pycon
@@ -1570,14 +1587,15 @@ class HideIfDefault(HideIf):
     """
     Hide a field from `__repr__` while it holds its default.
 
-    A value counts as the default when it is the default, or compares
-    equal to it. A value that cannot be compared with it is shown. The
-    field needs a plain default to compare with: one built by a factory
-    is refused, since each instance has its own.
+    A value counts as the default when it is the default object or
+    compares equal to it, and a value that cannot be compared with the
+    default is shown. The field needs a plain default to compare with,
+    so a default built by a factory is refused, because each instance
+    has its own.
 
-    As a class setting, `class C(Magic, repr=HideIfDefault())`, it
-    applies to every field that has a plain default, and the others are
-    always shown.
+    Given as a class setting, as in
+    `class C(Magic, repr=HideIfDefault())`, it applies to every field
+    that has a plain default, and the other fields are always shown.
 
     !!! example "In a class"
         ```pycon
@@ -1635,10 +1653,10 @@ class HideIfDefault(HideIf):
 @slots('_key')
 class HIDE_IF_NONE(HideIfNone):
     """
-    The original spelling of `HideIfNone`, still accepted.
+    The original spelling of [`HideIfNone`][], which is still accepted.
 
-    `HIDE_IF_NONE("name")` as a key setting also renames the key, the
-    way `Key("name", HideIfNone())` does.
+    As a key setting, `HIDE_IF_NONE("name")` also renames the key, as
+    `Key("name", HideIfNone())` does.
     """
 
     __set_slots__ = ('repr',)
@@ -1658,8 +1676,8 @@ class Eq(BoolAnnotatedField):
     """
     Compare a field in the generated `__eq__`, or ignore it.
 
-    An ignored field takes no part in equality, so two objects that differ
-    only there compare equal.
+    A field that is ignored takes no part in equality, so two objects
+    that differ only in that field compare equal.
 
     !!! example "How it lowers"
         ```pycon
@@ -1695,7 +1713,8 @@ class Order(BoolAnnotatedField):
     """
     Compare a field in the generated ordering, or ignore it.
 
-    Ordering is off unless the class asks for it with `order=True`.
+    The ordering methods are generated only when the class asks for
+    them with `order=True`.
 
     !!! example "How it lowers"
         ```pycon
@@ -1721,7 +1740,7 @@ class Compare(Eq, Order):
     """
     Use a field for both equality and ordering, or for neither.
 
-    A shorthand for setting `Eq` and `Order` together.
+    `Compare` is a shorthand for [`Eq`][] and [`Order`][] together.
 
     !!! example "How it lowers"
         ```pycon
@@ -1745,8 +1764,8 @@ class Hash(BoolAnnotatedField):
     """
     Include a field in the generated `__hash__`, or leave it out.
 
-    A field left out of the comparison is left out of the hash too, so you
-    rarely need this on its own.
+    A field left out of the comparison is left out of the hash too, so
+    `Hash` is rarely needed on its own.
 
     !!! example "How it lowers"
         ```pycon
@@ -1772,8 +1791,9 @@ class Key(BoolAnnotatedField):
     """
     Include a field in the dict-like interface, or leave it out.
 
-    Only relevant on a class built with `mapping=True`. Pass a string to use
-    a different key from the field name.
+    `Key` matters only on a class built with `mapping=True`. A string
+    given as the argument is used as the key in place of the field's
+    name.
 
     !!! example "How it lowers"
         ```pycon
@@ -1798,7 +1818,8 @@ class Key(BoolAnnotatedField):
         ```
 
     A test such as `ShowIf(bool)` or `HideIfNone()` keeps the key only
-    while it passes. Give a name first to rename the key as well.
+    while the test passes. A name given before the test renames the key
+    as well.
 
     !!! example "With a test"
         ```pycon
@@ -1854,21 +1875,24 @@ class Doc(AnnotatedField, tx.Doc):
 @slots
 class Pin(AnnotatedField):
     """
-    Say what a subclass that matches on this field does with it.
+    Decide what a subclass that matches on this field does with it.
 
-    A subclass written with `on={"mode": "minor"}` gives `mode` that value.
-    `Pin` decides how, for this field, whatever the subclass's
-    `pin_discriminant` says. It takes the same values: "pin" (the
-    default), "classvar", "keep", "narrow", "pin+narrow",
-    "classvar+narrow" and "keep+narrow", plus `True` for "pin" and
-    `False` for "keep". `Narrow[T]` is `Pin[T, "narrow"]`, and `NoPin[T]`
-    is `Pin[T, False]`. Each mode is also a constant -- `PIN`,
-    `CLASSVAR`, `KEEP`, `NARROW`, `PIN_NARROW`, `CLASSVAR_NARROW`,
-    `KEEP_NARROW` -- which a linter reads as a name it knows, where it
-    reads `"classvar"` inside the brackets as an undefined type.
+    A subclass written with `on={"mode": "minor"}` gives `mode` that
+    value. `Pin` decides how the value is given to this field, whatever
+    the subclass's `pin_discriminant` setting says. It takes the same
+    values as that setting, which are "pin" (the default), "classvar",
+    "keep", "narrow", "pin+narrow", "classvar+narrow" and "keep+narrow",
+    and also `True` for "pin" and `False` for "keep". `Narrow[T]` is
+    `Pin[T, "narrow"]`, and `NoPin[T]` is `Pin[T, False]`.
+
+    Each mode is also available as a constant: [`PIN`][], [`CLASSVAR`][],
+    [`KEEP`][], [`NARROW`][], [`PIN_NARROW`][], [`CLASSVAR_NARROW`][] and
+    [`KEEP_NARROW`][]. A linter reads a constant as a name that it
+    knows, whereas it reads `"classvar"` inside the brackets as an
+    undefined type.
 
     The field keeps its `Pin` in every subclass, so every class that
-    matches on it treats it the same way.
+    matches on the field treats it in the same way.
 
     !!! example "How it lowers"
         ```pycon
@@ -1920,22 +1944,23 @@ class Forget(AnnotatedField):
     """
     Remove a field the class inherits.
 
-    Write the bare name as the annotation. The field is gone from this
-    class and from every class that inherits from it: the constructor
-    no longer takes it, and the repr, the comparisons and the dict-like
-    view leave it out. Its public name is free again, so another field
-    may take it. Declaring the field again further down brings back a
-    new one.
+    `Forget` is written on its own as the annotation, as in `y: Forget`.
+    The field is gone from this class and from every class that
+    inherits from it: the constructor no longer takes it, and the repr,
+    the comparisons and the dict-like view leave it out. Its public name
+    is free again, so another field may take it. A subclass further
+    down that declares the field again creates a new field.
 
-    A value written beside it stays an ordinary class attribute. With
-    nothing written, the name is looked up as on any class, so reading
-    it can still find what a base class holds under it, such as the
-    field's old default.
+    A value written beside `Forget` becomes an ordinary class attribute.
+    When no value is written, the name is looked up as on any class, so
+    reading it can still find what a base class holds under that name,
+    such as the field's old default.
 
-    A field a base class chooses its subclasses by may be forgotten too.
-    Passing that field to the class is an error that names the class
-    that forgot it, and a base choosing a subclass passes this one over
-    whenever the call passes that field.
+    A field by which a base class chooses its subclasses can be
+    forgotten too. Passing that field to the class is then an error that
+    names the class that forgot it, and a base class that is choosing a
+    subclass passes over the forgetting class whenever the call passes
+    that field.
 
     !!! example "How it lowers"
         ```pycon
@@ -1971,7 +1996,7 @@ class Inherit(AnnotatedField):
     them instead. Written as the value of a field whose type is `...`,
     as in `x: ... = Inherit(frozen=True)`, it starts the field from what
     the base class declared and changes only the settings it is given.
-    `Inherit` accepts every keyword that `Field` accepts. A plain value
+    `Inherit` accepts every keyword that [`Field`][] accepts. A plain value
     after `...`, as in `x: ... = 5`, changes nothing but the default, and
     a default of `REQUIRED` removes the inherited default.
 
@@ -2094,8 +2119,10 @@ PIN: tx.Literal["pin"] = "pin"
 """Give the field the value the subclass stands for, as its default."""
 
 CLASSVAR: tx.Literal["classvar"] = "classvar"
-"""Make the field a class attribute holding the value; an argument for it
-is accepted and dropped."""
+"""Make the field a class attribute that holds the value.
+
+An argument for the field is still accepted, and dropped.
+"""
 
 KEEP: tx.Literal["keep"] = "keep"
 """Leave the field as it is."""
@@ -2104,10 +2131,10 @@ NARROW: tx.Literal["narrow"] = "narrow"
 """The same as `PIN_NARROW`."""
 
 PIN_NARROW: tx.Literal["pin+narrow"] = "pin+narrow"
-"""`PIN`, and refuse any other value for the field."""
+"""Like `PIN`, and also refuse any other value for the field."""
 
 CLASSVAR_NARROW: tx.Literal["classvar+narrow"] = "classvar+narrow"
-"""`CLASSVAR`, and refuse any other value for the field."""
+"""Like `CLASSVAR`, and also refuse any other value for the field."""
 
 KEEP_NARROW: tx.Literal["keep+narrow"] = "keep+narrow"
-"""`KEEP`, and refuse any other value for the field."""
+"""Like `KEEP`, and also refuse any other value for the field."""
