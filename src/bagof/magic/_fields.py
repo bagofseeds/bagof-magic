@@ -163,6 +163,7 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     'property',         # Forwarding attribute names and access modes.
     '_declared',        # What the field explicitly said (bookkeeping).
     '_narrowed_by',     # Which constraints narrowed it (bookkeeping).
+    '_unnarrowed',      # Its validator before narrowing (bookkeeping).
     'pin',              # What a subclass matching on it does with it.
     'inherit',          # False: forget; True: patch; str: take over.
     'position',         # Inheriting: take the inherited field's place.
@@ -582,7 +583,9 @@ class Field(SlotsBase):
         # only make every repr longer.
         shown = (
             slot for slot in self._slots()
-            if slot not in ("_declared", "_derived", "_narrowed_by")
+            if slot not in (
+                "_declared", "_derived", "_narrowed_by", "_unnarrowed"
+            )
             and getattr(self, slot, MISSING) is not MISSING
         )
         params = ", ".join(

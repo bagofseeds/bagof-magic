@@ -21,6 +21,7 @@ import pytest
 import typing_extensions as tx
 from bagof.converters.exceptions import ConversionError
 from bagof.validators import ValueValidationError
+from bagof.validators.exceptions import ValidationError
 
 # locals
 import bagof.magic._generics as g
@@ -4635,6 +4636,46 @@ class TestInheritingADiscriminant:
         with pytest.raises(ValueValidationError):
             Kept(kind="other")
         assert Kept().kind == "strict"
+
+    def test_a_new_type_works_its_validator_out_under_the_narrowing(
+        self
+    ) -> None:
+        class Signal(Magic, polymorphic=True, validate=True):
+            level: int = 0
+
+        class Low(Signal, on={"level": {1, 2}}, pin_discriminant=NARROW):
+            pass
+
+        assert Low.__dict__[_FIELDS]["level"]._unnarrowed is MISSING
+
+        class Loose(Low):
+            level: Inherit[float]
+
+        # The validator comes from the new type, not the old one...
+        assert Loose(level=1.0).level == 1.0
+        with pytest.raises(ValidationError):
+            Low(level=1.0)
+        # ...and the narrowing still applies on top of it.
+        with pytest.raises(ValidationError):
+            Loose(level=3.0)
+        with pytest.raises(ValidationError):
+            Loose(level="1")
+
+    def test_a_declared_validator_is_worked_out_again_too(self) -> None:
+        class Signal(Magic, polymorphic=True):
+            level: Validate[int] = 0
+
+        class Low(Signal, on={"level": {1, 2}}, pin_discriminant=NARROW):
+            pass
+
+        assert Low.__dict__[_FIELDS]["level"]._unnarrowed is True
+
+        class Loose(Low):
+            level: Inherit[float]
+
+        assert Loose(level=2.0).level == 2.0
+        with pytest.raises(ValidationError):
+            Loose(level=3.0)
 
     def test_a_new_validator_does_not_undo_the_narrowing(self) -> None:
         Signal, Inverse = self._signals()

@@ -689,6 +689,14 @@ def _inherit_field(
         attr: value for attr, value in (source._declared or {}).items()
         if attr not in _INHERITING_ATTRS
     }
+    # A registration's narrowing is not part of the declaration: the
+    # validator starts from what was declared before it, and the
+    # narrowing is put back on once the field is resolved.
+    parts = source._narrowed_by
+    if parts:
+        declared.pop("validator", None)
+        if source._unnarrowed is not MISSING:
+            declared["validator"] = source._unnarrowed
     declared.update(delta)
     if "type" not in delta:
         declared["type"] = source.type
@@ -711,14 +719,8 @@ def _inherit_field(
     new._declared = dict(declared)
     _inherit_attrs(new, source, tuple(_INHERITABLE))
     new.setdefault(options, hints)
-    # What the field was narrowed to by a registration is not part of
-    # its declaration, so a new validator does not take it away.
-    parts = source._narrowed_by
     if parts:
-        if "validator" in delta:
-            _chain_narrowing(new, parts)
-        else:
-            new._narrowed_by = parts
+        _chain_narrowing(new, parts)
     chooser = (
         None if new.public_name == source.public_name
         else _chooses_by(mro, source.name)
@@ -1919,6 +1921,10 @@ def _chain_narrowing(field: Field, parts: tx.Sequence) -> None:
     done = field._narrowed_by
     if done is MISSING:
         done = ()
+        # What the field declared before it was first narrowed, so that
+        # a field built from this one with a new type can work its own
+        # validator out again before the narrowing goes back on.
+        field._unnarrowed = field._declared.get("validator", MISSING)
     chained = field.validator
     for part in parts:
         chained = (
