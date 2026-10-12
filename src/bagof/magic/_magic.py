@@ -1597,12 +1597,20 @@ def _pin_discriminant(
     spec: tx.Any,
     storage: str,
     mutable: str,
+    slotted: bool = False,
 ) -> bool:
     # A subclass registered for one exact value already says what that
     # field holds, so it does not have to say it twice: the field is
     # given that value as its default ("pin"), or becomes a class
     # attribute that is not stored per instance ("classvar"). Returns
     # whether the field was pinned.
+    #
+    # A pinned default is left on the class the way a written default
+    # is, so that reading it off the class agrees with every instance --
+    # and a subclass that forgets the field reads this class's value
+    # rather than the one further up. A slotted class keeps no default
+    # on the class, and a mutable one that becomes a factory has none
+    # to leave.
     #
     # Under "classvar" the field stays a parameter of `__init__` and its
     # value is thrown away, so both `Chord(mode="minor", root="A")` --
@@ -1631,7 +1639,10 @@ def _pin_discriminant(
         # the same handling a written-out default does:
         # `on={"cfg": {"a": 1}}` must not hand one dictionary to every
         # instance of the subclass.
-        _handle_mutable_default(field, mutable)
+        if _handle_mutable_default(field, mutable):
+            namespace.pop(field.name, None)
+        elif not slotted:
+            namespace[field.name] = field.default
     return True
 
 
@@ -2324,7 +2335,8 @@ def __pre_new__(
                 )
             ):
                 if _pin_discriminant(
-                    field, namespace, spec, storage, options.mutable_default
+                    field, namespace, spec, storage, options.mutable_default,
+                    bool(options.slots),
                 ):
                     pinned.add(field.name)
             if narrowing:

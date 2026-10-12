@@ -4367,6 +4367,15 @@ class TestForgettingADiscriminant:
             class Loud(Inverse, Minor, on={"mode": "minor"}):
                 kind: Forget
 
+    def test_a_forgotten_pinned_field_reads_the_pinned_value(
+        self
+    ) -> None:
+        Signal, Inverse, Plain = self._signals()
+        # The name is read the way it is on any class, and the pin left
+        # its value on `Inverse`.
+        assert repr(Plain()) == "Plain(level=0)"
+        assert Plain.kind == Plain().kind == "inverse"
+
     def test_a_field_nobody_chooses_by_changes_nothing(self) -> None:
         class Signal(Magic, polymorphic=True):
             kind: str = "plain"
@@ -4396,3 +4405,76 @@ class TestForgettingADiscriminant:
         with pytest.raises(TypeError, match="forgets '_kind'"):
             class Both(Inverse, on={"kind": "x"}):
                 _kind: Forget
+
+
+# ======================================================================
+# A pinned value is left on the class
+# ======================================================================
+
+
+class TestPinnedValueOnTheClass:
+    """Reading a pinned discriminant off the class agrees with instances."""
+
+    @pytest.mark.parametrize("mode", ["pin", "pin+narrow", "narrow"])
+    def test_a_pin_is_a_class_attribute(self, mode: str) -> None:
+        class Signal(Magic, polymorphic=True, pin_discriminant=mode):
+            kind: str = "plain"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        assert Inverse.__dict__["kind"] == "inverse"
+        assert Inverse.kind == Inverse().kind == "inverse"
+        assert Signal.kind == "plain"
+
+    @pytest.mark.parametrize("mode", ["classvar", "classvar+narrow"])
+    def test_a_classvar_already_was(self, mode: str) -> None:
+        class Signal(Magic, polymorphic=True, pin_discriminant=mode):
+            kind: str = "plain"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        assert Inverse.kind == Inverse().kind == "inverse"
+
+    @pytest.mark.parametrize("mode", ["keep", "keep+narrow"])
+    def test_keep_pins_nothing(self, mode: str) -> None:
+        class Signal(Magic, polymorphic=True, pin_discriminant=mode):
+            kind: str = "plain"
+
+        class Inverse(Signal, on={"kind": {"inverse", "plain"}}):
+            pass
+
+        assert "kind" not in Inverse.__dict__
+        assert Inverse.kind == "plain"
+
+    def test_a_slotted_class_keeps_no_default_on_the_class(self) -> None:
+        class Signal(Magic, polymorphic=True, slots=True):
+            kind: str = "plain"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        assert "kind" not in Inverse.__dict__
+        assert Inverse().kind == "inverse"
+
+    def test_a_mutable_pin_is_built_per_instance(self) -> None:
+        class Config(Magic, polymorphic=True):
+            cfg: tx.Any = None
+
+        class Special(Config, on={"cfg": {"a": 1}}):
+            pass
+
+        assert "cfg" not in Special.__dict__
+        first, second = Special(), Special()
+        assert first.cfg == {"a": 1}
+        assert first.cfg is not second.cfg
+
+    def test_a_field_pinned_by_its_own_field_setting(self) -> None:
+        class Signal(Magic, polymorphic=True):
+            kind: Pin[str, PIN] = "plain"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        assert Inverse.kind == "inverse"

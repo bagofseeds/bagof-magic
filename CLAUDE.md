@@ -562,6 +562,12 @@ does not.
   refused to be built at all. A parameterisation reads `required` and
   `invariant` off its origin's registry on every call (like `dispatch`),
   so one built before the hand registration follows it too.
+- **A pinned value is left on the class.** Under "pin" (and its
+  "+narrow" forms) `_pin_discriminant` writes the value into the
+  namespace the way a written default is, so `Inverse.kind` agrees
+  with `Inverse().kind` and a subclass that forgets the field reads
+  it; "classvar" always did. A slotted class keeps no default on the
+  class, and a mutable pin that becomes a factory leaves nothing.
 - **`on=` keys name a field by its public name.** `on={"mode": ...}`
   reaches the field `_mode`, as does any other name the constructor
   takes it by; the stored name is still accepted. `stored_names` in
