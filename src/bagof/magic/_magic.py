@@ -31,75 +31,88 @@ Per-field behaviour is written in the annotation::
 Parameters
 ----------
 init : bool | str, default=True
-    Generate ``__init__`` method.
+    Generate `__init__`.
 repr : bool | str | ShowIf, default=True
-    Generate ``__repr__`` method. A field holding no value is left out.
-    A test such as ``HideIfNone()`` is applied to every field.
+    Generate `__repr__`. A field is shown while it holds a value, so a
+    field that the constructor does not take, and that has no default,
+    is left out until something sets it. A test such as `HideIfNone()`
+    or `ShowIf(bool)` is applied to every field.
 eq : bool | str, default=True
-    Generate ``__eq__`` method. Two objects are equal when the same
-    fields hold values and those values match.
+    Generate `__eq__`. Two objects are equal when the same fields hold
+    values and those values match.
 order : bool | str, default=False
-    Generate ``__lt__``, ``__le__``, ``__gt__`` and ``__ge__`` methods.
+    Generate `__lt__`, `__le__`, `__gt__` and `__ge__`. Given a name,
+    the `<` comparison is generated under that name.
 hash : bool | str, default=None
-    Generate ``__hash__`` method. If None, decide automatically.
+    Generate `__hash__`. With `None`, whether the method is generated is
+    decided from the other options.
 unsafe_hash : bool, default=False
-    Always generate ``__hash__`` method.
+    Generate `__hash__` even when the class is mutable.
 frozen : bool, default=False
-    Disable ``__setattr__`` and ``__delattr__``.
+    Refuse to assign or delete a field after construction.
 match_args : bool | str, default=False
-    Generate ``__match_args__`` for pattern matching.
+    Generate `__match_args__`, for structural pattern matching.
 kw_only : bool, default=False
-    Make all fields keyword-only by default.
+    Make every field keyword-only, unless the field says otherwise.
 positional_only : bool, default=False
-    Make all fields positional-only by default.
+    Make every field positional-only, unless the field says otherwise.
 slots : bool, default=False
-    Generate ``__slots__`` and remove ``__dict__``.
+    Generate `__slots__`, so that instances have no `__dict__`.
 weakref_slot : bool, default=False
-    Generate a weakref slot in ``__slots__``.
+    Add a `__weakref__` slot, so that the instances of a class with
+    `slots=True` can be weakly referenced.
 factory : bool, default=False
-    Use field type as factory if none is provided.
+    Use a field's type as its factory when no factory is given.
 mutable_default : str, default="factory"
-    What to do with a mutable default such as ``x: list = []``.
-    "factory" gives each instance its own copy, "raise" refuses the
-    class, "allow" shares one object between instances.
+    What to do with a mutable default such as `x: list = []`. "factory"
+    gives each instance its own copy, "raise" refuses the class, and
+    "allow" shares one object between the instances.
 convert : bool, default=False
-    Use field type as converter if none is provided.
+    Use a field's type as its converter when no converter is given.
 validate : bool, default=False
-    Use field type as validator if none is provided.
+    Use a field's type as its validator when no validator is given.
 convert_defaults : bool, default=True
     Convert a value that came from a field's own default.
 validate_defaults : bool, default=True
     Validate a value that came from a field's own default.
 unresolved_hints : str, default="warn"
-    What to do when a type hint names something still undefined the
-    first time a field needs it. "warn", "raise" or "ignore".
+    What to do when a type hint still names something undefined the
+    first time a field needs it. "warn" says so once, "raise" turns it
+    into an error, and "ignore" says nothing.
 alias : str | sequence | bool, optional
-    Default input names. True includes property names; False keeps
-    leading underscores. The first name is preferred.
+    The default input names of the fields, the first of which is
+    preferred. True adds the names of the enabled properties, and False
+    keeps a leading underscore in the input name.
 property : str | sequence | mapping | bool, default=False
-    Default forwarding properties for stored instance fields. True
-    exposes the public name; "readonly" makes it read-only; "all"
-    exposes every input alias.
+    The default forwarding properties of the stored instance fields.
+    True exposes the public name, "readonly" exposes it read-only, and
+    "all" exposes every input alias. Names given explicitly can each
+    choose their own access.
 mapping : bool, default=False
-    Implement the Mapping protocol. Only a field holding a value is
+    Implement the `Mapping` protocol. Only a field that holds a value is
     a key.
 override : bool | str | list, default=False
-    Resolve an inherited field's settings again from this class.
+    Resolve the settings of inherited fields again from this class.
+    `override=True` applies to every inherited field, and a setting name
+    or a list of names limits it to those settings.
 polymorphic : bool | str, default=False
-    Build one of this class's subclasses instead of this class,
-    chosen from the arguments it was given.
+    Build one of this class's subclasses instead of this class, chosen
+    from the arguments of the call. With "strict", a call that matches
+    no subclass is refused.
 pin_discriminant : str, default="pin"
-    What a subclass does with a field it matches on. "pin" gives it
-    that value as a default, "classvar" makes it a class attribute,
-    "keep" leaves it as the subclass wrote it. Add "+narrow" (or write
-    "narrow" for "pin+narrow") to also narrow the field's type to what
-    it stands for and reject any other value: "narrow", "pin+narrow",
-    "classvar+narrow" or "keep+narrow". A field that says for itself,
-    with `Pin[T, mode]`, `Narrow[T]` or `NoPin[T]`, keeps its own.
+    What a subclass does with a field that it matches on. "pin" gives
+    the field the matched value as its default, "classvar" makes it a
+    class attribute, and "keep" leaves it as the subclass wrote it.
+    Adding "+narrow" also narrows the field's type to what the subclass
+    stands for and rejects any other value, which gives "pin+narrow",
+    "classvar+narrow" and "keep+narrow". "narrow" on its own means
+    "pin+narrow". A field that chooses its own mode with `Pin[T, mode]`,
+    `Narrow[T]` or `NoPin[T]` keeps it.
 reverse : bool, default=False
-    Use the reverse MRO order to determine field order.
+    Collect the fields from the bases in reverse order, so that a
+    subclass's own fields come before the inherited ones.
 doc : bool | str, default=True
-    Add field documentation to class docstring.
+    Add the table of fields to the class docstring.
 """
 __all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 # stdlib
@@ -4728,10 +4741,10 @@ def _parameterised_class(cls: type, alias: tx.Any, arguments: tuple) -> type:
 )
 class MetaMagic(ABCMeta):
     """
-    Metaclass that builds a Magic class.
+    The metaclass that builds a Magic class.
 
-    Most users never name ``MetaMagic`` directly. Inherit from
-    ``Magic`` instead, or use the ``@magic`` decorator.
+    `MetaMagic` rarely needs to be named directly. A class inherits from
+    [`Magic`][], or is decorated with [`magic`][], instead.
 
     Parameters
     ----------
@@ -4745,85 +4758,89 @@ class MetaMagic(ABCMeta):
     Other Parameters
     ----------------
     init : bool | str, default=True
-        Generate ``__init__`` method.
+        Generate `__init__`.
     repr : bool | str | ShowIf, default=True
-        Generate ``__repr__`` method. A field is shown while it holds
-        a value. A field the constructor does not take, with no
+        Generate `__repr__`. A field is shown while it holds a value, so
+        a field that the constructor does not take, and that has no
         default, is left out until something sets it. A test such as
-        ``HideIfNone()`` or ``ShowIf(bool)`` is applied to every field.
+        `HideIfNone()` or `ShowIf(bool)` is applied to every field.
     eq : bool | str, default=True
-        Generate ``__eq__`` method. Two objects are equal when the
-        same fields hold values and those values match.
+        Generate `__eq__`. Two objects are equal when the same fields
+        hold values and those values match.
     order : bool | str, default=False
-        Generate ``__lt__``, ``__le__``, ``__gt__`` and ``__ge__``
-        methods. Given a name, generate the ``<`` comparison under
-        that name.
+        Generate `__lt__`, `__le__`, `__gt__` and `__ge__`. Given a
+        name, the `<` comparison is generated under that name.
     hash : bool | str, default=None
-        Generate ``__hash__`` method. If None, decide automatically.
+        Generate `__hash__`. With `None`, whether the method is
+        generated is decided from the other options.
     unsafe_hash : bool, default=False
-        Always generate ``__hash__`` method.
+        Generate `__hash__` even when the class is mutable.
     frozen : bool, default=False
-        Disable ``__setattr__`` and ``__delattr__``.
+        Refuse to assign or delete a field after construction.
     match_args : bool | str, default=False
-        Generate ``__match_args__`` for pattern matching.
+        Generate `__match_args__`, for structural pattern matching.
     kw_only : bool, default=False
-        Make all fields keyword-only by default.
+        Make every field keyword-only, unless the field says otherwise.
     positional_only : bool, default=False
-        Make all fields positional-only by default.
+        Make every field positional-only, unless the field says
+        otherwise.
     slots : bool, default=False
-        Generate ``__slots__`` and remove ``__dict__``.
+        Generate `__slots__`, so that instances have no `__dict__`.
     weakref_slot : bool, default=False
-        Generate a weakref slot in ``__slots__``.
+        Add a `__weakref__` slot, so that the instances of a class with
+        `slots=True` can be weakly referenced.
     factory : bool, default=False
-        Use field type as factory if none is provided.
+        Use a field's type as its factory when no factory is given.
     mutable_default : str, default="factory"
-        What to do with a mutable default such as ``x: list = []``.
-        "factory" gives each instance its own copy, "raise" refuses
-        the class, "allow" shares one object between instances.
+        What to do with a mutable default such as `x: list = []`.
+        "factory" gives each instance its own copy, "raise" refuses the
+        class, and "allow" shares one object between the instances.
     convert : bool, default=False
-        Use field type as converter if none is provided.
+        Use a field's type as its converter when no converter is given.
     validate : bool, default=False
-        Use field type as validator if none is provided.
+        Use a field's type as its validator when no validator is given.
     convert_defaults : bool, default=True
         Convert a value that came from a field's own default.
     validate_defaults : bool, default=True
         Validate a value that came from a field's own default.
     unresolved_hints : str, default="warn"
-        What to do when a type hint names something still undefined
-        the first time a field needs it. "warn" says so once, "raise"
-        turns it into an error, "ignore" says nothing.
+        What to do when a type hint still names something undefined the
+        first time a field needs it. "warn" says so once, "raise" turns
+        it into an error, and "ignore" says nothing.
     alias : str | sequence | bool, optional
-        Default input names for fields. True includes property names.
-        False keeps leading underscores. The first name is preferred.
+        The default input names of the fields, the first of which is
+        preferred. True adds the names of the enabled properties, and
+        False keeps a leading underscore in the input name.
     property : str | sequence | mapping | bool, default=False
-        Default forwarding properties. True exposes the public name;
-        "readonly" makes it read-only; "all" exposes every input alias.
-        Explicit names may choose access individually. Applies to stored
-        instance fields.
+        The default forwarding properties of the stored instance fields.
+        True exposes the public name, "readonly" exposes it read-only,
+        and "all" exposes every input alias. Names given explicitly can
+        each choose their own access.
     mapping : bool, default=False
-        Implement the Mapping protocol. Only a field holding a value
-        is a key.
+        Implement the `Mapping` protocol. Only a field that holds a
+        value is a key.
     override : bool | str | list, default=False
-        Resolve an inherited field's settings again from this class.
-        ``override=True`` applies to all inherited fields. A name or
-        list of names applies to those settings only.
+        Resolve the settings of inherited fields again from this class.
+        `override=True` applies to every inherited field, and a setting
+        name or a list of names limits it to those settings.
     polymorphic : bool | str, default=False
         Build one of this class's subclasses instead of this class,
-        chosen from the arguments it was given. With "strict", a call
-        matching no subclass is refused.
+        chosen from the arguments of the call. With "strict", a call
+        that matches no subclass is refused.
     pin_discriminant : str, default="pin"
-        What a subclass does with a field it matches on. "pin" gives it
-        that value as a default, "classvar" makes it a class attribute,
-        "keep" leaves it as the subclass wrote it. Add "+narrow" (or
-        write "narrow" for "pin+narrow") to also narrow the field's type
-        to what it stands for and reject any other value: "narrow",
-        "pin+narrow", "classvar+narrow" or "keep+narrow". A field that
-        says for itself, with `Pin[T, mode]`, `Narrow[T]` or
-        `NoPin[T]`, keeps its own.
+        What a subclass does with a field that it matches on. "pin"
+        gives the field the matched value as its default, "classvar"
+        makes it a class attribute, and "keep" leaves it as the subclass
+        wrote it. Adding "+narrow" also narrows the field's type to what
+        the subclass stands for and rejects any other value, which gives
+        "pin+narrow", "classvar+narrow" and "keep+narrow". "narrow" on
+        its own means "pin+narrow". A field that chooses its own mode
+        with `Pin[T, mode]`, `Narrow[T]` or `NoPin[T]` keeps it.
     reverse : bool, default=False
-        Use the reverse MRO order to determine field order.
+        Collect the fields from the bases in reverse order, so that a
+        subclass's own fields come before the inherited ones.
     doc : bool | str, default=True
-        Add field documentation to class docstring.
+        Add the table of fields to the class docstring.
 
     Returns
     -------
@@ -4855,11 +4872,11 @@ class MetaMagic(ABCMeta):
         returns a real subclass with `T` replaced by `int` throughout its
         fields, so `Box[int]("1")` converts and validates exactly as
         `class IntBox(Box[int])` does. A subscription that leaves a type
-        variable free (`Pair[int, S]`), or a class with no type parameters
-        to fill, is handed back as the ordinary typing alias.
+        variable free, as in `Pair[int, S]`, returns the ordinary typing
+        alias, and so does a class with a variadic type parameter.
 
-        A class that chooses which subclass to build still does: the
-        subclass is chosen from the arguments, and comes back with the
+        A polymorphic class still chooses which subclass to build. The
+        subclass is chosen from the arguments, and it comes back with the
         same parameters filled in.
         """
         # A `__class_getitem__` written in the class body wins, the same
@@ -4963,19 +4980,22 @@ class MetaMagic(ABCMeta):
         """
         Build `target` instead of this class, for these argument values.
 
-        This is the same thing as `class Sub(Base, on={...})`, said
-        after the fact -- for a class you did not write, or one whose
-        constraints are only known at run time. Registering later only
-        affects what is built later; instances that already exist are
-        untouched. Only this class builds `target`; a subclass of
-        `target` written afterwards with `on=` is reached through it.
-        A subclass written *before* this call was placed as things
-        stood when it was written, so register a class before writing
-        its subclasses. A strict `target` refuses a direct call that
-        contradicts the first registration made for it.
+        A registration does what `class Sub(Base, on=...)` does, after
+        the class has been written. It suits a class from another
+        module, or a class whose constraints are only known at run time.
+        A registration affects only what is built after it, and
+        instances that already exist are not changed.
 
-        Leave `target` out to use it as a decorator on the class
-        statement, which registers the class and hands it back:
+        Only this class builds `target`, and a subclass of `target`
+        written later with `on=` is reached through `target`. A subclass
+        written before the registration was placed according to the
+        registrations that existed at the time, so a class should be
+        registered before its subclasses are written. A strict `target`
+        refuses a direct call that contradicts the first registration
+        made for it.
+
+        Without `target`, the method returns a decorator, which registers
+        the class it decorates and returns that class:
 
             @Base.register_polymorph(mode="diminished")
             class Diminished(Base):
@@ -4984,25 +5004,30 @@ class MetaMagic(ABCMeta):
         Parameters
         ----------
         target : type, optional
-            The subclass to build. It must be a subclass of this class,
-            and not this class itself. Omit it to get a decorator that
-            registers the class it is put on.
+            The subclass to build. It must be a subclass of this class
+            other than the class itself. Without it, the method returns a
+            decorator that registers the class it decorates.
         on : dict, optional
-            What `target` stands for: field names against the values
-            they must take. The same shapes as the `on=` class keyword.
+            What `target` stands for, as a mapping from field names to
+            the values they must take. It accepts the same constraints as
+            the `on=` class keyword.
         priority : int, default=0
-            Which subclass wins when two match equally well. Higher
-            wins, and it is looked at before anything else.
+            Which subclass wins when two of them match. The higher
+            priority wins, and priority is compared before any other
+            rule.
         **constraints
-            A friendlier spelling of `on`, for the usual case:
-            `Chord.register_polymorph(Diminished, mode="diminished")`.
-            Use `on=` for a field named `on`, `target` or `priority`.
+            The constraints as keyword arguments, which is the shorter
+            spelling for the usual case:
+            `Chord.register_polymorph(Diminished, mode="diminished")`. A
+            field named `on`, `target` or `priority` has to be given
+            through `on=`.
 
         Returns
         -------
         target : type
-            What was registered, so this can be used as a decorator --
-            or, when `target` is left out, the decorator itself.
+            The registered class, so that the method can be used as a
+            decorator. When `target` is left out, the result is the
+            decorator itself.
         """
         if target is MISSING:
             # Decorator form: the class arrives when the decorator runs.
@@ -5081,11 +5106,13 @@ class MetaMagic(ABCMeta):
 
 class Magic(metaclass=MetaMagic):
     """
-    Base class for data structures driven by type hints.
+    The base class for classes built from their type hints.
 
-    Inherit from ``Magic`` to get a generated ``__init__``, ``__repr__``
-    and ``__eq__``. Options are class keyword arguments and are
-    inherited by subclasses.
+    A class that inherits from `Magic` receives a generated `__init__`,
+    `__repr__` and `__eq__`, among other methods. The options below are
+    class keyword arguments, and subclasses inherit them. Most options
+    that generate a method also accept a string in place of `True`, and
+    the generated method is then bound under that name instead.
 
     !!! example
         ```python
@@ -5097,85 +5124,89 @@ class Magic(metaclass=MetaMagic):
     Parameters
     ----------
     init : bool | str, default=True
-        Generate ``__init__`` method.
+        Generate `__init__`.
     repr : bool | str | ShowIf, default=True
-        Generate ``__repr__`` method. A field is shown while it holds
-        a value. A field the constructor does not take, with no
+        Generate `__repr__`. A field is shown while it holds a value, so
+        a field that the constructor does not take, and that has no
         default, is left out until something sets it. A test such as
-        ``HideIfNone()`` or ``ShowIf(bool)`` is applied to every field.
+        `HideIfNone()` or `ShowIf(bool)` is applied to every field.
     eq : bool | str, default=True
-        Generate ``__eq__`` method. Two objects are equal when the
-        same fields hold values and those values match.
+        Generate `__eq__`. Two objects are equal when the same fields
+        hold values and those values match.
     order : bool | str, default=False
-        Generate ``__lt__``, ``__le__``, ``__gt__`` and ``__ge__``
-        methods. Given a name, generate the ``<`` comparison under
-        that name.
+        Generate `__lt__`, `__le__`, `__gt__` and `__ge__`. Given a
+        name, the `<` comparison is generated under that name.
     hash : bool | str, default=None
-        Generate ``__hash__`` method. If None, decide automatically.
+        Generate `__hash__`. With `None`, whether the method is
+        generated is decided from the other options.
     unsafe_hash : bool, default=False
-        Always generate ``__hash__`` method.
+        Generate `__hash__` even when the class is mutable.
     frozen : bool, default=False
-        Disable ``__setattr__`` and ``__delattr__``.
+        Refuse to assign or delete a field after construction.
     match_args : bool | str, default=False
-        Generate ``__match_args__`` for pattern matching.
+        Generate `__match_args__`, for structural pattern matching.
     kw_only : bool, default=False
-        Make all fields keyword-only by default.
+        Make every field keyword-only, unless the field says otherwise.
     positional_only : bool, default=False
-        Make all fields positional-only by default.
+        Make every field positional-only, unless the field says
+        otherwise.
     slots : bool, default=False
-        Generate ``__slots__`` and remove ``__dict__``.
+        Generate `__slots__`, so that instances have no `__dict__`.
     weakref_slot : bool, default=False
-        Generate a weakref slot in ``__slots__``.
+        Add a `__weakref__` slot, so that the instances of a class with
+        `slots=True` can be weakly referenced.
     factory : bool, default=False
-        Use field type as factory if none is provided.
+        Use a field's type as its factory when no factory is given.
     mutable_default : str, default="factory"
-        What to do with a mutable default such as ``x: list = []``.
-        "factory" gives each instance its own copy, "raise" refuses
-        the class, "allow" shares one object between instances.
+        What to do with a mutable default such as `x: list = []`.
+        "factory" gives each instance its own copy, "raise" refuses the
+        class, and "allow" shares one object between the instances.
     convert : bool, default=False
-        Use field type as converter if none is provided.
+        Use a field's type as its converter when no converter is given.
     validate : bool, default=False
-        Use field type as validator if none is provided.
+        Use a field's type as its validator when no validator is given.
     convert_defaults : bool, default=True
         Convert a value that came from a field's own default.
     validate_defaults : bool, default=True
         Validate a value that came from a field's own default.
     unresolved_hints : str, default="warn"
-        What to do when a type hint names something still undefined
-        the first time a field needs it. "warn" says so once, "raise"
-        turns it into an error, "ignore" says nothing.
+        What to do when a type hint still names something undefined the
+        first time a field needs it. "warn" says so once, "raise" turns
+        it into an error, and "ignore" says nothing.
     alias : str | sequence | bool, optional
-        Default input names for fields. True includes property names.
-        False keeps leading underscores. The first name is preferred.
+        The default input names of the fields, the first of which is
+        preferred. True adds the names of the enabled properties, and
+        False keeps a leading underscore in the input name.
     property : str | sequence | mapping | bool, default=False
-        Default forwarding properties. True exposes the public name;
-        "readonly" makes it read-only; "all" exposes every input alias.
-        Explicit names may choose access individually. Applies to stored
-        instance fields.
+        The default forwarding properties of the stored instance fields.
+        True exposes the public name, "readonly" exposes it read-only,
+        and "all" exposes every input alias. Names given explicitly can
+        each choose their own access.
     mapping : bool, default=False
-        Implement the Mapping protocol. Only a field holding a value
-        is a key.
+        Implement the `Mapping` protocol. Only a field that holds a
+        value is a key.
     override : bool | str | list, default=False
-        Resolve an inherited field's settings again from this class.
-        ``override=True`` applies to all inherited fields. A name or
-        list of names applies to those settings only.
+        Resolve the settings of inherited fields again from this class.
+        `override=True` applies to every inherited field, and a setting
+        name or a list of names limits it to those settings.
     polymorphic : bool | str, default=False
         Build one of this class's subclasses instead of this class,
-        chosen from the arguments it was given. With "strict", a call
-        matching no subclass is refused.
+        chosen from the arguments of the call. With "strict", a call
+        that matches no subclass is refused.
     pin_discriminant : str, default="pin"
-        What a subclass does with a field it matches on. "pin" gives it
-        that value as a default, "classvar" makes it a class attribute,
-        "keep" leaves it as the subclass wrote it. Add "+narrow" (or
-        write "narrow" for "pin+narrow") to also narrow the field's type
-        to what it stands for and reject any other value: "narrow",
-        "pin+narrow", "classvar+narrow" or "keep+narrow". A field that
-        says for itself, with `Pin[T, mode]`, `Narrow[T]` or
-        `NoPin[T]`, keeps its own.
+        What a subclass does with a field that it matches on. "pin"
+        gives the field the matched value as its default, "classvar"
+        makes it a class attribute, and "keep" leaves it as the subclass
+        wrote it. Adding "+narrow" also narrows the field's type to what
+        the subclass stands for and rejects any other value, which gives
+        "pin+narrow", "classvar+narrow" and "keep+narrow". "narrow" on
+        its own means "pin+narrow". A field that chooses its own mode
+        with `Pin[T, mode]`, `Narrow[T]` or `NoPin[T]` keeps it.
     reverse : bool, default=False
-        Use the reverse MRO order to determine field order.
+        Collect the fields from the bases in reverse order, so that a
+        subclass's own fields come before the inherited ones.
     doc : bool | str, default=True
-        Add field documentation to class docstring.
+        Add the table of fields to the class docstring.
     """
 
     # Set __slots__ so that inheriting classes can have slot=True
@@ -5220,8 +5251,10 @@ def magic(cls: tx.Optional[type] = None, **kwargs):
     """
     Build a Magic class from a plain class.
 
-    Takes the same options as ``Magic``. Use this when inheritance is
-    not an option.
+    The decorator takes the same options as [`Magic`][] and builds the
+    same class, without adding `Magic` to its bases. It is written as
+    `@magic` on its own, or as `@magic(frozen=True)` with options, and it
+    suits a class that cannot inherit from `Magic`.
     """
     if cls is None:
         return partial(magic, **kwargs)
