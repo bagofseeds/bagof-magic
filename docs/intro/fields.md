@@ -194,8 +194,8 @@ A key is kept or left out, never reformatted, so it takes only a test.
 
 ## Forgetting an inherited field
 
-A subclass can drop a field it inherits. Write the bare name `Forget` as
-the annotation:
+A subclass can remove a field that it inherits by annotating the field's
+name with `Forget`:
 
 ```python
 from bagof.magic import Forget
@@ -216,12 +216,14 @@ Traceback (most recent call last):
 TypeError: Column() got an argument 'y', but Column removed that field with Forget, so Column does not take it.
 ```
 
-The field is gone from the constructor, `repr()`, comparisons, the
-dict-like view and `fields()`. Subclasses of `Column` do not have it
-either, unless one of them declares `y` again.
+Once forgotten, the field no longer appears in the constructor, in
+`repr()`, in comparisons, in the dict-like view or in `fields()`. The
+subclasses of `Column` do not have the field either, unless one of them
+declares `y` again.
 
-The usual reason is to keep a value under another name. Forgetting the
-field frees its name, so a new field can take it:
+A field is usually forgotten so that its value can be stored under another
+name. Forgetting the field frees the name that the constructor accepted,
+and a new field can then take that name:
 
 ```python
 class Shape(Magic):
@@ -243,18 +245,20 @@ Cached(size=3)
 3
 ```
 
-`_size` is passed as `size`, because a leading underscore is dropped from
-the name the constructor takes.
+The constructor accepts `_size` under the name `size`, because the
+constructor drops a leading underscore from a field's name.
 
-After that, the name is an ordinary class attribute. Reading it finds
-whatever the classes above hold under it, so `Column.y` is still `Pixel`'s
-default, `0`. A value written beside it, `y: Forget = 1`, is a plain class
-attribute. On a class with `slots=True` an instance still has the base's
-slot, so reading `y` raises `AttributeError` until something sets it.
+A forgotten name is no longer a field, but it can still be an ordinary
+class attribute, and reading it follows the usual Python lookup through the
+base classes. `Column.y` therefore still returns `Pixel`'s default, `0`.
+Writing a value beside the annotation, as in `y: Forget = 1`, sets a plain
+class attribute in the same way. On a class built with `slots=True`, each
+instance still carries the base class's slot for `y`, so reading `y` on an
+instance raises `AttributeError` until a value is assigned.
 
-Only the class that forgets a field, and its subclasses, lose it. A class
-that also inherits from another base with that field keeps the other
-base's:
+Forgetting a field affects only the class that forgets it and the
+subclasses of that class. When a class also inherits the same field
+through another base, the field from the other base is kept:
 
 ```python
 class Plain(Pixel):
@@ -269,8 +273,9 @@ class Mixed(Column, Plain):
 Mixed(x=1, y=2)
 ```
 
-A value written beside `Forget` changes only what the class reads. Each
-instance still holds its own value of the other base's field:
+A value written beside `Forget` changes only what is read from the class
+itself. Each instance still holds its own value for the field that the
+other base provides:
 
 ```python
 class Flat(Pixel):
@@ -288,8 +293,9 @@ class Both(Flat, Plain):
 ```
 
 !!! warning "Type checkers still see the field"
-    mypy and pyright cannot tell that a field was forgotten, and still
-    show it in the constructor.
+    Type checkers such as mypy and pyright have no way of knowing that a
+    field was forgotten, so they still show the field in the constructor's
+    signature.
 
 ## A required field after one with a default
 
