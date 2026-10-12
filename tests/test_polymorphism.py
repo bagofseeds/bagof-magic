@@ -4453,6 +4453,35 @@ class TestForgettingADiscriminant:
             class Both(Inverse, on={"kind": "x"}):
                 _kind: Forget
 
+    def test_registering_below_on_the_public_name_names_who_forgot_it(
+        self
+    ) -> None:
+        class Signal(Magic, polymorphic=True):
+            _kind: str = "plain"
+            grade: int = 0
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        class Plain(Inverse):
+            _kind: Forget
+
+        with pytest.raises(
+            TypeError,
+            match="registers on 'kind', which is not a field of Again: "
+            "Plain removed it with Forget",
+        ):
+            class Again(Plain, on={"kind": "again"}):
+                pass
+
+        # A name that was never a field is not blamed on the forget.
+        with pytest.raises(
+            TypeError, match="registers on 'nope', which is not a field "
+            "of Plain. Its fields are: 'grade'"
+        ):
+            class Other(Plain, on={"nope": 1}):
+                pass
+
 
 # ======================================================================
 # A pinned value is left on the class
