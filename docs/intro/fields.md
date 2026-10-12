@@ -81,6 +81,79 @@ TypeError: field() got an unexpected keyword argument 'defaults'. Did you mean '
 `tags: list = Field(factory=list)` as assigning a `Field` to a `list` slot,
 while `field(...)` says it produces whatever the annotation requires.
 
+## What a type checker can see
+
+Type checkers such as mypy and pyright work out the constructor of a
+`Magic` class the way they do for `dataclasses`. They read a field's
+default, the name it is passed by, and whether it is keyword-only or left
+out of the constructor, but they read these only from a call written as
+the field's value. An annotation such as `KwOnly[int]` changes nothing that
+a checker can see.
+
+The annotations that shape the constructor can therefore also be written
+as the value. Written there, each one takes the keyword that a checker
+reads: `alias=`, `default=`, `factory=` (or `default_factory=`), `kw_only=`,
+`init=` and, for pyright, `converter=`.
+
+=== "In the annotation"
+
+    ```python
+    from bagof.magic import Magic, Alias, Factory, KwOnly, NoInit
+
+    class Job(Magic):
+        _command: Alias[str, "command"]
+        env: Factory[dict]
+        retries: KwOnly[int] = 0
+        attempts: NoInit[int] = 0
+    ```
+
+=== "As the value"
+
+    ```python
+    from bagof.magic import Magic, Alias, Factory, KwOnly, NoInit
+
+    class Job(Magic):
+        _command: str = Alias(alias="command")
+        env: dict = Factory(factory=dict)
+        retries: int = KwOnly(kw_only=True, default=0)
+        attempts: int = NoInit(init=False, default=0)
+    ```
+
+The two spellings build the same class, and both refuse `retries` by position:
+
+```pycon
+>>> Job("make", retries=2)
+Job(command='make', env={}, retries=2, attempts=0)
+>>> Job("make", {}, 2)
+Traceback (most recent call last):
+  ...
+TypeError: Job.__init__() takes from 2 to 3 positional arguments but 4 were given
+```
+
+A checker reads the keyword and never the annotation's own meaning, so
+`KwOnly()` without `kw_only=True` looks to a checker like a field that may
+be passed by position. For the same reason, a keyword that contradicts the
+annotation is refused rather than letting the checker and the class
+disagree:
+
+```pycon
+>>> KwOnly(kw_only=False)
+Traceback (most recent call last):
+  ...
+TypeError: KwOnly(kw_only=False) says two different things: ...
+```
+
+When the annotation and the value both say something about the same field,
+the value is read second. A setting that both of them give takes the
+value's answer, and the names given to `Alias` in each place are all
+accepted.
+
+pyright accepts these calls as values. mypy reads the constructor from them
+correctly but still reports each one as assigning, say, a `KwOnly` to an
+`int`, as it does for `Field(...)`. For code that mypy accepts as well, use
+`field(...)`, which takes the same keywords:
+`retries: int = field(kw_only=True, default=0)`.
+
 ## The annotations
 
 Each of these can be used bare (`x: Frozen[int]`) or with a value

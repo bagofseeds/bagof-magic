@@ -176,9 +176,23 @@ from ._fields import *  # noqa: F401, F403
 from ._fields import (
     _OVERRIDABLE,
     HIDE_IF_NONE,
+    Alias,
+    ConvertTo,
+    Default,
+    Factory,
     Field,
     Forget,
     Inherit,
+    Init,
+    Kw,
+    KwOnly,
+    NoInit,
+    NotKw,
+    NotKwOnly,
+    NotPositional,
+    NotPositionalOnly,
+    Positional,
+    PositionalOnly,
     ShowIf,
     _annotated,
     _chain,
@@ -4719,8 +4733,21 @@ def _parameterised_class(cls: type, alias: tx.Any, arguments: tuple) -> type:
 # checker infers a signature the class does not have. They are written
 # out as literals because that is the only form a checker reads;
 # `tests/test_dataclass_transform.py` compares them with the real ones.
+#
+# `field_specifiers` names every call a checker reads as a field when it
+# is the value: `x: int = KwOnly(kw_only=True)`. A checker reads only the
+# PEP 681 keywords written in that call -- `default`, `factory` or
+# `default_factory`, `init`, `kw_only`, `alias` and (pyright) `converter`
+# -- never a positional argument and never what the class does with it,
+# so these are the classes whose meaning those keywords can say. The
+# tuple is written out four times, once per decorator, because mypy reads
+# nothing but a tuple literal there; the tests check they agree.
 @tx.dataclass_transform(
-    field_specifiers=(Field, _field),
+    field_specifiers=(
+        Field, _field, Default, Factory, Alias, ConvertTo, Init, NoInit,
+        Kw, NotKw, Positional, NotPositional, KwOnly, NotKwOnly,
+        PositionalOnly, NotPositionalOnly,
+    ),
     eq_default=True,
     order_default=False,
     kw_only_default=False,
@@ -5188,7 +5215,11 @@ class Magic(metaclass=MetaMagic):
 
 
 @tx.dataclass_transform(
-    field_specifiers=(Field, _field),
+    field_specifiers=(
+        Field, _field, Default, Factory, Alias, ConvertTo, Init, NoInit,
+        Kw, NotKw, Positional, NotPositional, KwOnly, NotKwOnly,
+        PositionalOnly, NotPositionalOnly,
+    ),
     eq_default=True,
     order_default=False,
     kw_only_default=False,
@@ -5199,7 +5230,11 @@ def magic(**kwargs) -> tx.Callable[[type], type]: ...
 
 
 @tx.dataclass_transform(
-    field_specifiers=(Field, _field),
+    field_specifiers=(
+        Field, _field, Default, Factory, Alias, ConvertTo, Init, NoInit,
+        Kw, NotKw, Positional, NotPositional, KwOnly, NotKwOnly,
+        PositionalOnly, NotPositionalOnly,
+    ),
     eq_default=True,
     order_default=False,
     kw_only_default=False,
@@ -5210,7 +5245,11 @@ def magic(cls: type, **kwargs) -> type: ...
 
 
 @tx.dataclass_transform(
-    field_specifiers=(Field, _field),
+    field_specifiers=(
+        Field, _field, Default, Factory, Alias, ConvertTo, Init, NoInit,
+        Kw, NotKw, Positional, NotPositional, KwOnly, NotKwOnly,
+        PositionalOnly, NotPositionalOnly,
+    ),
     eq_default=True,
     order_default=False,
     kw_only_default=False,

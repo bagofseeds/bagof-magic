@@ -140,6 +140,20 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     return chained
 
 
+class _Specifier(type):
+    """The metaclass of `Field` and of the annotation family.
+
+    It does nothing when the program runs. It is there for type
+    checkers: `x: int = KwOnly(kw_only=True)` assigns a `KwOnly` to an
+    `int`, which a checker would report, so to a checker calling one of
+    these classes gives back whatever the field is annotated as -- the
+    same thing `field()` says about itself.
+    """
+
+    if tx.TYPE_CHECKING:  # pragma: no cover
+        def __call__(cls, *args: tx.Any, **kwargs: tx.Any) -> tx.Any: ...
+
+
 @slots(
     'name',             # Field name
     'type',             # Field type (or type hint)
@@ -168,7 +182,7 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     'inherit',          # False: forget; True: patch; str: take over.
     'position',         # Inheriting: take the inherited field's place.
 )
-class Field(SlotsBase):
+class Field(SlotsBase, metaclass=_Specifier):
     """A single field in a Magic class.
 
     Every annotation in a Magic class body becomes a `Field`. You rarely
@@ -875,6 +889,48 @@ def field(**kwargs: tx.Any) -> tx.Any:
     return Field(**kwargs)
 
 
+def _check_agrees(
+    cls: type, set_slots: tx.Dict[str, tx.Any], kwvalues: tx.Dict[str, tx.Any]
+) -> None:
+    """Refuse an `init=` or `kw_only=` that says the opposite of `cls`.
+
+    In the value position a type checker reads the keyword and ignores
+    the class, while the class reads both. `KwOnly(kw_only=False)` would
+    therefore describe one constructor to the checker and build another.
+    """
+    marked = {
+        slot: set_slots[slot]
+        for slot in ("kw", "positional") if slot in set_slots
+    }
+    if not marked:
+        return
+    for key in ("init", "kw_only"):
+        if key not in kwvalues:
+            continue
+        value = kwvalues[key]
+        asked = Field(**{key: value})
+        clash = any(
+            getattr(asked, slot) is not MISSING
+            and getattr(asked, slot) != wanted
+            for slot, wanted in marked.items()
+        )
+        # `init=True` changes nothing, so it only contradicts a class
+        # that takes the field out of the constructor.
+        if key == "init" and value is True:
+            clash = marked.get("kw") is False and (
+                marked.get("positional") is False
+            )
+        if clash:
+            name = cls.__name__
+            raise TypeError(
+                f"{name}({key}={value!r}) says two different things: "
+                f"{name} already decides how the field is passed, and "
+                f"{key}={value!r} says otherwise. Write {key}= the way "
+                f"{name} means it, or use field({key}={value!r}) on its "
+                f"own instead."
+            )
+
+
 # ----------------------------------------------------------------------
 
 
@@ -917,6 +973,11 @@ class AnnotatedField(Field):
             for name, value in set_slots.items()
         ):
             raise TypeError(f"Missing required argument for {cls.__name__!r}")
+        # `Factory(default_factory=list)` is `Factory(factory=list)`:
+        # the class's own `factory=True` must not be added beside it.
+        if "default_factory" in kwvalues and "factory" not in kwvalues:
+            kwvalues["factory"] = kwvalues.pop("default_factory")
+        _check_agrees(cls, set_slots, kwvalues)
         for name, value in set_slots.items():
             kwvalues.setdefault(name, value)
         super().__init__(**kwvalues)

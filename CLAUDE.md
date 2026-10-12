@@ -741,6 +741,39 @@ mean "this field" or "forget it", which `Inherit()` and `Forget` say.
   (`for_owner`), so the classes above a take-over still dispatch to the
   ones below it.
 
+### What a type checker reads
+
+`MetaMagic` and `magic` carry `@tx.dataclass_transform`, whose
+`field_specifiers` names `Field`, `field` and the markers whose meaning
+a PEP 681 keyword can say (`Default`, `Factory`, `Alias`, `ConvertTo`,
+`Init`/`NoInit`, and the `Kw`/`Positional` family). A checker reads
+only the keywords written in such a call as a field's value --
+`default`, `factory`/`default_factory`, `init`, `kw_only`, `alias`,
+`converter` (pyright) -- never a positional argument, and, for a
+class, never a parameter's default: pyright 1.1.414 and mypy 2.4 were
+both tried with `Literal` defaults on `__init__`, overloads and
+`__new__`, and neither reads them. So `x: int = KwOnly()` builds a
+keyword-only field but reads as positional; `KwOnly(kw_only=True)` is
+the spelling both agree on, and `AnnotatedField.__init__`
+(`_check_agrees`) refuses an `init=`/`kw_only=` that contradicts the
+marker, so the two can never describe different constructors.
+
+Three things make the markers visible at all:
+
+- **`slots` is typed to return the class it is given.** Typed as
+  returning `type`, it erased every `@slots` class, `Field` included,
+  and pyright then matched no specifier.
+- **`_Specifier`, the metaclass of `Field`, declares `__call__ -> Any`
+  for checkers only.** pyright otherwise reports `x: int =
+  KwOnly(...)` as assigning a `KwOnly` to an `int`. mypy ignores a
+  metaclass `__call__` and still reports it, as it always did for
+  `Field(...)`; `field()` is the mypy-clean spelling.
+- **The tuple is a literal, written four times** (the metaclass and
+  the three `magic` signatures): mypy refuses anything but a tuple
+  literal there. `tests/test_dataclass_transform.py` reads the source
+  to check the copies agree, since an overload keeps nothing at run
+  time.
+
 ## Conventions specific to this repo (do not regress)
 
 1. **Wide Python (3.8+).** Runtime code must stay old-compatible: no walrus in
