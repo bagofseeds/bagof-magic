@@ -8169,9 +8169,12 @@ class TestForget:
 
         assert list(signature(Flipped).parameters) == ["x"]
 
-    def test_a_diamond_loses_the_field_when_the_name_is_bound(
+    def test_a_value_beside_it_does_not_hide_another_bases_field(
         self
     ) -> None:
+        # A forgotten name is an ordinary class attribute, so a value
+        # written beside `Forget` is no different from a base that has
+        # `x` as a plain class attribute: it hides no other base's field.
         class Root(Magic):
             x: int = 1
 
@@ -8184,15 +8187,81 @@ class TestForget:
         class Other(Magic):
             x: int = 7
 
+        class Plain(Magic):
+            x = 5
+
         class Both(Left, Right):
             pass
 
         class Mixed(Left, Other):
             pass
 
-        assert list(signature(Both).parameters) == []
-        assert list(signature(Mixed).parameters) == []
-        assert Both.x == 5 and Mixed.x == 5
+        class Like(Plain, Other):
+            pass
+
+        assert signature(Both).parameters["x"].default == 1
+        assert signature(Mixed).parameters["x"].default == 7
+        assert signature(Like).parameters["x"].default == 7
+        # Reading the class finds the attribute first, as it does for
+        # the plain-attribute base.
+        assert Both.x == Mixed.x == Like.x == 5
+        assert Mixed().x == Like().x == 7
+
+    def test_a_field_coming_back_keeps_its_place(self) -> None:
+        class Root(Magic):
+            x: int = 1
+            y: int = 2
+
+        class Left(Root):
+            x: Forget
+
+        class Right(Root):
+            pass
+
+        class Both(Left, Right):
+            pass
+
+        class Flipped(Right, Left):
+            pass
+
+        assert list(signature(Both).parameters) == ["x", "y"]
+        assert list(signature(Flipped).parameters) == ["x", "y"]
+
+    def test_a_field_redeclared_through_another_base_keeps_its_place(
+        self
+    ) -> None:
+        class Root(Magic):
+            x: int = 1
+            y: int = 2
+
+        class Left(Root):
+            x: Forget
+
+        class Right(Root):
+            x: str = "r"
+
+        class Both(Left, Right):
+            pass
+
+        assert list(signature(Both).parameters) == ["x", "y"]
+        assert signature(Both).parameters["x"].default == "r"
+
+    def test_an_unrelated_base_keeps_its_field_of_that_name(self) -> None:
+        class Root(Magic):
+            x: int = 1
+            y: int = 2
+
+        class Left(Root):
+            x: Forget
+
+        class Mixin(Magic):
+            x: str = "m"
+
+        class Both(Left, Mixin):
+            pass
+
+        assert signature(Both).parameters["x"].default == "m"
+        assert list(_api.fields_dict(Both)) == ["x", "y"]
 
     def test_a_generic_base(self) -> None:
         class Box(Magic, tx.Generic[_FT], convert=True):

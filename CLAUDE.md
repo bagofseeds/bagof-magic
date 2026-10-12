@@ -589,14 +589,21 @@ base's class-level default on a plain class, the base's empty member
 descriptor on a slots class (a slot cannot be taken away from a
 subclass's instances).
 
-**The merge leaves hidden fields out rather than taking them out
-afterwards** (`_hidden`), so a field declared again further down keeps
-the place it is declared in. A base `F` that forgot `n` hides holder
-`H`'s field `n` when `F` comes before `H` in the MRO and either `H` is
-in `F.__mro__` (it is a field `F` inherited) or `F` binds `n` in its own
-`__dict__` (`_hides`). So `D(B, C)` with `B` forgetting `x` unbound gets
-`C`'s `x` (even one `C` merely inherited from the common root), and
-gets none if `B` wrote `x: Forget = value`, a property or a method.
+**A forgetting class acts as though it never had the field.** It
+takes the field away from what it inherited it from, and from nothing
+else. `_kept_holders` works out, for each name some base forgot, which
+bases the merge takes that name from: the first class in the MRO that
+holds it and has no forgetting subclass among the bases (`_hidden_from`),
+plus the ancestors in that class's own lineage that hand it the field.
+The merge leaves every other copy out rather than removing it
+afterwards. So `D(B, C)` with `B` forgetting `x` gets the `x` that `C`
+holds -- even one `C` only inherited from the root `B` forgot it from --
+in the place `C` has it; and a field declared again below the
+forgetting class keeps the place it is declared in. A value written
+beside `Forget` is a plain class attribute and hides nothing: `B`
+writing `x: Forget = 5` behaves exactly like a base with a plain class
+attribute `x = 5`, which never hid another base's field (lookup on the
+class finds the attribute first, the field keeps its default).
 
 **Polymorphism.** Forgetting a field a base chooses by is allowed.
 `_out_of_reach` drops from a class's levels every level that `reads`

@@ -435,41 +435,60 @@ def _add_fields(
             fields.setdefault(name, old_field)
 
 
-def _hides(forgetter: type, name: str, holder: type) -> bool:
-    # Whether `forgetter`, which comes before `holder` in the order a
-    # class looks things up in, keeps `holder`'s field `name` from it.
-    # It does for a field it inherits itself, and for every field of
-    # that name when it binds the name in its own body -- a property, a
-    # method, a value written beside `Forget` -- which is the same
-    # "is the name in the namespace?" test a lookup makes.
-    return name in forgetter.__dict__.get(_FORGOTTEN, ()) and (
-        holder in forgetter.__mro__ or name in forgetter.__dict__
+def _forgetters(mro: tx.Sequence[type]) -> tx.Dict[str, tx.List[type]]:
+    # The classes in `mro` that removed each name with `Forget`.
+    found = {}
+    for base in mro:
+        for name in base.__dict__.get(_FORGOTTEN, ()):
+            found.setdefault(name, []).append(base)
+    return found
+
+
+def _hidden_from(
+    lineage: tx.Sequence[type], forgetters: tx.Sequence[type], holder: type
+) -> bool:
+    # Whether a class of `lineage` that forgot the name inherits it from
+    # `holder`. A class that forgets a field acts as though it never had
+    # it, so it takes the field away from everything it inherited the
+    # field from -- and from nothing else: a value it writes beside
+    # `Forget` is a plain class attribute, which does not hide a field
+    # another base holds.
+    return any(
+        forgetter is not holder
+        and forgetter in lineage
+        and issubclass(forgetter, holder)
+        for forgetter in forgetters
     )
 
 
-def _hidden(
-    mro: tx.Sequence[type], index: int, names: tx.Iterable[str]
-) -> tx.Set[str]:
-    # Which of `names`, held by `mro[index]`, a base earlier in `mro`
-    # removed with `Forget` -- so that `mro[index]` does not hand them
-    # on. Leaving them out of the merge, rather than taking them out
-    # afterwards, keeps a field declared again further down in the
-    # place it was declared.
+def _kept_holders(
+    mro: tx.Sequence[type], forgetters: tx.Sequence[type], name: str
+) -> tx.FrozenSet[type]:
+    # The classes of `mro` whose field `name` the merge takes, when some
+    # base forgot `name`.
     #
-    # A base that forgot a name hides the field of every class it
-    # inherits from, so a subclass never gets that field back. In a
-    # diamond, `D(B, C)`, a field `C` holds that `B` never inherited is
-    # still `D`'s -- unless `B` binds the name itself, which ends the
-    # lookup there. So each name goes to the first class in `mro` that
-    # holds it and that no forgetting base before it hides.
-    holder = mro[index]
-    earlier = [
-        base for base in mro[:index] if base.__dict__.get(_FORGOTTEN)
-    ]
-    return {
-        name for name in names
-        if any(_hides(forgetter, name, holder) for forgetter in earlier)
-    }
+    # The field itself is the one of the first class in `mro` holding it
+    # that no forgetting class hides -- in `D(B, C)` where `B` forgot
+    # `x`, the `x` that `C` holds, even one `C` only inherited from the
+    # base `B` forgot it from, since `B` is not one of `C`'s ancestors.
+    # Its place is where it is in that class's own lineage: so `C`'s
+    # ancestors that hand it the field are kept too, and `D` lists `x`
+    # where `C` does. A class that `C` itself does not take the field
+    # from is left out, so a field declared again below a class that
+    # forgot it keeps the place it was declared in.
+    for holder in mro:
+        table = getattr(holder, _FIELDS, None)
+        if not table or name not in table:
+            continue
+        if _hidden_from(mro, forgetters, holder):
+            continue
+        lineage = holder.__mro__
+        return frozenset(
+            base for base in lineage
+            if name in (getattr(base, _FIELDS, None) or ())
+            and not _hidden_from(lineage, forgetters, base)
+        )
+    return frozenset()
 
 
 def _check_public_names(clsname: str, fields: tx.Dict[str, Field]) -> None:
@@ -1920,17 +1939,24 @@ def __pre_new__(
     # the most derived base's, which the loop reads off that base
     # anyway -- and nothing was written as one of *its* type variables,
     # so reading it would only undo what that base said.
-    for index in reversed(range(1, len(mro))):
-        b = mro[index]
+    # A name some base removed with `Forget` is taken only from the
+    # classes `_kept_holders` names.
+    forgetters = _forgetters(mro[1:])
+    kept = {
+        name: _kept_holders(mro[1:], found, name)
+        for name, found in forgetters.items()
+    }
+    for b in reversed(mro[1:]):
         # Only process classes that have been processed by our
         # decorator.  That is, they have a _FIELDS attribute.
         base_fields = getattr(b, _FIELDS, None)
         if base_fields is not None:
             base_options = getattr(b, _OPTIONS)
             options.update(base_options)
-            # A field a base before this one removed with `Forget` is
-            # not handed on (see `_hidden`).
-            hidden = _hidden(mro[1:], index - 1, base_fields)
+            hidden = {
+                name for name in base_fields
+                if name in kept and b not in kept[name]
+            }
             _add_fields(
                 fields,
                 [
