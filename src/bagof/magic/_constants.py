@@ -170,57 +170,47 @@ _SHOWN = "__magic_shown__"
 def _RETURN_TYPE(x: str) -> str: return f"__magic_{x}_return_type__"
 
 
-class _MissingType:
+class _Sentinel:
+    """A marker with one instance per class, and a fixed repr and truth."""
+
+    _text = ""
+    _truth = False
 
     def __new__(cls) -> tx.Self:
-        if not hasattr(cls, "_instance"):
+        if "_instance" not in cls.__dict__:
             cls._instance = super().__new__(cls)
         return cls._instance
 
     def __repr__(self) -> str:
-        return "<MISSING>"
+        return self._text
 
     def __bool__(self) -> bool:
-        return False
+        return self._truth
+
+
+class _MissingType(_Sentinel):
+    _text = "<MISSING>"
 
 
 MISSING = _MissingType()
 MaybeMissing = tx.Union[T, _MissingType]
 
 
-class _RequiredType:
-
-    def __new__(cls) -> tx.Self:
-        if not hasattr(cls, "_instance"):
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "<REQUIRED>"
-
-    def __bool__(self) -> bool:
-        return True
+class _RequiredType(_Sentinel):
+    _text = "<REQUIRED>"
+    _truth = True
 
 
 REQUIRED = _RequiredType()
 
 
-class _UnsetType:
-
-    def __new__(cls) -> tx.Self:
-        if not hasattr(cls, "_instance"):
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "<UNSET>"
-
-    def __bool__(self) -> bool:
-        return False
+class _UnsetType(_Sentinel):
+    _text = "<UNSET>"
 
 
 #: "This class said nothing about it" -- as opposed to `MISSING`, which
-#: is "there is no value" (a field with no default).
+#: is "there is no value" (a field with no default). Internal: the
+#: field-inheritance work reads it, nothing a user writes does.
 UNSET = _UnsetType()
 
 

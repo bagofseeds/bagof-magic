@@ -196,8 +196,9 @@ Tests that exercise internals import them from the module that defines them
   from the class's own `__dict__`. Nothing reads it while building;
   it is there for diagnostics, and for the field-inheritance work in
   #119 that merges declarations down the MRO. `UNSET` ("this class
-  said nothing") is exported for that work, and is distinct from
-  `MISSING` ("no value").
+  said nothing", internal to `_constants.py`) is there for that work,
+  and is distinct from `MISSING` ("no value"). The three sentinels
+  share `_Sentinel`, which keeps one instance per class.
 
 ### Reading annotations
 

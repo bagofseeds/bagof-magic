@@ -101,7 +101,7 @@ reverse : bool, default=False
 doc : bool | str, default=True
     Add field documentation to class docstring.
 """
-__all__ = ["Magic", "magic", "HIDE_IF_NONE", "UNSET"]
+__all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 # stdlib
 import ast
 import builtins
@@ -165,7 +165,6 @@ from ._constants import (
     _VALUE,
     MISSING,
     REQUIRED,
-    UNSET,
     MaybeMissing,
     _HasDefault,
     _HasFactory,

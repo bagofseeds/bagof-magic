@@ -2659,10 +2659,18 @@ class TestConstants:
         assert _UnsetType() is UNSET
         assert UNSET is not MISSING
 
-    def test_unset_is_exported(self) -> None:
+    def test_unset_is_internal(self) -> None:
         import bagof.magic
-        assert bagof.magic.UNSET is UNSET
-        assert "UNSET" in bagof.magic.__all__
+        assert not hasattr(bagof.magic, "UNSET")
+        assert "UNSET" not in bagof.magic.__all__
+
+    def test_each_sentinel_is_its_own_singleton(self) -> None:
+        for sentinel in (MISSING, REQUIRED, UNSET):
+            assert type(sentinel)() is sentinel
+            assert copy.copy(sentinel) is sentinel
+            assert copy.deepcopy(sentinel) is sentinel
+            assert pickle.loads(pickle.dumps(sentinel)) is sentinel
+        assert len({id(MISSING), id(REQUIRED), id(UNSET)}) == 3
 
     def test_hide_if_none_init(self) -> None:
         # The old spelling is the new test, carrying a key name.
