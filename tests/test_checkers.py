@@ -54,9 +54,27 @@ def _checker_bindings() -> tx.Dict[str, str]:
             assert isinstance(node, ast.Assign)
             for target in node.targets:
                 assert isinstance(target, ast.Name)
-                kind = "alias" if "Annotated" in ast.dump(node.value) else ""
-                bound[target.id] = kind
+                bound[target.id] = (
+                    "alias" if _annotates_with(node.value, target.id) else ""
+                )
     return bound
+
+
+def _annotates_with(value: ast.expr, marker: str) -> bool:
+    """Whether `value` is `tx.Annotated[T, _fields.<marker>]`: an alias
+    carrying its own marker, rather than a copy of a neighbour's.
+    """
+    if not (
+        isinstance(value, ast.Subscript)
+        and isinstance(value.value, ast.Attribute)
+        and value.value.attr == "Annotated"
+    ):
+        return False
+    return any(
+        isinstance(node, ast.Attribute) and node.attr == marker
+        and isinstance(node.value, ast.Name) and node.value.id == "_fields"
+        for node in ast.walk(value)
+    )
 
 
 class TestNothingChangesWhenTheCodeRuns:
@@ -78,6 +96,31 @@ class TestNothingChangesWhenTheCodeRuns:
 
 
 class TestTheCheckerDeclarationsCoverTheFamily:
+
+    def test_the_package_binds_the_checker_declarations_last(self) -> None:
+        # Both checkers follow `_magic`'s `__all__` too, and keep
+        # whichever star import comes last. pyright keeps the class when
+        # `_magic` comes after `_checkers`, so the order is checked here
+        # as well, where it does not depend on pyright being installed.
+        tree = ast.parse(inspect.getsource(bagof.magic))
+        starred = [
+            node.module for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            and any(name.name == "*" for name in node.names)
+        ]
+        assert starred[-1] == "_checkers"
+        assert starred.index("_magic") < starred.index("_checkers")
+
+    def test_an_alias_needs_its_own_marker(self) -> None:
+        own = ast.parse("tx.Annotated[T, _fields.Frozen]").body[0]
+        other = ast.parse("tx.Annotated[T, _fields.Kw]").body[0]
+        bare = ast.parse("_fields.Frozen").body[0]
+        assert isinstance(own, ast.Expr)
+        assert isinstance(other, ast.Expr)
+        assert isinstance(bare, ast.Expr)
+        assert _annotates_with(own.value, "Frozen")
+        assert not _annotates_with(other.value, "Frozen")
+        assert not _annotates_with(bare.value, "Frozen")
 
     @pytest.mark.parametrize("name", fields.__all__)
     def test_each_name_is_declared_for_a_checker(self, name: str) -> None:
@@ -242,8 +285,9 @@ class TestPyright:
         # pyright leaves a class variable out of the constructor only
         # when `ClassVar` is imported from `typing` itself, in the same
         # file; the one `bagof.magic` hands on is read as the type alone.
-        # Pinned so that a pyright that follows it is noticed: the docs
-        # can then stop saying so.
+        # The docs say so. If a later pyright follows the re-export, this
+        # fails when the pinned version in the test requirements is
+        # raised, and the docs can stop saying so.
         assert any(
             'parameter "shared" of type "str"' in line
             for line in pyright_said
@@ -252,5 +296,11 @@ class TestPyright:
     def test_nothing_else_is_reported(
         self, pyright_said: tx.List[str]
     ) -> None:
-        errors = [line for line in pyright_said if " - error:" in line]
-        assert len(errors) == 2, pyright_said
+        # The two expected errors are the ones the tests above look for;
+        # anything else is a marker pyright does not read as its type.
+        errors = [
+            line for line in pyright_said
+            if " - error:" in line
+            and '"frozen"' not in line and '"shared"' not in line
+        ]
+        assert errors == [], pyright_said

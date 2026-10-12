@@ -360,7 +360,7 @@ writing the same change. The three classes below are equivalent:
         value: Inherit[..., Field(frozen=True)]
     ```
 
-From Python 3.12, `value: Annotated[..., Frozen()]` is a fourth equivalent
+From Python 3.12, `value: Annotated[..., Field(frozen=True)]` is a fourth equivalent
 spelling. Older versions of `Annotated` refuse `...` as a type, so code
 that has to run on those versions uses one of the spellings above.
 
@@ -560,6 +560,17 @@ left out of the constructor. pyright recognises those two only when they
 are imported from `typing` and `dataclasses`, and otherwise reads them as
 the type alone.
 
+Two consequences of this are worth knowing. A field written as
+`items: Factory[list]` with no default is still a required argument to a
+checker, because the checker does not know that a factory builds the
+default. Writing `items: list = field(factory=list)` instead gives the
+same field, and both checkers accept a call that leaves it out. Similarly,
+a field written as `n: ConvertTo[int]` accepts only an `int` to a checker,
+although the class converts any value that `int()` accepts.
+
+Because each of these annotations is a type alias to a checker,
+`isinstance(x, Frozen)` is reported by both checkers.
+
 A checker reports an annotation that carries a value after the type, such
 as `Alias[str, "label"]`, `Default[int, 3]`, `Doc[int, "..."]`,
 `Pin[str, "classvar"]`, `Repr[float, fn]`, `ShowIf[int, bool]` or
@@ -598,8 +609,9 @@ ordinary default:
 and a checker accepts them in those places. A checker reports them when
 they are written with a type in brackets, as in `HideIfNone[int]`. The
 other annotations work the other way round: a checker accepts them with a
-type in brackets and reports a call such as `Frozen()`, for which
-`Field(frozen=True)` is the equivalent that a checker accepts.
+type in brackets. pyright also reports a call such as `Frozen()`, which
+mypy accepts; `Field(frozen=True)` is the equivalent that both checkers
+accept.
 
 mypy also reports `...` used as the type, as in `x: Frozen[...]`, while
 pyright accepts it.
