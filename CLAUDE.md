@@ -626,10 +626,14 @@ mechanism, and the same cost (one `is` per name), as an alias.
 by is allowed, and registration is unchanged by it: the class registers
 with the same owners it would otherwise. Each registry entry carries
 `refuses` (`_refused` in `_polymorph.py`, worked out once in
-`_Registry.add`): the input names of every owner field the target
-lacks, and the first owner position one of them fills. `select` passes
-over an entry whose target cannot take an argument the call passes,
-then chooses among the rest as usual -- so the answer does not depend
+`_Registry.add`): the input names of every field in the target's
+ancestry that the target lacks -- not only the owner's, since a field
+added and forgotten between the two still reaches the owner in the
+call -- and the first owner position a lacking field fills. `select`
+passes over an entry whose target cannot take an argument the call
+passes, then chooses among the rest as usual; when nothing is left,
+`_nothing_matched` says which matches were passed over and which
+argument each could not take -- so the answer does not depend
 on the order the classes were written in. An earlier version cut such
 classes off from the owners at class creation instead, which made
 `S(grade=3, kind="inverse")` pick a subclass that had forgotten `kind`

@@ -4251,6 +4251,53 @@ class TestForgettingADiscriminant:
         assert type(Signal("plain", 3)) is Signal
         assert type(Forgetful(grade=3)) is Graded
 
+    @pytest.mark.parametrize("enter", ["root", "middle"])
+    def test_a_field_forgotten_below_a_middle_level_is_refused_at_the_root(
+        self, enter: str
+    ) -> None:
+        class Root(Magic, polymorphic=True):
+            kind: str = "plain"
+            grade: int = 0
+
+        class Middle(Root, polymorphic=True):
+            extra: int = 0
+
+        class Forgetful(Middle):
+            extra: Forget
+
+        class Graded(Forgetful, on={"grade": 3}, priority=1):
+            pass
+
+        class Kept(Middle, on={"grade": 3}):
+            pass
+
+        entry = Root if enter == "root" else Middle
+        # `Graded` wins on priority, but cannot take `extra`, which a
+        # class below `Root` added and `Forgetful` removed.
+        assert type(entry(grade=3, extra=1)) is Kept
+        assert type(entry(grade=3)) is Graded
+
+    def test_a_strict_class_says_why_a_match_was_passed_over(self) -> None:
+        class Signal(Magic, polymorphic="strict"):
+            kind: str = "plain"
+            grade: int = 0
+
+        class Forgetful(Signal):
+            kind: Forget
+
+        class Graded(Forgetful, on={"grade": 3}):
+            pass
+
+        with pytest.raises(NoPolymorphError) as caught:
+            Signal(grade=3, kind="x")
+        text = str(caught.value)
+        assert "none that matches grade=3 can take the call" in text
+        assert (
+            "Graded matches, but does not take 'kind', which Forgetful "
+            "removed with Forget"
+        ) in text
+        assert "none of them matches" not in text
+
     def test_a_subclass_below_is_still_reached_without_the_field(
         self
     ) -> None:

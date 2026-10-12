@@ -269,6 +269,24 @@ class Mixed(Column, Plain):
 Mixed(x=1, y=2)
 ```
 
+A value written beside `Forget` changes only what the class reads. Each
+instance still holds its own value of the other base's field:
+
+```python
+class Flat(Pixel):
+    y: Forget = 9
+
+class Both(Flat, Plain):
+    pass
+```
+
+```pycon
+>>> Both.y
+9
+>>> Both(1).y
+0
+```
+
 !!! warning "Type checkers still see the field"
     mypy and pyright cannot tell that a field was forgotten, and still
     show it in the constructor.

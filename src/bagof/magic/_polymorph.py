@@ -887,17 +887,20 @@ class _Polymorph:
         made.refuses = self.refuses
         return made
 
-    def takes(
+    def refused(
         self, args: tx.Tuple[tx.Any, ...], kwargs: tx.Mapping[str, tx.Any]
-    ) -> bool:
-        """Whether this subclass can be handed the call as it was made."""
+    ) -> tx.Optional[str]:
+        """The argument of the call this subclass cannot take, if any."""
         refuses = self.refuses
         if refuses is None:
-            return True
-        names, position = refuses
+            return None
+        names, position, label = refuses
         if position is not None and len(args) > position:
-            return False
-        return not any(name in kwargs for name in names)
+            return label
+        for name in kwargs:
+            if name in names:
+                return name
+        return None
 
     def matches(self, values: tx.Mapping[str, tx.Any]) -> bool:
         for spec in self.specs:
@@ -961,36 +964,46 @@ class _Registry:
 
 def _refused(
     owner: type, target: type
-) -> tx.Optional[tx.Tuple[tx.FrozenSet[str], tx.Optional[int]]]:
-    # The arguments `owner` takes that `target` does not, because
-    # `target` removed their fields with `Forget`: every name each one
-    # is passed by, and the first place in `owner`'s positional
-    # arguments one of them fills. A call that passes any of them
-    # cannot be handed to `target`, so `select` passes over it. A
-    # target with a hand-written `__init__` takes whatever it likes.
+) -> tx.Optional[tx.Tuple[tx.FrozenSet[str], tx.Optional[int], str]]:
+    # The arguments `target` cannot take because it removed their fields
+    # with `Forget`: every name such a field was passed by, anywhere in
+    # `target`'s ancestry -- not only the owner's fields, since a field
+    # forgotten from a class between the two can still reach the owner
+    # in the call -- and the first place in `owner`'s positional
+    # arguments one of them fills, with the name it fills it under. A
+    # call that passes any of them cannot be handed to `target`, so
+    # `select` passes over it. A target with a hand-written `__init__`
+    # takes whatever it likes.
     if not _generated_init(target):
         return None
-    owner_fields = getattr(owner, _FIELDS)
     target_fields = getattr(target, _FIELDS)
-    gone = [
-        field for name, field in owner_fields.items()
-        if field.init and name not in target_fields
-    ]
-    if not gone:
-        return None
-    names = frozenset(
-        alias for field in gone if field.kw for alias in field.aliases
-    )
-    position = None
+    taken = {
+        alias for field in target_fields.values() for alias in field.aliases
+    }
+    names = set()
+    for base in target.__mro__[1:]:
+        table = base.__dict__.get(_FIELDS)
+        if table is None:
+            continue
+        for name, field in table.items():
+            if name in target_fields or not field.init or not field.kw:
+                continue
+            names.update(
+                alias for alias in field.aliases if alias not in taken
+            )
+    owner_fields = getattr(owner, _FIELDS)
+    position, label = None, ""
     if _generated_init(owner):
         positional = [f for f in owner_fields.values() if f.positional]
         order = [f for f in positional if not f.kw]
         order += [f for f in positional if f.kw]
-        places = [
-            index for index, field in enumerate(order) if field in gone
-        ]
-        position = places[0] if places else None
-    return names, position
+        for index, field in enumerate(order):
+            if field.name not in target_fields:
+                position, label = index, field.public_name
+                break
+    if not names and position is None:
+        return None
+    return frozenset(names), position, label
 
 
 def _replacing(
@@ -1308,9 +1321,9 @@ def select(
     values = read(where, args, kwargs)
     # A subclass that removed the field of an argument the call passes
     # cannot be handed the call, whatever it stands for.
+    matched = [entry for entry in entries if entry.matches(values)]
     candidates = [
-        entry for entry in entries
-        if entry.matches(values) and entry.takes(args, kwargs)
+        entry for entry in matched if entry.refused(args, kwargs) is None
     ]
     if not candidates:
         # An abstract class cannot stand in for the subclass that was
@@ -1321,7 +1334,8 @@ def select(
         if found.strict or abstract:
             raise NoPolymorphError(
                 _nothing_matched(cls, entries, left_out, values,
-                                 bool(abstract), where)
+                                 bool(abstract), where,
+                                 _passed_over(matched, args, kwargs))
             )
         return None
     best = max(candidates, key=lambda entry: entry.rank)
@@ -1397,6 +1411,7 @@ def _nothing_matched(
     values: tx.Mapping[str, tx.Any],
     abstract: bool,
     where: tx.Iterable[_Discriminant] = (),
+    passed_over: str = "",
 ) -> str:
     why = (
         f"{cls.__name__} is abstract, so it can only be built as one of "
@@ -1431,12 +1446,41 @@ def _nothing_matched(
         f"{cls.__name__} was asked for, and were left out."
         if left_out else ""
     )
+    if passed_over:
+        return (
+            f"{why}, and none that matches {_written(values, where)} can "
+            f"take the call: {passed_over}{aside}"
+        )
     return (
         f"{why}, and none of them matches {_written(values, where)}. It "
         f"considered:\n{considered}{aside}\nIf the one you expected is "
         f"not in that list, the module it is written in has not been "
         f"imported."
     )
+
+
+def _passed_over(
+    matched: tx.Iterable[_Polymorph],
+    args: tx.Tuple[tx.Any, ...],
+    kwargs: tx.Mapping[str, tx.Any],
+) -> str:
+    # Why each subclass that matched was not chosen, when it was passed
+    # over for an argument it does not take.
+    lines = []
+    for entry in matched:
+        name = entry.refused(args, kwargs)
+        if name is None:  # pragma: no cover -- it would have been chosen
+            continue
+        forgetter = forgotten_by(entry.target.__mro__, name)
+        removed = (
+            f", which {forgetter.__name__} removed with Forget"
+            if forgetter is not None else ""
+        )
+        lines.append(
+            f"\n  - {entry.target.__name__} matches, but does not take "
+            f"{name!r}{removed}"
+        )
+    return "".join(lines)
 
 
 def check(

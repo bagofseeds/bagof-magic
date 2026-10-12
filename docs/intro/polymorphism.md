@@ -240,7 +240,19 @@ Inverted(kind='inverse', grade=3)
 ```
 
 It cannot stand for a value of the field it forgot, so `on={"kind": ...}`
-on `Graded` or below is refused.
+on `Graded` or below is refused. A subclass that declares `kind` again is
+not chosen for it on its own. Give it `on=`, or register it by hand:
+
+```python
+@Voice.register_polymorph(kind="again")
+class Again(Graded):
+    kind: str = "again"
+```
+
+```pycon
+>>> Voice(kind="again")
+Again(grade=0, kind='again')
+```
 
 ## Registering a class you did not write
 
