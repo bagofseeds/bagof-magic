@@ -1,6 +1,8 @@
 # Extras
 
-**Dict-like access**, when you want it:
+## Dict-like access
+
+With `mapping=True`, an instance can be read like a dictionary:
 
 ```python
 class Row(Magic, mapping=True):
@@ -13,9 +15,9 @@ class Row(Magic, mapping=True):
 {'name': 'ada', 'age': 36}
 ```
 
-A key is present while its field holds a value. A field the constructor
-does not take, and that has no default, holds nothing until something
-sets it. It stays out of the view until then:
+A key is present while its field holds a value. A field that the
+constructor does not take, and that has no default, holds nothing until
+something sets it, so the field stays out of the view until then:
 
 ```pycon
 >>> class Draft(Magic, mapping=True):
@@ -30,8 +32,8 @@ sets it. It stays out of the view until then:
 ```
 
 On a frozen class, `__post_init__` cannot set such a field by assignment.
-Use `object.__setattr__`, the same approach `dataclasses` and `attrs`
-require:
+A `__post_init__` that needs to set it calls `object.__setattr__` instead,
+which is the same approach that `dataclasses` and `attrs` require:
 
 ```pycon
 >>> class Slug(Magic, frozen=True):
@@ -44,7 +46,9 @@ require:
 Slug(title='Hello World', slug='hello world')
 ```
 
-**Functions that work on any Magic class**:
+## Functions that work on any Magic class
+
+`replace`, `asdict` and `astuple` work on an instance of any Magic class:
 
 ```python
 class Point(Magic, frozen=True):
@@ -63,20 +67,25 @@ Point(x=1.0, y=20.0)
 ```
 
 `replace` builds the copy by calling the class again, so conversion,
-validation and init hooks all run on the new values. This is also why it
-works on a frozen class. The other side of that: a `__post_init__` that
-derives one field from another will derive it again from the already-derived
-value. `asdict` recurses into nested Magic instances. Everything else is
-returned as-is. A field with no value is left out. `astuple` raises instead,
-because a missing position would shift everything after it.
+validation and the init hooks all run on the new values, and that is also why
+`replace` works on a frozen class. One consequence is that a `__post_init__`
+which derives one field from another derives it again from the value it
+already derived.
 
-There is also `fields` and `fields_dict` for the fields themselves, and
-`is_magic` to ask whether a class was built by `Magic`.
+`asdict` recurses into nested Magic instances, including those inside lists,
+tuples and dicts, and returns every other value as it is. A field with no
+value is left out of the dictionary. `astuple` raises an error for such a
+field instead, because a missing position would shift every value after it.
 
-**A field with no value** is left out of `repr()` too, so a
-partially-filled object still prints cleanly. Equality counts it: two
-objects are equal when the same fields hold values and those values
-match. `hash` agrees.
+`fields` and `fields_dict` return the fields themselves, and `is_magic` tells
+whether a class was built by `Magic`.
+
+## Fields with no value
+
+A field with no value is left out of `repr()` too, so a partly filled object
+still prints cleanly. Equality takes the missing value into account: two
+objects are equal when the same fields hold values and those values match.
+`hash` follows the same rule.
 
 ```pycon
 >>> class Draft(Magic):
@@ -94,8 +103,10 @@ Draft(title='Ada', slug='ada')
 False
 ```
 
-**Mutable defaults that are not shared.** In a plain class, `x: list = []`
-gives every instance the same list. Here each one gets its own:
+## Mutable defaults that are not shared
+
+In a plain class, `x: list = []` gives every instance the same list. In a
+Magic class, each instance gets a list of its own:
 
 ```pycon
 >>> class Basket(Magic):
@@ -106,14 +117,16 @@ gives every instance the same list. Here each one gets its own:
 []
 ```
 
-Set `mutable_default="raise"` to reject mutable defaults at class
-definition time, the way `dataclasses` and `attrs` do. Or `"allow"` when
-one shared object is what you want.
+`mutable_default="raise"` rejects a mutable default when the class is
+defined, the way `dataclasses` and `attrs` do, and `mutable_default="allow"`
+shares one object between the instances when that is what the class needs.
 
-**Hooks around construction.** Write `__pre_init__` or `__post_init__`
-and it runs during construction. Give it a parameter and it receives
-everything the constructor was called with. `__pre_init__` sees values as
-passed. `__post_init__` sees them as stored:
+## Hooks around construction
+
+A class can define `__pre_init__` or `__post_init__`, and the method then runs
+during construction. A hook that takes a parameter receives everything the
+constructor was called with. `__pre_init__` sees the values as they were
+passed, and `__post_init__` sees them as they were stored:
 
 ```python
 from bagof.magic import Magic, InitVar
@@ -131,9 +144,11 @@ class Circle(Magic):
 Circle(radius=6.0)
 ```
 
-**Generic classes.** A `Magic` class can take a type parameter, and
-filling it in gives the fields that type — whether you name a subclass or
-fill it in at the call site:
+## Generic classes
+
+A `Magic` class can take a type parameter. When the parameter is given a
+type, every field written with the parameter takes that type, whether the
+type is given by a named subclass or at the call site:
 
 ```python
 from typing import Generic, TypeVar
@@ -157,14 +172,17 @@ IntBox(item=1)
 Box[int](item=1)
 ```
 
-`item` is `T` on `Box` (no specific type to convert to) and `int` once the
-parameter is filled in — which is why the string becomes a number. Both
-spellings do the same thing: `Box[int]` is a class just as `IntBox` is,
-and `Box[int]("1") == Box(1)`. This works the same way when the parameter
-is nested (`List[T]`, `Optional[T]`, `Dict[str, T]`).
+On `Box`, the type of `item` is `T`, which gives no specific type to
+convert to. Once the parameter is filled in, the type of `item` is `int`, and
+the string therefore becomes a number. The two spellings do the same thing:
+`Box[int]` is a class just as `IntBox` is, and `Box[int]("1") == Box(1)`. A
+parameter nested inside another type, as in `List[T]`, `Optional[T]` or
+`Dict[str, T]`, is filled in the same way.
 
-**Documentation that writes itself.** Describe a field and it shows up in
-the class docstring and in the generated `__init__`:
+## Generated documentation
+
+A field described with `Doc` appears in the class docstring and in the
+docstring of the generated `__init__`:
 
 ```python
 from bagof.magic import Doc

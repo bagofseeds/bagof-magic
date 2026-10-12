@@ -303,5 +303,8 @@ class TestPyright:
         number = _line(REPORTED, _REPORTED_BY_MYPY_ONLY)
         assert _errors_on(said, number) == [], said
         init = next(line for line in said if '"Changed.__init__"' in line)
-        assert "x: ... = Inherit(frozen=True)" in init
+        # `Inherit` is a field specifier, so pyright reads the value as
+        # declaring the field rather than as its default.
+        assert "x: ..." in init
+        assert "Inherit(" not in init
         assert _errors_on(said, _line(REPORTED, 'Changed(x="nope")')) == []

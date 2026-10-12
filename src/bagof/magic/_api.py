@@ -114,9 +114,9 @@ def fields(cls: type) -> tx.Tuple[Field]:
     """
     Return the fields of a Magic class as a tuple.
 
-    Only concrete fields are included. ``ClassVar`` and ``InitVar``
-    fields are left out. A class that ``Magic`` never built has no
-    fields, so the result is an empty tuple.
+    Only concrete fields are included, so `ClassVar` and `InitVar`
+    fields are left out. A class that Magic did not build has no
+    fields, and the result for it is an empty tuple.
 
     Parameters
     ----------
@@ -136,12 +136,13 @@ def fields(cls: type) -> tx.Tuple[Field]:
 
 def fields_dict(cls: type) -> tx.Dict[str, Field]:
     """
-    Get the fields of a Magic class, keyed by name.
+    Return the fields of a Magic class, keyed by their public names.
 
-    The same fields `fields` returns, in the same order, keyed by the
-    name each one is known by outside the class -- the name the
-    constructor takes, which for an aliased or underscored field is not
-    the name the class body uses.
+    The result holds the same fields as [`fields`][], in the same order.
+    Each field is keyed by its public name, which is the name the
+    constructor takes. For a field with an alias, or a field whose name
+    starts with an underscore, the public name differs from the name
+    used in the class body.
 
     !!! example
         ```pycon
@@ -163,24 +164,27 @@ def fields_dict(cls: type) -> tx.Dict[str, Field]:
     Returns
     -------
     fields : dict[str, Field]
-        All concrete fields (that are not `ClassVar` or `InitVar`).
-        A class that `Magic` never built simply has none, so the answer
-        is an empty dict -- the same as `fields` gives. `asdict`,
-        `astuple` and `replace` need a real instance and say so instead.
+        Every field that is not a `ClassVar` or an `InitVar`. A class
+        that Magic did not build has no fields, so the result for it is
+        an empty dict, as with [`fields`][]. [`asdict`][], [`astuple`][]
+        and [`replace`][] need an instance of a Magic class instead, and
+        raise an error for anything else.
     """
     return _keyed(fields(cls))
 
 
 def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
     """
-    Get an object's fields as a plain `dict`.
+    Return the fields of a Magic instance as a plain `dict`.
 
-    A field holding another Magic object is turned into a dict of *its*
-    fields, and so on all the way down. Everything else is returned
-    as-is.
+    A field that holds another Magic instance is turned into a dict of
+    that instance's fields, and so on at every level. Magic instances
+    inside lists, tuples and dicts are turned into dicts too, and every
+    other value is returned as it is.
 
-    Keys are the names the constructor takes, which for an aliased or
-    underscored field is not the name the class body uses.
+    The keys are the names that the constructor takes. For a field with
+    an alias, or a field whose name starts with an underscore, the key
+    differs from the name used in the class body.
 
     !!! example
         ```pycon
@@ -212,10 +216,10 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
         ```
 
     !!! note "A field with no value is left out"
-        A field the constructor does not take, and that has no default,
-        holds nothing until something sets it -- so it is simply absent,
-        the way an optional key is absent from a dict. It comes back as
-        soon as it is given a value:
+        A field that the constructor does not take, and that has no
+        default, holds nothing until something sets it. Such a field is
+        absent from the result, in the way that an optional key is absent
+        from a dict, and it appears as soon as it is given a value:
 
         ```pycon
         >>> class Draft(Magic):
@@ -230,15 +234,15 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
         {'title': 'Ada', 'slug': 'ada'}
         ```
 
-        `astuple` is the one that insists instead: a key says which
-        field it belongs to, a position does not, so a tuple is only
-        readable while every field is in it.
+        [`astuple`][] raises an error for such a field instead. A key
+        says which field a value belongs to and a position does not, so
+        a tuple can only be read correctly while every field is in it.
 
     !!! note "Not the same as `dict(obj)`"
-        A class written with `mapping=True` can be passed to `dict`
-        directly, and that covers the fields marked as keys, under the
-        key names they were given. `asdict` covers every field. The two
-        agree about a field with no value: neither shows one.
+        An instance of a class written with `mapping=True` can be passed
+        to `dict` directly. The result covers only the fields that are
+        keys, under their key names, whereas `asdict` covers every field.
+        Both leave out a field that holds no value.
 
         ```pycon
         >>> class Row(Magic, mapping=True):
@@ -259,8 +263,8 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
     Returns
     -------
     values : dict[str, any]
-        Every concrete field (not `ClassVar` or `InitVar`) that is
-        holding a value, in field order.
+        Every field that holds a value, in field order, leaving out
+        `ClassVar` and `InitVar` fields.
     """
     found = {}
     for name, field in _concrete(obj, "asdict").items():
@@ -272,10 +276,10 @@ def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:
 
 def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
     """
-    Get an object's field values as a tuple, in field order.
+    Return the field values of a Magic instance as a tuple, in field order.
 
-    Like `asdict`, a nested Magic instance is turned into a tuple of
-    its own fields. Everything else is returned as-is.
+    As in [`asdict`][], a nested Magic instance is turned into a tuple of
+    its own field values, and every other value is returned as it is.
 
     !!! example
         ```pycon
@@ -288,11 +292,12 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
         ```
 
     !!! note "A field with no value is an error here"
-        `asdict` and `dict(obj)` leave such a field out; this one says
-        so. A position only means anything while every field is in the
-        tuple: drop one and everything after it moves up, so the same
-        index would stand for a different field from one instance to
-        the next, with nothing in the tuple to show it.
+        [`asdict`][] and `dict(obj)` leave such a field out, but
+        `astuple` raises an error. A position only has a meaning while
+        every field is in the tuple. If one field were dropped, every
+        field after it would move up, and the same index would stand for
+        different fields in different instances, with nothing in the
+        tuple to show it.
 
     Parameters
     ----------
@@ -302,15 +307,15 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
     Returns
     -------
     values : tuple
-        The value of every concrete field (not `ClassVar` or `InitVar`),
-        in field order.
+        The value of every field, in field order, leaving out `ClassVar`
+        and `InitVar` fields.
 
     Raises
     ------
     AttributeError
-        If a field has never been given a value. A field the
-        constructor does not take, with no default, is only set if
-        something sets it by hand.
+        If a field has never been given a value. A field that the
+        constructor does not take, and that has no default, holds a
+        value only once something sets it.
     """
     return tuple(
         _astuple_inner(_value(obj, field, "astuple"))
@@ -326,17 +331,17 @@ def astuple(obj: tx.Any) -> tx.Tuple[tx.Any, ...]:
 # decorator builds; the method belongs with the other generated ones.
 def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
     """
-    Copy an object, changing some of its values.
+    Return a copy of a Magic instance with some of its values changed.
 
     The copy is built by calling the class again, so conversion,
-    validation and the `__pre_init__` / `__post_init__` hooks all run on
-    the way in: a replaced value is checked exactly as an original one
-    is. Anything you do not mention is carried over unchanged. It works
-    on a frozen class, which is where it is most useful.
+    validation and the `__pre_init__` and `__post_init__` hooks all run,
+    and a replaced value is checked exactly as an original one is. Every
+    field that is not mentioned is carried over unchanged. `replace`
+    also works on a frozen class, which is where it is most useful.
 
-    Name each change after an argument the constructor takes. Any of a
-    field's input aliases can be used, but supplying two names for the
-    same field is an error.
+    Each change is named after an argument that the constructor takes.
+    Any of a field's input aliases can be used, but giving the same
+    field under two names is an error.
 
     !!! example
         ```pycon
@@ -350,16 +355,17 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
 
     !!! note "Two kinds of field cannot be carried over"
         A field written as `NoInit[...]` is not a constructor argument,
-        so the copy gets whatever the class gives it rather than the
-        value `obj` holds. An `InitVar` is passed in and not kept, so
-        there is nothing to read back off `obj`: give it again, or leave
-        it to its default.
+        so the copy receives whatever the class gives it, rather than
+        the value that `obj` holds. An `InitVar` is passed to the
+        constructor and not kept, so there is nothing to read back from
+        `obj`. Such a field is either given again or left to its
+        default.
 
     !!! warning "A `__post_init__` that derives a field runs again"
-        The copy starts from the values as they are *stored*, so a hook
-        that works one field out from another works it out a second
-        time -- from the already worked-out value. `replace` with no
-        changes at all can then come back different:
+        The copy starts from the values as they are stored. A hook that
+        derives one field from another therefore derives it a second
+        time, from the value that it already derived, and `replace` with
+        no changes at all can then return a different value:
 
         ```pycon
         >>> class Priced(Magic):
@@ -380,9 +386,10 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
         the constructor does not take, is unaffected.
 
     !!! warning "A converter runs again too"
-        The same applies to conversion: the values going back in have
-        already been converted once, so a converter that does not give
-        the same answer for its own output changes the value each time.
+        The same applies to conversion. The values passed back to the
+        constructor have already been converted once, so a converter
+        that does not return its own output unchanged changes the value
+        each time:
 
         ```pycon
         >>> def double(value):
@@ -398,14 +405,15 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
         ```
 
         A converter that comes from a type hint is almost always safe
-        here -- `int("7")` and `int(7)` are both `7` -- so this is a
-        question for one you wrote yourself. `dataclasses.replace` and
-        `attrs.evolve` behave the same way, for the same reason: the
-        copy is a construction, not a copy of the bytes.
+        here, because `int("7")` and `int(7)` are both `7`, so the
+        question arises only for a converter written by hand.
+        `dataclasses.replace` and `attrs.evolve` behave in the same way,
+        for the same reason: the copy is a new construction, not a copy
+        of the stored data.
 
-        Where that matters, turn conversion off for the fields it
-        affects, or write the converter so that running it twice is the
-        same as running it once.
+        Where this matters, conversion can be turned off for the fields
+        concerned, or the converter can be written so that running it
+        twice gives the same result as running it once.
 
     Parameters
     ----------
@@ -422,9 +430,9 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
     Raises
     ------
     TypeError
-        If `obj` is not an instance of a Magic class; if a change names
-        something the constructor does not take; or if the class has an
-        `InitVar` with no default and no value was given for it.
+        If `obj` is not an instance of a Magic class, if a change names
+        something that the constructor does not take, or if the class
+        has an `InitVar` with no default and no value is given for it.
     """
     cls = type(obj)
     # Every field, pseudo-fields included: a change has to be turned
@@ -495,11 +503,11 @@ def replace(obj: tx.Any, **changes: tx.Any) -> tx.Any:
 
 def is_magic(obj: tx.Any) -> bool:
     """
-    Say whether something was built by `Magic`.
+    Return whether a class, or the class of an object, was built by Magic.
 
-    Answers for a class or for one of its instances, and for a class
-    built either way -- by inheriting from `Magic`, or by decorating a
-    plain class with `magic`.
+    The answer is the same for a class and for its instances. A class
+    counts whichever way it was built, by inheriting from `Magic` or by
+    decorating a plain class with `magic`.
 
     !!! example
         ```pycon

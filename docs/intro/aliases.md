@@ -1,8 +1,8 @@
 # Input aliases and forwarding properties
 
-Give a field several input names with `Alias`. The first name is the
-one shown in the signature, repr and dict-like view. The stored attribute
-keeps the name written in the class body:
+`Alias` gives a field several input names. The first name is the one shown
+in the signature, in the repr and in the dict-like view, while the stored
+attribute keeps the name written in the class body:
 
 ```python
 from bagof.magic import Magic, Alias, Property, ReadOnlyProperty, field, replace
@@ -20,14 +20,14 @@ Person(label='Ada')
 Person(label='Grace')
 ```
 
-A single string replaces the input name as before. A tuple or list accepts
-all its names, in order. Include the stored name explicitly if callers
-should be able to use it too. Supplying two names for the same field is
-an error, even with equal values. A positional value and an alias keyword
-also count as two values. Aliases do not enable keyword arguments for a
-positional-only field.
+A single string replaces the field's input name. A tuple or a list makes the
+field accept every name in it, in order of preference, and the stored name is
+accepted only when it is in the list. Passing a value for the same field under
+two names is an error, even when the two values are equal, and a positional
+value together with an alias keyword counts as two values. Aliases do not let
+a positional-only field be passed by keyword.
 
-`Property` exposes additional attributes backed by that same field:
+`Property` adds further attributes that read and write the same field:
 
 ```python
 class Named(Magic, alias=True):
@@ -46,31 +46,32 @@ Traceback (most recent call last):
 AttributeError: ...
 ```
 
-A string or sequence of names creates read/write properties. A mapping
-chooses access for each name: `True` and `"readwrite"` are equivalent,
-`"readonly"` forbids assignment, and `False` disables the property.
-Deletion through a property is unsupported. Writes use the target field's
-conversion, validation and frozen rules. Read-only access does not freeze
-an object returned by the property.
+A string or a sequence of names creates properties that can be read and
+written. A mapping chooses the access for each name: `True` and `"readwrite"`
+mean the same thing, `"readonly"` forbids assignment, and `False` turns the
+property off. A field cannot be deleted through a property. An assignment
+through a property follows the target field's conversion, validation and
+frozen rules. A read-only property does not freeze the object it returns.
 
-`ReadOnlyProperty` is `Property` with every name read-only, so you can
-skip the mapping when none of them should be writable:
+`ReadOnlyProperty` is `Property` with every name read-only, which saves
+writing a mapping when none of the names should be writable:
 
 ```python
 class Named(Magic, alias=True):
     name: ReadOnlyProperty[str, ("label", "title")]
 ```
 
-Stacked `Property` (or `ReadOnlyProperty`) hints accumulate: the outer
-adds its names to the inner rather than replacing them, and a name given
-on both takes the outer access mode. `Alias` hints stack the same way --
-they concatenate, keeping the first spelling of a repeated name -- and so
-does field `metadata`. Stacked `ConvertTo` or `Validate` callables chain,
-the inner running first. Everything else -- a default, a factory, a
-whole-field toggle like `property="all"` -- is last-wins, the outer
-replacing the inner.
+When `Property` or `ReadOnlyProperty` hints are nested, their names
+accumulate. The outer hint adds its names to those of the inner one rather
+than replacing them, and a name given in both takes the outer hint's access
+mode. Nested `Alias` hints combine in the same way: their names are joined,
+and a name that appears twice keeps its first position. Field `metadata` is
+combined too. Nested `ConvertTo` or `Validate` callables are chained, with the
+inner one running first. Every other setting, such as a default, a factory or
+a whole-field setting like `property="all"`, is taken from the outer hint,
+which replaces the inner one.
 
-The equivalent field declaration is:
+The same field can be declared with `field()`:
 
 ```python
 class Named(Magic):
@@ -80,38 +81,46 @@ class Named(Magic):
     )
 ```
 
-`alias=True` keeps the default public name first and adds enabled property
-names in declaration order. With no properties it keeps the default name.
-`alias=False` preserves leading underscores. `Field.aliases` always returns
-a tuple, and `Field.public_name` is its first element.
+`alias=True` keeps the default public name first and adds the names of the
+enabled properties after it, in the order they are declared. A field with no
+properties keeps only its default name. `alias=False` keeps a leading
+underscore in the input name. `Field.aliases` is always a tuple, and
+`Field.public_name` is its first element.
 
-`property=True` exposes the preferred public name as a read/write property;
-`property="readonly"` exposes it read-only. If that name is already the
-stored name, no extra property is needed. `property="all"` exposes every
-input name the field accepts instead: the stored name is left out (it is
-already the attribute), and any name already used for a field, method or
-other attribute is skipped rather than clashing. To expose an attribute
-literally called `readonly`, `readwrite` or `all`, use a sequence or
-mapping. Explicit properties (a name, sequence or mapping) cannot target
-themselves, other fields, or existing methods. Properties are for stored
-instance fields, not ClassVars or InitVars.
+`property=True` exposes the preferred public name as a property that can be
+read and written, and `property="readonly"` exposes it read-only. When the
+preferred name is already the stored name, no property is added.
+`property="all"` exposes every input name the field accepts instead. The
+stored name is left out, because it is already the attribute, and a name
+already used by a field, a method or another attribute is skipped rather than
+causing a clash.
 
-Both options can be class settings. Inherited fields keep their settings
-unless `override=True` (or `override="alias"` / `override="property"`) asks
-them to resolve again. Explicit field settings still win. Redeclaring a
-field can replace its names and remove its old properties without changing
-the base class. Different fields cannot share an alias or property name,
-including across bases; remove the old declaration before reusing a name.
+To expose a property literally called `readonly`, `readwrite` or `all`, the
+name is given in a sequence or a mapping, as in `property=("all",)`. A
+property named explicitly, by a name, a sequence or a mapping, cannot have the
+name of its own field, of another field or of an existing method. Properties
+apply only to stored instance fields, not to `ClassVar` or `InitVar` fields.
 
-Properties add no fields or storage. Mapping access and serialization use
-only the preferred public key. Constructor hooks receive preferred names;
-polymorphic selection and `replace` accept alternate input names too.
-Hand-written constructors remain responsible for their own arguments;
-calling `self.__magic_init__` uses the generated alias handling.
+`alias` and `property` can also be set for a whole class. Inherited fields
+keep their settings unless `override=True`, `override="alias"` or
+`override="property"` asks for them to be resolved again, and a setting
+written on a field still wins over the class setting.
 
-Signatures show the preferred name, and constructor documentation lists
-alternatives. Static type checkers do not infer all accepted synonyms or
-generated properties from these annotations.
+Declaring a field again in a subclass can replace its names and remove its
+old properties without changing the base class. Two different fields cannot
+share an alias or a property name, even when they come from different bases,
+so the old declaration has to be removed before its name is reused.
+
+Properties add no fields and no storage. Mapping access and serialization
+use only the preferred public name as the key. Constructor hooks receive the
+arguments under their preferred names, while polymorphic selection and
+`replace` accept the alternate input names as well. A hand-written `__init__`
+handles its own arguments, but calling `self.__magic_init__` from it applies
+the generated alias handling.
+
+The signature shows the preferred name, and the constructor's documentation
+lists the alternatives. Static type checkers do not infer every accepted name,
+or the generated properties, from these annotations.
 
 ## Fields that start with an underscore
 
@@ -150,7 +159,7 @@ With this declaration, both checkers show the constructor as taking `size`
 and report `Cached(_size=3)` as an unexpected keyword argument. At runtime
 nothing changes, because `size` was already the preferred input name.
 
-A class that would rather use the same name for the attribute and the
+A class that should use the same name for the attribute and for the
 constructor argument can set `alias=False` on the class statement. The
 underscore is then kept in the input name, and both checkers agree with the
 constructor without further help:

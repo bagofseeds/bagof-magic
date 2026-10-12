@@ -1,6 +1,6 @@
 # Field annotations
 
-Each field says what it does, right where it is declared:
+A field's annotation says what the field does, where the field is declared:
 
 ```python
 from bagof.magic import Magic, Factory, KwOnly, NoRepr
@@ -17,8 +17,8 @@ class Task(Magic):
 Task(name='build', tags=['ci'], priority=2)
 ```
 
-The `field(...)` spelling from `dataclasses` and `attrs` also works. Both
-produce the same `Field`:
+The `field(...)` spelling from `dataclasses` and `attrs` also works, and
+both spellings produce the same `Field`:
 
 === "In the annotation"
 
@@ -42,9 +42,9 @@ produce the same `Field`:
         token: str = field(default="", repr=False)
     ```
 
-The annotation form composes naturally. Several annotations stack on one
-field without nesting. The `field(...)` form covers anything the annotations
-cannot say.
+The annotation form combines easily, because several annotations can be
+stacked on one field. The `field(...)` form covers anything that the
+annotations cannot express.
 
 `field(...)` also takes the `dataclasses` spellings `kw_only=` and
 `default_factory=`, which mypy and pyright read the same way:
@@ -67,7 +67,8 @@ Traceback (most recent call last):
 TypeError: Job.__init__() takes from 2 to 3 positional arguments but 4 were given
 ```
 
-A keyword `field(...)` does not know is refused, not ignored:
+A keyword that `field(...)` does not recognise is refused rather than
+ignored:
 
 ```pycon
 >>> field(defaults=0)
@@ -177,7 +178,8 @@ same keywords and is accepted by both checkers without an error.
 ## The annotations
 
 Each of these can be used bare (`x: Frozen[int]`) or with a value
-(`x: Default[int, 5]`). Every one has an opposite.
+(`x: Default[int, 5]`). Most of them have an opposite, listed in the last
+column.
 
 | Annotation | What it does | Opposite |
 | --- | --- | --- |
@@ -213,13 +215,14 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | `Inherit[T]` | change a field the class inherits, keeping the rest of it (see [below](#changing-an-inherited-field)) | -- |
 | `Inherit[T, "x"]` | take over the inherited field `x` under this field's name (see [below](#taking-over-an-inherited-field)) | -- |
 
-Each annotation sets exactly what its name says, and that wins over the
-class setting: on a `kw_only=True` class, `x: Positional[int]` can still
-be passed by position, while `x: NotKw[int]` forbids the only way left and
-the field takes its default instead (the same as `NoInit[int]`).
+Each annotation sets exactly what its name says, and the annotation wins
+over the class setting. On a `kw_only=True` class, `x: Positional[int]` can
+still be passed by position. On the same class, `x: NotKw[int]` forbids
+passing the field by name, which was the only way left, so the field takes
+its default instead, as it does with `NoInit[int]`.
 
-Several annotations stack on one field by nesting. When two disagree, the
-outer one wins.
+Several annotations are combined on one field by nesting them. When two of
+them disagree, the outer one wins:
 
 ```pycon
 >>> class ByName(Magic):
@@ -234,18 +237,19 @@ ByName(x=1)
 ByPosition(x=1)
 ```
 
-`Init` and `NoInit` say *whether* a field is an argument at all. `Kw`,
-`Positional` and the `...Only` pairs say *how* it may be passed. A field
-is an argument unless something says otherwise, so `Init[T]` changes
-nothing. `NoInit` does the work by forbidding both ways at once.
+`Init` and `NoInit` say whether a field is an argument at all, while `Kw`,
+`Positional` and the `...Only` pairs say how the field may be passed. A field
+is an argument unless something says otherwise, so `Init[T]` changes nothing,
+and `NoInit` works by forbidding both ways of passing the field.
 
-`NotKwOnly` means "by position as well" and `NotPositionalOnly` means "by
-name as well": each negates its own name and leaves the other half alone.
-This makes them aliases for `Positional` and `Kw`.
+`NotKwOnly` means that the field may be passed by position as well, and
+`NotPositionalOnly` means that it may be passed by name as well. Each of them
+negates only its own name and leaves the other way of passing alone, which
+makes them aliases for `Positional` and `Kw`.
 
-One thing to know: on a `kw_only=True` class, a field that can be passed by
-position moves to the front of the signature, ahead of the keyword-only
-fields, regardless of its declaration order.
+On a `kw_only=True` class, a field that can be passed by position moves to
+the front of the signature, ahead of the keyword-only fields, whatever its
+place in the class body:
 
 ```python
 class Point(Magic, kw_only=True):
@@ -258,14 +262,14 @@ class Point(Magic, kw_only=True):
 Point(a=2, x=1)
 ```
 
-`x` is declared second but becomes the first positional argument.
+`x` is declared second, but it becomes the first positional argument.
 
 ## Choosing what `repr()` shows
 
-A field's repr setting can be a function of its value. A string it
-returns is shown as the value. `None` or `False` hides the field. Any
-other answer shows `repr(value)` when it is true, and hides the field when
-it is false.
+A field's repr setting can be a function of the field's value. When the
+function returns a string, the string is shown in place of the value, and
+when it returns `None` or `False`, the field is hidden. Any other result shows
+`repr(value)` if the result is true and hides the field if it is false.
 
 ```pycon
 >>> money = "${:,.2f}".format
@@ -281,11 +285,12 @@ Invoice(total=$1,234.50)
 Invoice(total=$10.00, note='rush', paid_by='ada', currency='EUR')
 ```
 
-A test given as a class setting applies to every field:
-`class Invoice(Magic, repr=HideIfNone())`. On a dict-like class, a test
-also works as a key setting, alone or with a new name:
-`Key("labels", ShowIf(bool))` keeps the key only while the value is true.
-A key is kept or left out, never reformatted, so it takes only a test.
+A test given as a class setting, as in
+`class Invoice(Magic, repr=HideIfNone())`, applies to every field. On a
+dict-like class, a test also works as a key setting, either alone or together
+with a new name: `Key("labels", ShowIf(bool))` keeps the key only while the
+value is true. A key setting accepts only a test, because a key is either kept
+or left out and is never reformatted.
 
 ## Forgetting an inherited field
 
@@ -616,8 +621,8 @@ Backup(retries=3, target='/srv')
 !!! warning "Type checkers apply the stricter rule"
     mypy and pyright check a `Magic` class by the `dataclasses` rules, so
     they still report this order as an error, although the class works.
-    For code a checker accepts, make the later fields keyword-only with
-    `kw_only=True` on the class that declares them:
+    To write code that a checker accepts, make the later fields
+    keyword-only with `kw_only=True` on the class that declares them:
 
     ```python
     class Backup(Job, kw_only=True):
@@ -629,10 +634,10 @@ Backup(retries=3, target='/srv')
     Backup(retries=3, target='/srv')
     ```
 
-Anything you cannot say with one of these, say with `Field(...)` inside an
-`Annotated`: `x: Annotated[int, Field(alias="ex", metadata={"unit": "m"})]`.
-(On Python 3.8, import `Annotated` from `typing_extensions` rather than
-`typing`.)
+A setting that none of these annotations expresses can be given with
+`Field(...)` inside `Annotated`, as in
+`x: Annotated[int, Field(alias="ex", metadata={"unit": "m"})]`. On Python 3.8,
+`Annotated` is imported from `typing_extensions` rather than from `typing`.
 
 See [Settings](settings.md) for the class-wide switches these annotations
 override, [Conversion and validation](conversion.md) for `ConvertTo` and
