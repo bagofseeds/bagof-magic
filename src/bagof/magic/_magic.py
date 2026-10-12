@@ -717,13 +717,88 @@ def _inherit_field(
     return new
 
 
-def _check_public_names(clsname: str, fields: tx.Dict[str, Field]) -> None:
+def _declaring_class(classes: tx.Iterable[type], name: str) -> type:
+    # The first of `classes` -- an MRO -- whose own body declares the
+    # field `name`: the class whose declaration of it the MRO's owner
+    # holds. Only asked of an MRO that holds the field, so there is one.
+    return next(
+        base for base in classes
+        if name in base.__dict__.get(_DECLARED, ())
+        and base.__dict__[_DECLARED][name].get("inherit") is not False
+    )
+
+
+def _taken_over_sources(
+    mro: tx.Sequence[type],
+) -> tx.Dict[str, tx.List[type]]:
+    # For each field name some class in `mro` took over with `Inherit`,
+    # the classes that declared the field it took over.
+    found = {}
+    for base in mro:
+        for name in base.__dict__.get(_TAKEN_OVER, ()):
+            # A field is taken over from a class that declares it, so
+            # there always is one.
+            found.setdefault(name, []).append(
+                _declaring_class(base.__mro__[1:], name)
+            )
+    return found
+
+
+def _inherits_declaration(
+    holder: type, name: str, sources: tx.Sequence[type]
+) -> bool:
+    # Whether `holder` holds the field `name` only because it inherits
+    # one of these declarations of it, rather than declaring its own.
+    declarer = _declaring_class(holder.__mro__, name)
+    return any(
+        issubclass(source, declarer) for source in sources
+    )
+
+
+def _described(
+    field: Field, clsname: str, mro: tx.Sequence[type], own: tx.Container
+) -> str:
+    # A field named the way a clash between two fields reports it: where
+    # it comes from, and the field it took over if it took one over.
+    # `own` holds the names this class's body declares.
+    owner = clsname if field.name in own else next(
+        base.__name__ for base in mro
+        if field.name in base.__dict__.get(_DECLARED, ())
+    )
+    if isinstance(field.inherit, str):
+        return (
+            f"{field.name!r}, which {owner} built by taking over the "
+            f"inherited field {field.inherit!r}"
+        )
+    return f"{field.name!r}, which {owner} declares"
+
+
+def _check_public_names(
+    clsname: str,
+    fields: tx.Dict[str, Field],
+    mro: tx.Sequence[type] = (),
+    own: tx.Container = (),
+) -> None:
     # Every input spelling belongs to one field, including names inherited
     # from different bases. Output methods use only the preferred name.
     seen = {}
     for name, field in fields.items():
         for public in field.aliases:
             if public in seen:
+                other = fields[seen[public]]
+                if isinstance(other.inherit, str) or isinstance(
+                    field.inherit, str
+                ):
+                    first, second = (
+                        _described(each, clsname, mro, own)
+                        for each in (other, field)
+                    )
+                    raise TypeError(
+                        f"{clsname} has two fields known as {public!r} "
+                        f"outside the class: {first}, and {second}. Give "
+                        f"a take-over another public name with alias=, "
+                        f"or keep only one of the two."
+                    )
                 raise TypeError(
                     f"{clsname} has two fields, {seen[public]!r} and "
                     f"{name!r}, and both are known as {public!r} outside "
@@ -2173,6 +2248,13 @@ def __pre_new__(
         name: _kept_holders(mro[1:], found, name)
         for name, found in forgetters.items()
     }
+    # A field taken over by another name is held by the field that took
+    # it over, so no other base hands this class the same field again.
+    for name, sources in _taken_over_sources(mro[1:]).items():
+        kept[name] = frozenset(
+            holder for holder in kept.get(name, ())
+            if not _inherits_declaration(holder, name, sources)
+        )
     for b in reversed(mro[1:]):
         # Only process classes that have been processed by our
         # decorator.  That is, they have a _FIELDS attribute.
@@ -2718,7 +2800,7 @@ def __pre_new__(
                 f'{attr_name!r} is a field but has no type annotation'
             )
 
-    _check_public_names(clsname, fields)
+    _check_public_names(clsname, fields, mro[1:], declared)
     _check_public_keys(clsname, fields)
 
     # Remember all of the fields on our class (including bases).

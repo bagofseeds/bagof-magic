@@ -8878,21 +8878,109 @@ class TestTakingAFieldOver:
         assert str(signature(Box[int])) == "(item: int) -> None"
         assert Box[int]("4")._item == 4
 
-    def test_a_diamond_with_the_field_on_the_other_side(self) -> None:
-        Base = self._base()
+    @staticmethod
+    def _three() -> type:
+        class Base(Magic):
+            x: int = 1
+            y: int = 2
+            z: int = 3
+
+        return Base
+
+    def test_a_diamond_with_the_field_on_one_side(self) -> None:
+        # The take-over holds the field, so the copy the other side only
+        # inherits from the same declaration is not taken again.
+        Base = self._three()
 
         class Left(Base):
             _x: Inherit[..., "x"]  # noqa: F821
 
         class Right(Base):
+            w: int = 4
+
+        class Both(Left, Right):
             pass
 
+        class Other(Right, Left):
+            pass
+
+        for cls in (Both, Other):
+            assert list(signature(cls).parameters) == ["x", "y", "z", "w"]
+            assert [f.name for f in _api.fields(cls)][0] == "_x"
+            assert cls(5)._x == 5
+
+    def test_two_take_overs_of_one_field_under_two_names(self) -> None:
+        Base = self._three()
+
+        class Left(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        class Right(Base):
+            _why: Inherit[..., "x", Field(alias="why")]  # noqa: F821
+
+        class Both(Left, Right):
+            pass
+
+        assert list(signature(Both).parameters) == ["x", "y", "z", "why"]
+
+    def test_two_bases_each_taking_one_over(self) -> None:
+        Base = self._three()
+
+        class Left(Base):
+            _y: Inherit[..., "y"]  # noqa: F821
+
+        class Right(Base):
+            _z: Inherit[..., "z"]  # noqa: F821
+
+        class Both(Left, Right):
+            pass
+
+        assert list(signature(Both).parameters) == ["x", "y", "z"]
+        assert [f.name for f in _api.fields(Both)] == ["x", "_y", "_z"]
+
+    def test_a_sibling_that_declares_the_field_itself_clashes(self) -> None:
+        Base = self._three()
+
+        class Left(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        class Right(Base):
+            x: int = 7
+
         with pytest.raises(
-            TypeError, match="two fields, '_x' and 'x', and both are known "
-            "as 'x'"
+            TypeError,
+            match=r"^Both has two fields known as 'x' outside the class: "
+            r"'_x', which Left built by taking over the inherited field "
+            r"'x', and 'x', which Right declares\. Give a take-over",
         ):
             class Both(Left, Right):
                 pass
+
+    def test_two_take_overs_under_one_name_clash(self) -> None:
+        Base = self._three()
+
+        class Left(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        class Right(Base):
+            _q: Inherit[..., "x"]  # noqa: F821
+
+        with pytest.raises(
+            TypeError, match=r"'_q', which Right built by taking over the "
+            r"inherited field 'x'",
+        ):
+            class Both(Left, Right):
+                pass
+
+    def test_a_clash_inside_one_class_names_it(self) -> None:
+        Base = self._three()
+        with pytest.raises(
+            TypeError, match=r"'_x', which Sub built by taking over the "
+            r"inherited field 'x', and 'ex', which Sub declares",
+        ):
+            class Sub(Base):
+                _x: Inherit[..., "x"]  # noqa: F821
+                ex: Alias[int, "x"] = 0  # noqa: F821
 
     def test_forgetting_it_below_names_the_take_over(self) -> None:
         Base = self._base()
