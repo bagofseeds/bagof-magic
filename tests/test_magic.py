@@ -64,6 +64,7 @@ from bagof.magic._constants import (
     _OPTIONS,
     MISSING,
     REQUIRED,
+    UNSET,
 )
 from bagof.magic._fields import (
     HIDE_IF_NONE as HideIfNoneCls,
@@ -2650,6 +2651,18 @@ class TestConstants:
         from bagof.magic._constants import _RequiredType
         assert _RequiredType() is REQUIRED
 
+    def test_unset_is_a_falsy_singleton(self) -> None:
+        from bagof.magic._constants import _UnsetType
+        assert repr(UNSET) == "<UNSET>"
+        assert bool(UNSET) is False
+        assert _UnsetType() is UNSET
+        assert UNSET is not MISSING
+
+    def test_unset_is_exported(self) -> None:
+        import bagof.magic
+        assert bagof.magic.UNSET is UNSET
+        assert "UNSET" in bagof.magic.__all__
+
     def test_hide_if_none_init(self) -> None:
         # The old spelling is the new test, carrying a key name.
         h = HideIfNoneCls("k")
@@ -3339,7 +3352,8 @@ class TestDeclaredValues:
         assert field._declared is MISSING
         field.setdefault(Options.make_default())
         assert field._declared["frozen"] is True
-        assert field._declared["converter"] is MISSING
+        # Only what the field said is recorded; the rest is left out.
+        assert "converter" not in field._declared
 
     def test_it_is_taken_once(self) -> None:
         field = Field.from_hint("x", int)
@@ -3348,7 +3362,7 @@ class TestDeclaredValues:
         field.setdefault(Options.make_default())
         # Already answered, so a second pass changes nothing.
         assert field.frozen is True
-        assert field._declared["frozen"] is MISSING
+        assert "frozen" not in field._declared
 
     def test_a_copy_shares_nothing_with_its_original(self) -> None:
         class Base(Magic, frozen=True):
@@ -3372,6 +3386,54 @@ class TestDeclaredValues:
         field.setdefault(Options.make_default())
         assert "declared" not in repr(field)
         assert "name='x'" in repr(field)
+
+    def test_every_attribute_the_field_said_is_recorded(self) -> None:
+        # Not only the ones a class setting decides: the type, the
+        # default and the documentation are part of what was declared.
+        class Base(Magic):
+            x: Frozen[int] = Field(default=3, doc="How many.")
+
+        field = _api.fields(Base)[0]
+        assert field._declared["type"] is int
+        assert field._declared["default"] == 3
+        assert field._declared["doc"] == "How many."
+        assert field._declared["frozen"] is True
+        assert "converter" not in field._declared
+        assert "repr" not in field._declared
+
+    def test_each_class_keeps_what_its_own_body_said(self) -> None:
+        class Base(Magic):
+            x: Frozen[int] = 1
+            y: str = ""
+
+        class Sub(Base):
+            y: KwOnly[str] = "s"
+
+        assert set(Base.__dict__[m._DECLARED]) == {"x", "y"}
+        assert Base.__dict__[m._DECLARED]["x"]["frozen"] is True
+        # Only what Sub's own body says; `x` it merely inherits.
+        assert set(Sub.__dict__[m._DECLARED]) == {"y"}
+        assert Sub.__dict__[m._DECLARED]["y"]["default"] == "s"
+        assert Sub.__dict__[m._DECLARED]["y"]["positional"] is False
+        assert "frozen" not in Sub.__dict__[m._DECLARED]["y"]
+
+    def test_the_record_is_not_changed_by_what_follows(self) -> None:
+        # A mutable default becomes a factory after the record is taken;
+        # the field's own bookkeeping follows it, the class's record
+        # does not.
+        class Base(Magic):
+            x: list = []
+
+        field = _api.fields(Base)[0]
+        assert callable(field._declared["factory"])
+        assert "factory" not in Base.__dict__[m._DECLARED]["x"]
+
+    def test_recording_a_value_records_it_whatever_was_said(self) -> None:
+        field = Field(name="x")
+        field.setdefault(Options.make_default())
+        assert "doc" not in field._declared
+        field._redeclare(doc="said later")
+        assert field._declared["doc"] == "said later"
 
     def test_recording_a_value_on_an_unresolved_field(self) -> None:
         field = Field(name="x")

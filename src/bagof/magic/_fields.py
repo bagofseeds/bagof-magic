@@ -128,7 +128,7 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     'key',              # Field is a key in the dict-like interface.
     'alias',            # Alternative names for this field.
     'property',         # Forwarding attribute names and access modes.
-    '_declared',        # What the field asked for (bookkeeping for override).
+    '_declared',        # What the field explicitly said (bookkeeping).
     '_narrowed_by',     # Which constraints narrowed it (bookkeeping).
     'pin',              # What a subclass matching on it does with it.
 )
@@ -536,12 +536,24 @@ class Field(SlotsBase):
         )
         return f"{type(self).__name__}({params})"
 
+    def _explicit(self) -> tx.Dict[str, tx.Any]:
+        # Every attribute the field has been given a value for, and the
+        # value -- what its annotation (and a `field()` default) said,
+        # when read before the class options fill in the rest. The
+        # bookkeeping slots are left out: nobody declares them.
+        return {
+            slot: getattr(self, slot)
+            for slot in self._slots()
+            if not slot.startswith("_")
+            and getattr(self, slot, MISSING) is not MISSING
+        }
+
     def _redeclare(self, **values) -> None:
         # Set a value and mark it as the field's own preference, so
         # re-resolving against a different class's options preserves it.
         for attr, value in values.items():
             setattr(self, attr, value)
-            if self._declared is not MISSING and attr in self._declared:
+            if self._declared is not MISSING:
                 self._declared[attr] = value
 
     def _reresolve(
@@ -553,7 +565,7 @@ class Field(SlotsBase):
         # Reset `attrs` to the field's own declarations, then resolve
         # them again from `options`. The field's own preferences survive.
         for attr in attrs:
-            setattr(self, attr, self._declared[attr])
+            setattr(self, attr, self._declared.get(attr, MISSING))
         self.setdefault(options, hints)
 
     def setdefault(
@@ -565,11 +577,11 @@ class Field(SlotsBase):
         # the converter, validator or factory is first used.
         #
         # The field's own preferences are preserved so that `override`
-        # on a subclass can restore and re-resolve them.
+        # on a subclass can restore and re-resolve them. The builder
+        # records them before calling this; a field built by hand has
+        # them recorded here, the first time it is resolved.
         if self._declared is MISSING:
-            self._declared = {
-                attr: getattr(self, attr) for attr in _RESOLVED_ATTRS
-            }
+            self._declared = self._explicit()
         if options.kw_only and options.positional_only:
             raise ValueError(
                 "Cannot set both kw_only and positional_only to True"

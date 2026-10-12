@@ -101,7 +101,7 @@ reverse : bool, default=False
 doc : bool | str, default=True
     Add field documentation to class docstring.
 """
-__all__ = ["Magic", "magic", "HIDE_IF_NONE"]
+__all__ = ["Magic", "magic", "HIDE_IF_NONE", "UNSET"]
 # stdlib
 import ast
 import builtins
@@ -129,6 +129,7 @@ from ._constants import (
     _ABSENT,
     _ARGUMENTS,
     _CONVERTER,
+    _DECLARED,
     _DEFAULT,
     _DISCARD,
     _DISPATCHING,
@@ -162,6 +163,7 @@ from ._constants import (
     _VALUE,
     MISSING,
     REQUIRED,
+    UNSET,
     MaybeMissing,
     _HasDefault,
     _HasFactory,
@@ -1937,6 +1939,7 @@ def __pre_new__(
     # things, and set the d
     cls_fields = []
     written = {}
+    declared = {}
     for field_name, type_ in cls_annotations.items():
 
         if field_name[:2] == "__":
@@ -1985,6 +1988,12 @@ def __pre_new__(
                 field.default, field.factory not in (MISSING, False)
             )
 
+        # What the annotation said, before the class options fill in
+        # what it did not. `override` on a subclass restores this, and
+        # `_DECLARED` keeps this class's own copy of it.
+        field._declared = field._explicit()
+        declared[field.name] = dict(field._declared)
+
         # Set unset field options from class options
         field.setdefault(options, hints)
 
@@ -2008,6 +2017,7 @@ def __pre_new__(
 
     # Insert fields from this class, in correct order.
     _add_fields(fields, cls_fields, replace=True, reverse=options.reverse)
+    namespace[_DECLARED] = declared
 
     # Which fields carry a default only because a registration pinned
     # them -- here or further up. `_make_init` has to know, because a

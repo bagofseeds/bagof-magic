@@ -181,6 +181,23 @@ Tests that exercise internals import them from the module that defines them
   are private bookkeeping — not constructor arguments, kept out of repr —
   and so is `_narrowed_by` (which written constraints a field's
   validator already enforces; see "Registration owners").
+- **What a field declared is recorded apart from what it resolved to.**
+  The builder sets `field._declared = field._explicit()` -- every
+  non-bookkeeping slot the annotation (and a `field()` default) gave a
+  value, and only those -- just before `setdefault` fills in the rest
+  from the options; a `Field` built by hand gets the same record the
+  first time `setdefault` runs. `_reresolve` resets an attribute to
+  `_declared.get(attr, MISSING)`, and `_redeclare` always writes into
+  the record, so a value the builder settles on (a mutable default's
+  factory, a narrowing validator) survives `override`. A field a class
+  merely inherits keeps the base's resolved answers and the base's
+  record. Each class also keeps its own copy of what its body said, as
+  `__magic_declared__` (`_DECLARED`): `{field: {attr: value}}`, read
+  from the class's own `__dict__`. Nothing reads it while building;
+  it is there for diagnostics, and for the field-inheritance work in
+  #119 that merges declarations down the MRO. `UNSET` ("this class
+  said nothing") is exported for that work, and is distinct from
+  `MISSING` ("no value").
 
 ### Reading annotations
 
