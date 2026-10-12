@@ -140,9 +140,10 @@ author wrote and the ones the author asked for.
 
 ### Settings are inherited
 
-dataclasses and attrs apply their decorator to each class separately.
-`magic` merges the settings down the inheritance chain, so a base class sets
-the house style once:
+dataclasses and attrs apply their decorator to each class separately, and
+pydantic inherits only the `model_config` of its models. `magic` merges the
+settings down the inheritance chain, so a base class sets the house style
+once:
 
 ```python
 from bagof.magic import Magic

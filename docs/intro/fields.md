@@ -124,9 +124,9 @@ column.
 
 Each annotation sets exactly what its name says, and the annotation wins
 over the class setting. On a `kw_only=True` class, `x: Positional[int]` can
-still be passed by position. On the same class, `x: NotKw[int]` forbids the
-only way of passing the field that was left, so the field takes its default
-instead, as it does with `NoInit[int]`.
+still be passed by position. On the same class, `x: NotKw[int]` forbids
+passing the field by name, which was the only way left, so the field takes
+its default instead, as it does with `NoInit[int]`.
 
 Several annotations are combined on one field by nesting them. When two of
 them disagree, the outer one wins:

@@ -93,20 +93,23 @@ preferred name is already the stored name, no property is added.
 `property="all"` exposes every input name the field accepts instead. The
 stored name is left out, because it is already the attribute, and a name
 already used by a field, a method or another attribute is skipped rather than
-causing a clash. A property literally called `readonly`, `readwrite` or `all`
-is written as a sequence or a mapping. A property named explicitly, by a name,
-a sequence or a mapping, cannot have the name of its own field, of another
-field or of an existing method. Properties apply only to stored instance
-fields, not to `ClassVar` or `InitVar` fields.
+causing a clash.
+
+To expose a property literally called `readonly`, `readwrite` or `all`, the
+name is given in a sequence or a mapping, as in `property=("all",)`. A
+property named explicitly, by a name, a sequence or a mapping, cannot have the
+name of its own field, of another field or of an existing method. Properties
+apply only to stored instance fields, not to `ClassVar` or `InitVar` fields.
 
 `alias` and `property` can also be set for a whole class. Inherited fields
 keep their settings unless `override=True`, `override="alias"` or
 `override="property"` asks for them to be resolved again, and a setting
-written on a field still wins over the class setting. Declaring a field again
-in a subclass can replace its names and remove its old properties without
-changing the base class. Two different fields cannot share an alias or a
-property name, even when they come from different bases, so the old
-declaration has to be removed before its name is reused.
+written on a field still wins over the class setting.
+
+Declaring a field again in a subclass can replace its names and remove its
+old properties without changing the base class. Two different fields cannot
+share an alias or a property name, even when they come from different bases,
+so the old declaration has to be removed before its name is reused.
 
 Properties add no fields and no storage. Mapping access and serialization
 use only the preferred public name as the key. Constructor hooks receive the

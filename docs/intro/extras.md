@@ -32,8 +32,8 @@ something sets it, so the field stays out of the view until then:
 ```
 
 On a frozen class, `__post_init__` cannot set such a field by assignment.
-It sets the field with `object.__setattr__` instead, which is the same
-approach that `dataclasses` and `attrs` require:
+A `__post_init__` that needs to set it calls `object.__setattr__` instead,
+which is the same approach that `dataclasses` and `attrs` require:
 
 ```pycon
 >>> class Slug(Magic, frozen=True):
@@ -72,10 +72,10 @@ validation and the init hooks all run on the new values, and that is also why
 which derives one field from another derives it again from the value it
 already derived.
 
-`asdict` recurses into nested Magic instances and returns every other value
-as it is. A field with no value is left out of the dictionary. `astuple`
-raises an error for such a field instead, because a missing position would
-shift every value after it.
+`asdict` recurses into nested Magic instances, including those inside lists,
+tuples and dicts, and returns every other value as it is. A field with no
+value is left out of the dictionary. `astuple` raises an error for such a
+field instead, because a missing position would shift every value after it.
 
 `fields` and `fields_dict` return the fields themselves, and `is_magic` tells
 whether a class was built by `Magic`.
@@ -146,9 +146,9 @@ Circle(radius=6.0)
 
 ## Generic classes
 
-A `Magic` class can take a type parameter. Filling the parameter in gives the
-fields that use it the type it was filled in with, whether the parameter is
-filled in by a named subclass or at the call site:
+A `Magic` class can take a type parameter. When the parameter is given a
+type, every field written with the parameter takes that type, whether the
+type is given by a named subclass or at the call site:
 
 ```python
 from typing import Generic, TypeVar

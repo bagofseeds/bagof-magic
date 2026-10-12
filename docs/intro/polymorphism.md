@@ -61,15 +61,16 @@ effect.
 
 A subclass with more conditions wins over one with fewer, and a narrower
 condition wins over a wider one. The rules are applied in order: first the
-number of fields that the subclass constrains, then how precise the
-constraints are (an exact value, then a set, then a pattern, then a type), and
-finally how far down the hierarchy the subclass sits.
+`priority=` the subclass was given (higher wins, default 0), then the number
+of fields that the subclass constrains, then how precise the constraints are
+(an exact value, then a set, then a pattern, then a type), and finally how
+far down the hierarchy the subclass sits.
 
 The order in which the subclasses were imported is never considered. When
 no rule separates two subclasses, the call raises `AmbiguousPolymorphError`,
-and `priority=` settles the tie. A low priority is also the way to write a
-subclass for when nothing else fits, since a subclass that constrains nothing
-matches every call:
+and a different `priority=` settles the tie. A low priority is also the way
+to write a subclass for when nothing else fits, since a subclass that
+constrains nothing matches every call:
 
 ```python
 class Note(Magic, polymorphic=True):
@@ -439,12 +440,13 @@ that the base class passes reaches a parameter that accepts it. If it does
 not take `mode` but holds a value that the constraint calls for, the base
 class leaves `mode` out of the call that builds the subclass. Both
 `Chord(root="A", mode="minor")` and the subclass then work, and the subclass
-called directly does not take `mode` at all. The subclass is refused only
-when it neither takes `mode` nor holds a value that the constraint accepts,
-because the base class could then only pass `mode` to a constructor that
-would reject it. `pin_discriminant="classvar"` keeps the field a parameter
-while storing it once, so both calls work without the attribute being written
-out.
+called directly does not take `mode` at all.
+
+The subclass is refused only when it neither takes `mode` nor holds a value
+that the constraint accepts, because the base class could then only pass
+`mode` to a constructor that would reject it. `pin_discriminant="classvar"`
+keeps the field a parameter while storing it once, so both calls work without
+the attribute being written out.
 
 ### Pinning one field
 
