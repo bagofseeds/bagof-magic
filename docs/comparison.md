@@ -4,18 +4,19 @@ icon: fontawesome/solid/scale-balanced
 
 # How it compares
 
-Four libraries solve overlapping problems. The choice depends on what you
-want the type hints to do.
+Four libraries solve overlapping problems, and the choice between them
+depends mostly on what the type hints should do.
 
 - **[dataclasses][]** is in the standard library. It generates `__init__`,
-  `__repr__`, `__eq__`. It reads your hints but never acts on them.
-- **[attrs][]** does the same, with more control, and adds converters and
-  validators you write yourself.
-- **[pydantic][]** reads the hints and acts on them: parsing, coercing and
-  rejecting values. This is why it dominates web and config code.
-- **`magic`** sits with attrs on API design and with pydantic on hints.
-  Nothing is added to your class unless you ask for it. When you do ask,
-  the type hint drives it.
+  `__repr__` and `__eq__`, and it reads the type hints but never acts on
+  them.
+- **[attrs][]** does the same with more control, and adds converters and
+  validators that are written by hand.
+- **[pydantic][]** reads the hints and acts on them by parsing, coercing and
+  rejecting values, which is why it dominates web and configuration code.
+- **`magic`** follows attrs in its API design and pydantic in its use of
+  the hints. Nothing is added to a class unless the class asks for it, and
+  whatever it asks for is driven by the type hint.
 
 ## At a glance
 
@@ -108,39 +109,40 @@ want the type hints to do.
 
 ### dataclasses
 
-Use it when you want no dependency and only need the basics. It is in the
-standard library, everyone recognises it, and every tool supports it. If
-your data is already the right type by the time it reaches you, the other
-three have nothing to add.
+Use it when the basics are enough and no dependency is wanted. It is in the
+standard library, everyone recognises it, and every tool supports it. When
+the data already has the right types by the time it arrives, the other three
+have nothing to add.
 
 ### attrs
 
-Use it when you want the basics done well, with full control and no
-surprises. It is older and more battle-tested than either of the others,
-has no heavy runtime dependency, and its validator library is excellent.
-`magic` follows its design lead. If you like attrs and want the type hints
-to do more of the work, `magic` should feel familiar.
+Use it when the basics should be done well, with full control and no
+surprises. It is older and more widely used in production than pydantic or
+`magic`, it has no heavy runtime dependency, and its validator library is
+excellent. `magic` follows its design, so anyone who likes attrs and wants
+the type hints to do more of the work should find `magic` familiar.
 
 ### pydantic
 
-Use it when you are parsing untrusted input at a boundary, and you need
-JSON schema, serialisation, and a large ecosystem of integrations. Nothing
-here competes with that. It also means your model class gains a large
-public API you did not write. That is fine at a boundary and less fine for
-a domain object.
+Use it to parse untrusted input at a boundary, when JSON schema,
+serialisation and a large ecosystem of integrations are needed. `magic` does
+not compete with that. The cost is that a pydantic model gains a large public
+API that its author did not write, which is acceptable at a boundary and less
+so for a domain object.
 
 ### magic
 
-Use it when you want the hints to drive conversion and validation, but you
-want a plain class at the end of it. One where the only methods are the
-ones you wrote and the ones you asked for.
+Use it when the hints should drive conversion and validation, but the
+result should still be a plain class, whose only methods are the ones its
+author wrote and the ones the author asked for.
 
 ## Things magic does that the others do not
 
 ### Settings are inherited
 
-Every other library re-applies its decorator per class. `magic` merges
-settings down the inheritance chain. A base class sets the house style once:
+dataclasses and attrs apply their decorator to each class separately.
+`magic` merges the settings down the inheritance chain, so a base class sets
+the house style once:
 
 ```python
 from bagof.magic import Magic
@@ -158,14 +160,16 @@ class User(Record):
 User(name='ada', age=36)
 ```
 
-A subclass that changes a setting changes it for the fields it declares
-itself. Add `override=True` and it changes inherited fields too. A field
-that asked for something in its own annotation always wins.
+A subclass that changes a setting changes it for the fields that it
+declares itself, and with `override=True` the change applies to the inherited
+fields as well. A field that asks for something in its own annotation always
+keeps it.
 
 ### Per-field behaviour is part of the annotation
 
-The others put it in a `field()` call on the right-hand side. That pushes
-the default out of the way and reads oddly once you use more than one:
+The others put per-field behaviour in a `field()` call on the right-hand
+side. The default then moves inside the call, and the class becomes harder to
+read once several settings are involved:
 
 === "magic"
 
@@ -194,8 +198,8 @@ the default out of the way and reads oddly once you use more than one:
 
 ### Instances can behave like dictionaries
 
-Useful for anything that is conceptually a record: a config section, a row,
-a header block:
+Dict-like access is useful for anything that is a record at heart, such as
+a configuration section, a table row or a block of headers:
 
 ```python
 from bagof.magic import Magic
@@ -210,10 +214,12 @@ class Header(Magic, mapping=True):
 {'content_type': 'text/plain', 'length': 12}
 ```
 
-A key is present while its field holds a value. A field that is only filled
-in later stays out of the view until it is.
+A key is present while its field holds a value, so a field that is filled
+in later stays out of the view until then.
 
 ### The docstring writes itself
+
+A field described with `Doc` is listed in the class docstring:
 
 ```python
 from bagof.magic import Magic, Doc
@@ -238,11 +244,13 @@ times : int, default=3
 
 ## Things the others do that magic does not
 
-- **JSON schema and serialisation.** Pydantic's strongest feature. `magic`
-  has neither yet.
-- **Deep-copying leaves.** `dataclasses.asdict` deep-copies every non-dataclass
-  value; `magic`'s `asdict` returns non-Magic values as-is. This is deliberate:
-  a field holding a NumPy array or a large object should not be silently copied.
+- **JSON schema and serialisation.** These are pydantic's strongest
+  features, and `magic` has neither yet.
+- **Deep-copying leaves.** `dataclasses.asdict` deep-copies every value that
+  is not a dataclass, while `asdict` in `magic` returns every value that is
+  not a Magic instance as it is. The difference is deliberate, because a
+  field that holds a NumPy array or another large object should not be
+  copied silently.
 - **Editor and type-checker support.** The others are understood by mypy and
   pyright today, so your editor completes the constructor and catches wrong
   argument types. `magic` is not, yet ([tracked here][typing]). The route
