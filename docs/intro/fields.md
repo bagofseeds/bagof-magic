@@ -545,3 +545,50 @@ See [Settings](settings.md) for the class-wide switches these annotations
 override, [Conversion and validation](conversion.md) for `ConvertTo` and
 `Validate`, and [Aliases and properties](aliases.md) for `Alias`,
 `Property` and `ReadOnlyProperty`.
+
+## Type checkers
+
+Type checkers such as mypy and pyright read the code without running it.
+The annotations in this family are classes, and writing one with a type
+in brackets, as in `Frozen[int]`, only becomes `Annotated[int, Frozen()]`
+when the code runs. A checker therefore reports `Frozen[int]` as a class
+that takes no type arguments, although the class works as described above.
+
+Each setting has a spelling that both checkers accept. For most settings,
+write the marker with parentheses inside `Annotated`, as in
+`Annotated[int, Frozen()]`, importing `Annotated` from `typing_extensions`
+on Python 3.8. For the others, pass the setting to `field(...)`, as the
+table shows:
+
+| Reported by a checker | Accepted by both |
+| --- | --- |
+| `x: Frozen[int] = 0`, and any other annotation with a type in brackets | `x: Annotated[int, Frozen()] = 0` |
+| `n: Alias[int, "why"] = 0` | `n: int = field(alias="why", default=0)` |
+| `n: Default[int, 3]` | `n: int = 3` |
+| `n: Pin[str, "classvar"]`, `n: Doc[int, "..."]` | `n: Annotated[str, Pin("classvar")]`, `n: Annotated[int, Doc("...")]` |
+| `items: Factory[list]`, read as having no default | `items: list = field(factory=list)` |
+| `n: KwOnly[int]`, read as positional | `n: int = field(kw_only=True)` |
+| `n: ClassVar[int] = 0`, with `ClassVar` from `bagof.magic` | `n: typing.ClassVar[int] = 0` |
+
+The class treats `typing.ClassVar` exactly as it treats the `ClassVar` of
+this family, so the last row changes nothing when the code runs.
+
+`Annotated` does not help with every setting, because a checker accepts
+the annotation but does not know what it does. A checker reads
+`items: Annotated[list, Factory()]` as a field with no default, and reads
+`n: Annotated[int, KwOnly()]` as a parameter that can be passed by
+position. A checker also reads `_n: Annotated[int, Alias("why")]` as a
+parameter named `_n`, so an input name has to be given with
+`field(alias=...)` for a checker to know it. The same applies to a field
+whose name starts with an underscore, which is described under
+[Aliases and properties](aliases.md#fields-that-start-with-an-underscore).
+
+A checker reads a setting given in `Annotated` as the type alone, so the
+constructor still takes an `int` for `x: Annotated[int, ConvertTo()]`,
+although the class converts any value that `int()` accepts.
+
+A field that is built from an inherited one, such as
+`x: ... = Inherit(frozen=True)`, cannot be typed. mypy reports `...` as a
+type, here and in `x: Frozen[...]`. pyright accepts the first spelling, but
+it reads the type of `x` as `...`, so the constructor checks nothing for
+that argument.
