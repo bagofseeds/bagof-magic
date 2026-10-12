@@ -67,6 +67,7 @@ from ._constants import (
     _OPTIONS,
     _POLYMORPHS,
     _REGISTRATION,
+    _TAKEN_OVER,
     MISSING,
     MaybeMissing,
 )
@@ -421,15 +422,32 @@ def forgotten_by(
     """
     for cls in classes:
         for name in cls.__dict__.get(_FORGOTTEN, ()):
-            if key == name:
+            if key == name or key in _removed_aliases(cls, name):
                 return cls
-            for base in cls.__mro__[1:]:
-                table = base.__dict__.get(_FIELDS)
-                if table is not None and name in table:
-                    if key in table[name].aliases:
-                        return cls
-                    break
     return None
+
+
+def _removed_aliases(cls: type, name: str) -> tx.Tuple[str, ...]:
+    # The names the field `cls` removed under `name` was passed by, read
+    # off the nearest base that has it.
+    for base in cls.__mro__[1:]:
+        table = base.__dict__.get(_FIELDS)
+        if table is not None and name in table:
+            return table[name].aliases
+    return ()  # pragma: no cover -- a class only removes what it has
+
+
+def how_removed(cls: type, key: str) -> str:
+    """
+    How `cls` removed the field `key` names, worded to follow "removed".
+
+    A field leaves a class either through `Forget` or because another
+    field took it over with `Inherit`.
+    """
+    for name, taker in cls.__dict__.get(_TAKEN_OVER, {}).items():
+        if key == name or key in _removed_aliases(cls, name):
+            return f"by taking it over as {taker!r}"
+    return "with Forget"
 
 
 def check_fields(
@@ -451,7 +469,8 @@ def check_fields(
             )
             forgetter = forgotten_by(owner.__mro__, spec.name)
             why = (
-                f" {forgetter.__name__} removed it with Forget."
+                f" {forgetter.__name__} removed it "
+                f"{how_removed(forgetter, spec.name)}."
                 if forgetter is not None else ""
             )
             raise TypeError(
@@ -998,7 +1017,11 @@ def _refused(
         order = [f for f in positional if not f.kw]
         order += [f for f in positional if f.kw]
         for index, field in enumerate(order):
-            if field.name not in target_fields:
+            # A field another one took over under the same public name
+            # is still there, as far as the call is concerned.
+            if field.name not in target_fields and (
+                field.public_name not in taken
+            ):
                 position, label = index, field.public_name
                 break
     if not names and position is None:
@@ -1473,7 +1496,8 @@ def _passed_over(
             continue
         forgetter = forgotten_by(entry.target.__mro__, name)
         removed = (
-            f", which {forgetter.__name__} removed with Forget"
+            f", which {forgetter.__name__} removed "
+            f"{how_removed(forgetter, name)}"
             if forgetter is not None else ""
         )
         lines.append(

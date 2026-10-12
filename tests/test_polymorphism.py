@@ -36,8 +36,11 @@ from bagof.magic import (
     AmbiguousPolymorphError,
     ClassVar,
     ConvertTo,
+    Doc,
     Factory,
     Forget,
+    Frozen,
+    Inherit,
     KwOnly,
     Magic,
     MetaMagic,
@@ -48,6 +51,7 @@ from bagof.magic import (
     Pin,
     PolymorphError,
     PositionalOnly,
+    Validate,
     asdict,
     field,
     magic,
@@ -4554,3 +4558,172 @@ class TestPinnedValueOnTheClass:
             pass
 
         assert Inverse.kind == "inverse"
+
+
+class TestInheritingADiscriminant:
+    """Building a field from a discriminant with `Inherit` or `...`."""
+
+    @staticmethod
+    def _signals() -> tx.Tuple[type, type]:
+        class Signal(Magic, polymorphic=True):
+            kind: str = ""
+            value: int = 0
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        return Signal, Inverse
+
+    def test_a_patch_keeps_the_pinned_value(self) -> None:
+        Signal, Inverse = self._signals()
+
+        class Fixed(Inverse):
+            kind: Frozen[...]
+
+        assert str(signature(Fixed)) == (
+            "(kind: str = 'inverse', value: int = 0) -> None"
+        )
+        assert Fixed().kind == "inverse"
+        assert Fixed.__dict__[_FIELDS]["kind"].frozen is True
+        assert type(Signal(kind="inverse")) is Inverse
+
+    def test_a_patch_keeps_a_class_attribute_pin(self) -> None:
+        class Signal(Magic, polymorphic=True, pin_discriminant=CLASSVAR):
+            kind: str = ""
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        class Below(Inverse):
+            kind: Doc[..., "what it is"]  # noqa: F722
+
+        field = Below.__dict__[_FIELDS]["kind"]
+        assert field.var is True
+        assert field.doc == "what it is"
+        assert list(signature(Below).parameters) == ["kind"]
+        assert repr(Below()) == "Below()"
+
+    def test_a_patch_keeps_the_narrowing(self) -> None:
+        Signal, Inverse = self._signals()
+
+        class Strict(Signal, on={"kind": "strict"}, pin_discriminant=NARROW):
+            pass
+
+        class Kept(Strict):
+            kind: Frozen[...]
+
+        with pytest.raises(ValueValidationError):
+            Kept(kind="other")
+        assert Kept().kind == "strict"
+
+    def test_a_new_validator_does_not_undo_the_narrowing(self) -> None:
+        Signal, Inverse = self._signals()
+        seen = []
+
+        def note(value: tx.Any) -> tx.Any:
+            seen.append(value)
+            return value
+
+        class Strict(Signal, on={"kind": "strict"}, pin_discriminant=NARROW):
+            pass
+
+        class Noted(Strict):
+            kind: Validate[..., note]
+
+        assert Noted().kind == "strict"
+        assert seen == ["strict"]
+        with pytest.raises(ValueValidationError):
+            Noted(kind="other")
+
+    def test_taking_it_over_under_the_same_name(self) -> None:
+        Signal, Inverse = self._signals()
+
+        class Stored(Inverse):
+            _kind: Inherit[..., "kind"]  # noqa: F821
+
+        assert str(signature(Stored)) == (
+            "(kind: str = 'inverse', value: int = 0) -> None"
+        )
+        assert Stored()._kind == "inverse"
+        assert type(Signal(kind="inverse")) is Inverse
+
+        class Deep(Stored, on={"kind": "deep"}):
+            pass
+
+        assert type(Stored(kind="deep")) is Deep
+        assert Stored(kind="deep")._kind == "deep"
+
+    def test_taking_it_over_under_another_name_is_refused(self) -> None:
+        Signal, Inverse = self._signals()
+        with pytest.raises(
+            TypeError,
+            match=r"^Renamed\._kind takes over 'kind' and renames it from "
+            r"'kind' to 'sort', but Inverse chooses between its subclasses "
+            r"by 'kind'",
+        ):
+            class Renamed(Inverse):
+                _kind: Inherit[..., "kind", field(alias="sort")]  # noqa: F821
+        with pytest.raises(TypeError, match="but Signal chooses"):
+            class Other(Signal):
+                _kind: Inherit[..., "kind", field(alias=False)]  # noqa: F821
+
+    def test_a_field_nothing_chooses_by_can_be_renamed(self) -> None:
+        Signal, Inverse = self._signals()
+
+        class Renamed(Inverse):
+            _value: Inherit[..., "value", field(alias="amount")]  # noqa: F821
+
+        assert Renamed(amount=2)._value == 2
+
+    def test_a_subclass_that_took_a_field_over_is_still_chosen(
+        self
+    ) -> None:
+        Signal, Inverse = self._signals()
+
+        class Stored(Signal, on={"kind": "stored"}):
+            _value: Inherit[..., "value"]  # noqa: F821
+
+        assert type(Signal("stored", 4)) is Stored
+        assert Signal("stored", 4)._value == 4
+        assert Signal(kind="stored", value=5)._value == 5
+
+    def test_a_subclass_that_renamed_a_field_is_passed_over(self) -> None:
+        class Signal(Magic, polymorphic="strict"):
+            kind: str = ""
+            value: int = 0
+
+        class Moved(Signal, on={"kind": "moved"}):
+            _value: Inherit[..., "value", field(alias="amount")]  # noqa: F821
+
+        assert type(Signal(kind="moved")) is Moved
+        with pytest.raises(NoPolymorphError) as caught:
+            Signal(kind="moved", value=1)
+        assert (
+            "Moved matches, but does not take 'value', which Moved removed "
+            "by taking it over as '_value'"
+        ) in str(caught.value)
+
+    def test_registering_on_a_name_taken_over(self) -> None:
+        Signal, Inverse = self._signals()
+        with pytest.raises(
+            TypeError,
+            match=r"^Moved registers on 'value', but Moved\._value takes "
+            r"that field over under another name",
+        ):
+            class Moved(Inverse, on={"value": 1}):
+                _value: Inherit[..., "value", field(alias="amount")]  # noqa: F821
+
+        class Below(Inverse):
+            _value: Inherit[..., "value", field(alias="amount")]  # noqa: F821
+
+        with pytest.raises(
+            TypeError, match="Below removed it by taking it over as "
+            "'_value'",
+        ):
+            class Again(Below, on={"value": 1}):
+                pass
+        with pytest.raises(
+            TypeError, match="it has no field 'value', since Below removed "
+            "it by taking it over as '_value'",
+        ):
+            Signal.register_polymorph(Below, value=1)
