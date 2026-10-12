@@ -5,12 +5,12 @@ __all__ = ["Arguments"]
 
 
 class Arguments:
-    """Everything that was passed to `__init__`, reachable by name.
+    """The values passed to `__init__`, readable by name.
 
-    A class whose `__pre_init__` or `__post_init__` takes a parameter is
-    handed one of these. It is the whole set of values the constructor
-    was called with -- ordinary fields and `InitVar` fields alike, with
-    any default already filled in.
+    A `__pre_init__` or `__post_init__` method that takes a parameter
+    receives an `Arguments` instance. The instance holds every value
+    that the constructor was called with, for ordinary fields and
+    `InitVar` fields alike, with any default already filled in.
 
     ```pycon
     >>> from bagof.magic import Magic, InitVar
@@ -24,11 +24,12 @@ class Arguments:
     Circle(radius=6.0)
     ```
 
-    `__pre_init__` sees the values as they came in; `__post_init__` sees
-    them as they were stored, after any conversion and validation.
+    `__pre_init__` sees the values as they were passed, and
+    `__post_init__` sees them as they were stored, after any conversion
+    and validation.
 
-    Read a value by attribute or by key, and unpack the whole set with
-    `**arguments`:
+    A value can be read as an attribute or by key, and the whole set can
+    be unpacked with `**arguments`:
 
     ```pycon
     >>> from bagof.magic import Arguments
@@ -37,9 +38,9 @@ class Arguments:
     (3.0, 3.0, {'radius': 2.0, 'scale': 3.0})
     ```
 
-    A value named `keys` or `get` can only be read by key, since those
-    two names belong to the methods. Every other name, including one
-    starting with an underscore, is reachable either way.
+    A value named `keys` or `get` can only be read by key, because those
+    two names belong to methods. Every other name, including a name that
+    starts with an underscore, can be read either way.
     """
 
     __slots__ = ("__values",)
@@ -51,22 +52,22 @@ class Arguments:
         Parameters
         ----------
         values : mapping, optional
-            The values, if it is easier to pass them as one mapping.
-            Positional, so that a value of any name can be given as a
-            keyword without clashing with it.
+            The values as a single mapping. The parameter is
+            positional-only, so a value of any name, `values` included,
+            can also be given as a keyword.
         **named
-            The values, one keyword each.
+            The values, given as keyword arguments.
         """
         merged = dict(values or {})
         merged.update(named)
         object.__setattr__(self, "_Arguments__values", merged)
 
     def keys(self) -> tx.KeysView:
-        """The names, in the order `__init__` declares them."""
+        """Return the names, in the order in which `__init__` declares them."""
         return self.__values.keys()
 
     def get(self, name: str, default: tx.Any = None) -> tx.Any:
-        """The value passed for `name`, or `default` if there is none."""
+        """Return the value passed for `name`, or `default` if none was."""
         return self.__values.get(name, default)
 
     def __getitem__(self, name: str) -> tx.Any:
