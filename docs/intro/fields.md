@@ -82,6 +82,99 @@ TypeError: field() got an unexpected keyword argument 'defaults'. Did you mean '
 `tags: list = Field(factory=list)` as assigning a `Field` to a `list` slot,
 while `field(...)` says it produces whatever the annotation requires.
 
+## What a type checker can see
+
+Type checkers such as mypy and pyright work out the constructor of a
+`Magic` class the way they do for `dataclasses`. They read a field's
+default, the name it is passed by, and whether it is keyword-only or left
+out of the constructor, but they read these only from a call written as
+the field's value. An annotation such as `KwOnly[int]` changes nothing that
+a checker can see.
+
+Every annotation in the table below can therefore also be written as the
+value, and a checker reads it there as declaring the field. Written there,
+each one takes the keywords that a checker reads: `alias=`, `default=`,
+`factory=`, `kw_only=`, `init=` and, for pyright, `converter=`.
+
+=== "In the annotation"
+
+    ```python
+    from bagof.magic import Magic, Alias, Factory, KwOnly, NoInit
+
+    class Job(Magic):
+        _command: Alias[str, "command"]
+        env: Factory[dict]
+        retries: KwOnly[int] = 0
+        attempts: NoInit[int] = 0
+    ```
+
+=== "As the value"
+
+    ```python
+    from bagof.magic import Magic, Alias, Factory, KwOnly, NoInit
+
+    class Job(Magic):
+        _command: str = Alias(alias="command")
+        env: dict = Factory(factory=dict)
+        retries: int = KwOnly(kw_only=True, default=0)
+        attempts: int = NoInit(init=False, default=0)
+    ```
+
+=== "With field()"
+
+    ```python
+    from bagof.magic import Magic, field
+
+    class Job(Magic):
+        _command: str = field(alias="command")
+        env: dict = field(factory=dict)
+        retries: int = field(kw_only=True, default=0)
+        attempts: int = field(init=False, default=0)
+    ```
+
+The three spellings build the same class, and each one refuses `retries`
+by position:
+
+```pycon
+>>> Job("make", retries=2)
+Job(command='make', env={}, retries=2, attempts=0)
+>>> Job("make", {}, 2)
+Traceback (most recent call last):
+  ...
+TypeError: __init__() takes from 2 to 3 positional arguments but 4 were given
+```
+
+A checker reads the keyword and never the annotation's own meaning, so
+`KwOnly()` without `kw_only=True` looks to a checker like a field that may
+be passed by position. For the same reason, a keyword that contradicts the
+annotation is refused rather than letting the checker and the class
+disagree:
+
+```pycon
+>>> KwOnly(kw_only=False)
+Traceback (most recent call last):
+  ...
+TypeError: KwOnly(kw_only=False) says two different things: ...
+```
+
+An annotation that does not shape the constructor, such as `Frozen()` or
+`Repr(False)`, is read the same way: the field is required unless the call
+also gives `default=` or `factory=`. So `x: int = Frozen()` is a required
+field to a checker, as it is to the class, and `x: int = Frozen(default=0)`
+is an optional one. The annotations that take an argument of their own,
+such as `Doc("...")`, `ShowIf(test)` and `HideIfNone()`, take the same
+keywords after it, as in `nickname: Optional[str] = HideIfNone(default=None)`.
+
+When the annotation and the value both say something about the same field,
+the value is read second. A setting that both of them give takes the
+value's answer, and the names given to `Alias` in each place are all
+accepted.
+
+pyright accepts the annotations as values. mypy reads the constructor from
+them correctly but still reports each one as assigning, say, a `KwOnly` to
+an `int`, as it does for `Field(...)`. The `field(...)` spelling takes the
+same keywords and is accepted by both checkers without an error.
+
 ## The annotations
 
 Each of these can be used bare (`x: Frozen[int]`) or with a value
@@ -550,3 +643,50 @@ See [Settings](settings.md) for the class-wide switches these annotations
 override, [Conversion and validation](conversion.md) for `ConvertTo` and
 `Validate`, and [Aliases and properties](aliases.md) for `Alias`,
 `Property` and `ReadOnlyProperty`.
+
+## Type checkers
+
+Type checkers such as mypy and pyright read the code without running it.
+The annotations in this family are classes, and writing one with a type
+in brackets, as in `Frozen[int]`, only becomes `Annotated[int, Frozen()]`
+when the code runs. A checker therefore reports `Frozen[int]` as a class
+that takes no type arguments, although the class works as described above.
+
+Each setting has a spelling that both checkers accept. For most settings,
+write the marker with parentheses inside `Annotated`, as in
+`Annotated[int, Frozen()]`, importing `Annotated` from `typing_extensions`
+on Python 3.8. For the others, pass the setting to `field(...)`, as the
+table shows:
+
+| Reported by a checker | Accepted by both |
+| --- | --- |
+| `x: Frozen[int] = 0`, and any other annotation with a type in brackets | `x: Annotated[int, Frozen()] = 0` |
+| `n: Alias[int, "why"] = 0` | `n: int = field(alias="why", default=0)` |
+| `n: Default[int, 3]` | `n: int = 3` |
+| `n: Pin[str, "classvar"]`, `n: Doc[int, "..."]` | `n: Annotated[str, Pin("classvar")]`, `n: Annotated[int, Doc("...")]` |
+| `items: Factory[list]`, read as having no default | `items: list = field(factory=list)` |
+| `n: KwOnly[int]`, read as positional | `n: int = field(kw_only=True)` |
+| `n: ClassVar[int] = 0`, with `ClassVar` from `bagof.magic` | `n: typing.ClassVar[int] = 0` |
+
+The class treats `typing.ClassVar` exactly as it treats the `ClassVar` of
+this family, so the last row changes nothing when the code runs.
+
+`Annotated` does not help with every setting, because a checker accepts
+the annotation but does not know what it does. A checker reads
+`items: Annotated[list, Factory()]` as a field with no default, and reads
+`n: Annotated[int, KwOnly()]` as a parameter that can be passed by
+position. A checker also reads `_n: Annotated[int, Alias("why")]` as a
+parameter named `_n`, so an input name has to be given with
+`field(alias=...)` for a checker to know it. The same applies to a field
+whose name starts with an underscore, which is described under
+[Aliases and properties](aliases.md#fields-that-start-with-an-underscore).
+
+A checker reads a setting given in `Annotated` as the type alone, so the
+constructor still takes an `int` for `x: Annotated[int, ConvertTo()]`,
+although the class converts any value that `int()` accepts.
+
+A field that is built from an inherited one, such as
+`x: ... = Inherit(frozen=True)`, cannot be typed. mypy reports `...` as a
+type, here and in `x: Frozen[...]`. pyright accepts the first spelling, but
+it reads the type of `x` as `...`, so the constructor checks nothing for
+that argument.

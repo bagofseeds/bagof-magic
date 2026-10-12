@@ -1,5 +1,8 @@
 pytest>=7
 mypy==1.14.1
+# tests/test_checkers.py runs pyright as well as mypy on the annotation
+# family; without it those tests skip and their lines go uncovered.
+pyright==1.1.414
 # tests/test_griffe_ext.py drives docs/griffe_ext.py, the extension that
 # puts the generated constructor and fields into the documentation site.
 # griffe needs Python 3.10, and the tests skip themselves without it.

@@ -257,7 +257,8 @@ times : int, default=3
   argument types. `magic` is not, yet ([tracked here][typing]). The route
   is the same standard the others use, so most of it should follow. The
   part that will not is a field written purely as an annotation
-  (`tags: Factory[list]`), which a checker cannot see a default for.
+  (`tags: Factory[list]`), which a checker cannot see a default for;
+  written as the value (`tags: list = Factory(factory=list)`), it can.
   Nor will a required field after one with a default, which checkers
   report by the `dataclasses` rule even though the class works.
 
