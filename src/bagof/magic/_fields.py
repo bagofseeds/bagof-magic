@@ -101,6 +101,36 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
 ))
 
 
+class _InheritedType:
+    """Stands for `...` as the type of a field built from a family member.
+
+    `Frozen[...]` asks for the inherited field's own type, but `Annotated`
+    refuses `...` before Python 3.12, so the family puts this in its place.
+    The builder reads it the same way it reads `...`. Named after what it
+    stands for, so a printed annotation still shows `...`.
+    """
+
+
+# `typing` spells a class from `builtins` by its bare name, so an
+# annotation holding this prints as `Annotated[..., Frozen(...)]`.
+_InheritedType.__module__ = "builtins"
+_InheritedType.__qualname__ = _InheritedType.__name__ = "..."
+
+
+def _is_inherited_type(type: tx.Any) -> bool:
+    """Whether a field's type says "the type of the field it inherits"."""
+    return type is Ellipsis or type is _InheritedType
+
+
+def _annotated(type: tx.Any, *metadata: tx.Any) -> tx.TypeAlias:
+    # `Annotated[type, *metadata]`, which every subscription in the family
+    # builds. A `...` type is carried by `_InheritedType`, since
+    # `Annotated` refuses it before Python 3.12.
+    if type is Ellipsis:
+        type = _InheritedType
+    return tx.Annotated[(type,) + metadata]
+
+
 def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     """Feed one callable's result into another: `first`, then `second`."""
     def chained(value: tx.Any) -> tx.Any:
@@ -337,7 +367,7 @@ class Field(SlotsBase):
         if not isinstance(t, tuple):
             t = (t,)
         t, *args = t
-        return tx.Annotated[(t, cls(True)) + tuple(args)]
+        return _annotated(t, cls(True), *args)
 
     @property
     def init(self) -> bool:
@@ -880,7 +910,7 @@ class AnnotatedField(Field):
             raise TypeError(
                 f"Missing required argument for {cls.__name__!r}[]"
             )
-        return tx.Annotated[(t, cls(*values)) + tuple(args)]
+        return _annotated(t, cls(*values), *args)
 
 
 @slots
@@ -896,7 +926,7 @@ class BoolAnnotatedField(AnnotatedField):
         t, *args = args
         # No positional value: each slot takes the value its declaring
         # class set. Anything after the type stays as metadata.
-        return tx.Annotated[(t, cls()) + tuple(args)]
+        return _annotated(t, cls(), *args)
 
 
 @slots
@@ -1334,7 +1364,7 @@ class Repr(BoolAnnotatedField):
             and not issubclass(cls, InversedBoolAnnotatedField)
         ):
             t, how, *rest = args
-            return tx.Annotated[(t, cls(how)) + tuple(rest)]
+            return _annotated(t, cls(how), *rest)
         # Named rather than `super()`: the `slots` decorator rebuilds the
         # class, and before 3.10 a classmethod's `super()` keeps pointing
         # at the class it was first written in.
@@ -1416,9 +1446,9 @@ class ShowIf(Repr):
                     f"{cls.__name__}[int, bool]."
                 )
             t, test, *rest = args
-            return tx.Annotated[(t, cls(test)) + tuple(rest)]
+            return _annotated(t, cls(test), *rest)
         t, *rest = args
-        return tx.Annotated[(t, cls()) + tuple(rest)]
+        return _annotated(t, cls(), *rest)
 
     # Whether the constructor and the subscription take a test.
     _takes_test = True

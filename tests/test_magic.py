@@ -8326,3 +8326,33 @@ class TestForget:
 
         assert list(signature(Sub).parameters) == ["y", "x"]
         assert Sub()._x == 5
+
+
+# ----------------------------------------------------------------------
+# `...` as a type
+
+
+class TestEllipsisAsAType:
+    """`Frozen[...]` builds on every Python, and prints as written."""
+
+    def test_the_family_accepts_ellipsis_on_every_python(self) -> None:
+        for annotation in (
+            Frozen[...], NoRepr[...], Default[..., 3], Doc[..., "text"],
+            ShowIf[..., bool], HideIfNone[...], Repr[..., str],
+            Field[...], ConvertTo[...],
+        ):
+            assert tx.get_origin(annotation) is tx.Annotated
+            assert _fields._is_inherited_type(tx.get_args(annotation)[0])
+
+    def test_it_prints_as_ellipsis(self) -> None:
+        assert repr(Frozen[...]).endswith(
+            "Annotated[..., Frozen(frozen=True)]"
+        )
+
+    def test_a_real_type_is_left_alone(self) -> None:
+        assert tx.get_args(Frozen[int])[0] is int
+
+    def test_both_spellings_are_read_as_inherited(self) -> None:
+        assert _fields._is_inherited_type(Ellipsis)
+        assert _fields._is_inherited_type(_fields._InheritedType)
+        assert not _fields._is_inherited_type(int)
