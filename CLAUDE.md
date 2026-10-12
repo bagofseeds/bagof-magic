@@ -742,10 +742,17 @@ consensus:
 
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 
+**The writing style is the org guide's**: `bagofseeds/.github`, `CLAUDE.md`,
+section "Documentation" (docstring mechanics, prose, flow, concision,
+punctuation, structure, and the revision test). Read it before writing or
+editing any documentation here, and follow it where it says more than this
+section. It asks for polished, continuous prose rather than compressed
+facts; do not imitate terser pages already in this repository.
+
 Docs are for **Python developers who want to use `magic` to build clean data
 classes**. They are not experts in metaclasses, typing internals, or the
-builder's implementation. Every sentence should help them write correct,
-readable code. Apply this to every hand-written page and to every public
+builder's implementation. On top of the org guide, apply these
+repo-specific rules to every hand-written page and to every public
 docstring:
 
 1. **Lead with what the user writes.** Show the simplest spelling first.
@@ -767,9 +774,9 @@ docstring:
    well as current. The usual trap is `typing`: `Annotated` only exists from
    3.9. Prefer the package's own sugar (`Doc[int, "..."]`, `Frozen[int]`) in
    examples.
-5. **Short sentences, no filler.** If a sentence can be cut without losing
-   meaning, cut it. If an example reads as awkward, that is a signal that
-   `magic` is missing sugar. File an `enhancement` issue for the gap.
+5. **An awkward example is a missing feature.** If an example reads as
+   awkward, that is a signal that `magic` is missing sugar. File an
+   `enhancement` issue for the gap rather than explaining around it.
 
 **This applies equally to every public docstring** (anything without a leading
 underscore, reachable from `bagof.magic`). The API reference renders them
