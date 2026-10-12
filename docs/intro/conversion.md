@@ -1,6 +1,7 @@
 # Conversion and validation
 
-Turn them on and the type hint does the work:
+When conversion and validation are turned on, each field's type hint decides
+how its values are converted and checked:
 
 ```python
 class Config(Magic, convert=True, validate=True):
@@ -13,8 +14,8 @@ class Config(Magic, convert=True, validate=True):
 Config(host='localhost', port=9000)
 ```
 
-`"9000"` became `9000` because the hint said `int`. To convert only some
-fields, mark them individually:
+The string `"9000"` became the integer `9000` because the hint says `int`.
+To convert only some of the fields, mark each of them in its annotation:
 
 === "Whole class"
 
@@ -35,16 +36,16 @@ fields, mark them individually:
     ```
 
 The rules come from [`bagof-converters`][converters] and
-[`bagof-validators`][validators]. Anything they understand (nested
-containers, unions, enums, `TypedDict`, dates, paths, numpy arrays) works
-here too.
+[`bagof-validators`][validators], so anything those packages understand works
+here too: nested containers, unions, enums, `TypedDict`, dates, paths and
+numpy arrays.
 
 ## Forward references
 
-A type hint can name something that does not exist yet: a class that refers
-to itself, a name defined later in the file, a type imported only under
-`if TYPE_CHECKING`. The name is looked up the first time the field is used.
-By then the module has finished loading, so forward references simply work:
+A type hint can name something that does not exist yet, such as a class that
+refers to itself, a name defined later in the file, or a type imported only
+under `if TYPE_CHECKING`. The name is looked up the first time the field is
+used. By then the module has finished loading, so the name is found:
 
 ```python
 class Router(Magic, convert=True):
@@ -54,8 +55,9 @@ class Port(int):
     pass
 ```
 
-If the name is still missing at first use, the field carries on unconverted
-and unvalidated, and says so once:
+If the name is still undefined when the field is first used, the field
+passes its values through unconverted and unvalidated, and a warning says so
+once:
 
 ```
 Router.port: the name `Port` is not defined, so `port` is not being
@@ -63,11 +65,12 @@ converted.
 ```
 
 A field that needs its type to build a default has nothing to fall back on,
-so it raises instead.
+so it raises an error instead.
 
-`unresolved_hints` controls the report: `"warn"` (the default), `"raise"`,
-or `"ignore"`. Setting `"raise"` is worth doing in CI, where an unresolved
-hint is a mistake rather than something to tolerate:
+The `unresolved_hints` setting chooses how an undefined name is reported:
+`"warn"` (the default), `"raise"`, or `"ignore"`. `"raise"` is worth setting
+in CI, where an unresolved hint is a mistake rather than something to
+tolerate:
 
 ```python
 class Service(Magic, convert=True, unresolved_hints="raise"):
@@ -76,8 +79,8 @@ class Service(Magic, convert=True, unresolved_hints="raise"):
 
 ## Leaving the defaults alone
 
-A default is converted and validated like any other value. Sometimes only
-the incoming values need the attention:
+A default is converted and validated like any other value. When only the
+values a caller passes need that attention, the defaults can be left alone:
 
 ```python
 class Node(Magic, convert=True, convert_defaults=False):
@@ -90,11 +93,11 @@ class Node(Magic, convert=True, convert_defaults=False):
 Node(name='root', parent=None)
 ```
 
-`parent: Optional["Node"]` is the precise spelling and needs nothing turned
-off. But when the defaults in a class are already exactly right,
-`convert_defaults=False` and `validate_defaults=False` take them as
-written. Values a caller passes are still converted and validated, as are
-values assigned afterwards.
+Here `parent: Optional["Node"]` would be the precise spelling, and it would
+need nothing turned off. When the defaults in a class are already exactly
+right, however, `convert_defaults=False` and `validate_defaults=False` take
+them as written. Values that a caller passes are still converted and
+validated, and so are values assigned afterwards.
 
 See [Field annotations](fields.md) for `ConvertTo` and `Validate`, and
 [Settings](settings.md) for the full settings table.
