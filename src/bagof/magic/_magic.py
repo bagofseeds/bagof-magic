@@ -106,6 +106,7 @@ __all__ = ["Magic", "magic", "HIDE_IF_NONE", "UNSET"]
 import ast
 import builtins
 import copy
+import keyword
 import operator
 import sys
 import warnings
@@ -200,7 +201,6 @@ from ._polymorph import delegate as _delegate_polymorph
 from ._polymorph import forgotten_by as _forgotten_by
 from ._polymorph import has_fields as _has_spec_fields
 from ._polymorph import mark_registered as _mark_registered
-from ._polymorph import reads as _reads
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
 from ._polymorph import specifications as _specifications
@@ -459,6 +459,29 @@ def _hidden_from(
         and issubclass(forgetter, holder)
         for forgetter in forgetters
     )
+
+
+def _forgotten_inputs(
+    clsname: str, mro: tx.Sequence[type], removed: tx.Mapping[str, Field]
+) -> tx.Dict[str, str]:
+    # Every name a field this class lost to `Forget` was passed by --
+    # its own removals first, then each base's in MRO order -- and the
+    # class that removed it. A field that came back further down is
+    # filtered out by the caller, along with any name another field now
+    # takes.
+    found = {}
+    for field in removed.values():
+        for alias in field.aliases:
+            found.setdefault(alias, clsname)
+    for base in mro:
+        for name in base.__dict__.get(_FORGOTTEN, ()):
+            for ancestor in base.__mro__[1:]:
+                table = ancestor.__dict__.get(_FIELDS)
+                if table is not None and name in table:
+                    for alias in table[name].aliases:
+                        found.setdefault(alias, base.__name__)
+                    break
+    return found
 
 
 def _kept_holders(
@@ -1223,29 +1246,9 @@ def _polymorphic_levels(mro: tx.Sequence[type]) -> tx.List[type]:
     ]
 
 
-def _out_of_reach(
-    levels: tx.Sequence[type], fields: tx.Container[str]
-) -> tx.List[type]:
-    # The levels that cannot build a class holding only `fields`: each
-    # one that chooses by a field the class no longer has -- it was
-    # removed with `Forget` on the way down -- and every level above
-    # such a one, which reaches the class only through it. A class can
-    # lack a field a level has in no other way, since fields are always
-    # inherited.
-    lost = [
-        level for level in levels
-        if any(name not in fields for name in _reads(level))
-    ]
-    return [
-        level for level in levels
-        if any(issubclass(below, level) for below in lost)
-    ]
-
-
 def _registration_owners(
     mro: tx.Sequence[type],
-    fields: tx.Optional[tx.Container[str]] = None,
-) -> tx.Tuple[tx.List[type], tx.List[type], tx.List[type], tx.List[type]]:
+) -> tx.Tuple[tx.List[type], tx.List[type], tx.List[type]]:
     # Which classes up the chain a subclass registers with, which of
     # them are registered somewhere themselves, and the nearest of those
     # -- one per branch of the hierarchy, so two of them mean the class
@@ -1263,15 +1266,7 @@ def _registration_owners(
     # At the bottom of a diamond, the root(s) are owners too. There the
     # two parents are siblings that may tie, and only a registration at
     # the root, whose constraint covers both of theirs, out-ranks them.
-    #
-    # Given the fields of the class, a level that chooses by a field the
-    # class has forgotten is left out, with every level above it, as if
-    # a class between them had turned `polymorphic` off: it could not
-    # read that field off the class, and could not hand the class an
-    # argument for it. Those levels come back as the fourth value.
     levels = _polymorphic_levels(mro)
-    cut = [] if fields is None else _out_of_reach(levels, fields)
-    levels = [level for level in levels if level not in cut]
     targets = [base for base in levels if _REGISTRATION in base.__dict__]
     nearest = [
         target for target in targets
@@ -1293,7 +1288,7 @@ def _registration_owners(
             if level not in owners
             and not _polymorphic_levels(level.__mro__[1:])
         ]
-    return owners, targets, nearest, cut
+    return owners, targets, nearest
 
 
 def _registered(
@@ -2211,8 +2206,6 @@ def __pre_new__(
     # does a class built by filling in type parameters, which is not one
     # anyone wrote. A class in a single chain that says nothing is left
     # unregistered, as it always was.
-    owners, targets, nearest, cut = _registration_owners(mro[1:], fields)
-    diamond = len(nearest) >= 2
     speaks = on is not MISSING and on is not None
     if speaks and isinstance(on, tx.Mapping):
         for key in on:
@@ -2227,24 +2220,14 @@ def __pre_new__(
                     f"a field it does not have. Keep the field, or leave "
                     f"{key!r} out of on=."
                 )
+    owners, targets, nearest = _registration_owners(mro[1:])
+    diamond = len(nearest) >= 2
     composes = diamond and on is not None and (
         speaks
         or (options.polymorphic and _GENERIC_ORIGIN not in namespace)
     )
     reachable = []
     if speaks or composes:
-        if not owners and cut:
-            lost = sorted({
-                name for level in cut for name in _reads(level)
-                if name not in fields
-            })
-            raise TypeError(
-                f"{clsname} says with on= which arguments it stands for, "
-                f"but every class it inherits from that builds its "
-                f"subclasses chooses by a field {clsname} no longer has "
-                f"-- {', '.join(repr(name) for name in lost)} -- "
-                f"so none of them can build it."
-            )
         if not owners:
             raise TypeError(
                 f"{clsname} says with on= which arguments it stands for, "
@@ -2279,10 +2262,39 @@ def __pre_new__(
         # when none can is that an error -- and then only for a class
         # that said what it stands for; one that merely combines its
         # parents is left out of the choice.
-        reachable = [
-            owner for owner in owners if _has_spec_fields(owner, specs)
+        #
+        # At the bottom of a diamond, what the parents stand for may read
+        # a field this class removed with Forget. Nothing can tell it
+        # apart by that field, so it is not registered for it: a class
+        # that only combines its parents is left out quietly, and one
+        # that said what it stands for is refused.
+        lost = [
+            spec.name for spec in specs
+            if spec.name not in fields
+            and (
+                spec.name in removed
+                or _forgotten_by(mro[1:], spec.name) is not None
+            )
         ]
-        if speaks and not reachable:
+        if lost and speaks:
+            forgetter = _forgotten_by(mro[1:], lost[0])
+            who = (
+                clsname if lost[0] in removed or forgetter is None
+                else forgetter.__name__
+            )
+            raise TypeError(
+                f"{clsname} stands for a value of {lost[0]!r} through the "
+                f"classes it inherits from, but {who} removed that field "
+                f"with Forget. Write on=None on "
+                f"{clsname} to leave it out of the choice, or keep the "
+                f"field."
+            )
+        if not lost:
+            reachable = [
+                owner for owner in owners
+                if _has_spec_fields(owner, specs)
+            ]
+        if speaks and not reachable and not lost:
             _check_spec_fields(owners[0], clsname, specs)
     if reachable:
         namespace[_REGISTRATION] = (
@@ -2404,6 +2416,7 @@ def __pre_new__(
     )
     init_kwargs, sentinels, alias_params, alias_defaults = _make_init(
         fields, prepost, clsname, options, direct_assign,
+        _forgotten_inputs(clsname, mro[1:], removed),
     )
     fnbuilder.add_fn(
         name=_MAGIC("init"),
@@ -2974,6 +2987,7 @@ def _make_init(
     clsname: str,
     options: Options,
     direct_assign: bool = False,
+    forgotten: tx.Optional[tx.Mapping[str, str]] = None,
 ) -> tx.Tuple[dict, tx.Set[str]]:
 
     # The body below is written in terms of these; each is carried
@@ -3133,6 +3147,23 @@ def _make_init(
         return elems
 
     alias_elems = _alias_param_elems()
+
+    # A name a removed field was passed by is a keyword-only parameter
+    # too, defaulting to the same marker and hidden the same way, so
+    # that passing it says which class removed the field rather than
+    # Python's bare "unexpected keyword argument".
+    taken = {
+        alias for field in fields.values() for alias in field.aliases
+    } | {SELF}
+    gone = {
+        name: forgetter for name, forgetter in (forgotten or {}).items()
+        if name not in taken and name.isidentifier()
+        and not keyword.iskeyword(name)
+    }
+    for name in gone:
+        alias_params.append(name)
+        locals[_ABSENT] = MISSING
+        alias_elems.append(f"{name}={_ABSENT}")
 
     signature, doc = [], ["Parameters", "----------"]
     for _name, field in positional_onlys.items():
@@ -3356,7 +3387,19 @@ def _make_init(
     # them: a call with too few arguments never reaches the body, so
     # nothing a default would have built or unwrapped can fail first
     # and report something else instead.
-    body = [_make_alias_prelude(field) for field in aliased]
+    body = [
+        dedent(f"""
+        if {name} is not {_ABSENT}:
+            raise TypeError({message!r})
+        """)
+        for name, message in (
+            (name, f"{clsname}() got an argument {name!r}, but {forgetter} "
+             f"removed that field with Forget, so {clsname} does not "
+             f"take it.")
+            for name, forgetter in gone.items()
+        )
+    ]
+    body += [_make_alias_prelude(field) for field in aliased]
     # In parameter order, so the one reported is the first the caller
     # left out.
     body += [
@@ -4435,21 +4478,18 @@ class MetaMagic(ABCMeta):
         # is refused here rather than building the wrong class quietly.
         claim = specs
         if isinstance(target, type) and issubclass(target, owner):
-            # A target that has forgotten a field the owner chooses by
-            # could neither be told apart by it nor be handed it.
+            # A target cannot stand for a value of a field it removed
+            # with Forget.
             target_fields = getattr(target, _FIELDS)
-            lacking = sorted(
-                field_name
-                for field_name in _reads(owner) | {s.name for s in specs}
-                if field_name not in target_fields
-            )
+            lacking = [
+                spec for spec in specs if spec.name not in target_fields
+            ]
             if lacking:
                 raise TypeError(
-                    f"{target.__name__} cannot be built by "
-                    f"{_as_written(cls)}, which chooses by "
-                    f"{', '.join(repr(n) for n in lacking)}: "
-                    f"{target.__name__} has no such field, since it was "
-                    f"removed with Forget."
+                    f"{target.__name__} cannot be registered for "
+                    f"{lacking[0].name}={lacking[0].text}: it has no "
+                    f"field {lacking[0].name!r}, since it was removed "
+                    f"with Forget."
                 )
             _check_discriminants(
                 target.__name__, owner, getattr(target, _FIELDS), specs,
@@ -4462,9 +4502,7 @@ class MetaMagic(ABCMeta):
             # registered classes above it stand for.
             claim = _whole_claim(
                 target.__name__, specs,
-                _registration_owners(
-                    target.__mro__[1:], target_fields
-                )[1],
+                _registration_owners(target.__mro__[1:])[1],
             )
         # Only with `owner`: the hand path registers exactly where it is
         # called. The record it leaves on `target` is what lets a later

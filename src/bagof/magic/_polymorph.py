@@ -412,24 +412,6 @@ def forgotten_by(
     return None
 
 
-def reads(cls: type) -> tx.Set[str]:
-    """
-    The fields `cls` reads to choose what to build.
-
-    What it stands for itself, if it is registered somewhere, and what
-    every subclass registered with it stands for, by stored name.
-    """
-    names = set()
-    registration = cls.__dict__.get(_REGISTRATION)
-    if registration is not None:
-        names.update(spec.name for spec in registration[1])
-    found = cls.__dict__.get(_POLYMORPHS)
-    if isinstance(found, _Registry):
-        for entry in found.dispatch[0]:
-            names.update(spec.name for spec in entry.specs)
-    return names
-
-
 def check_fields(
     owner: type, clsname: str, specs: tx.Iterable[_Spec]
 ) -> None:
@@ -825,7 +807,7 @@ def _delegation_plan(
 class _Polymorph:
     """One subclass, and what it stands for."""
 
-    __slots__ = ("target", "specs", "rank", "respell")
+    __slots__ = ("target", "specs", "rank", "respell", "refuses")
 
     def __init__(
         self,
@@ -861,6 +843,11 @@ class _Polymorph:
         #: How the owner re-spells the call to build this subclass, or
         #: None to hand it straight on.
         self.respell = respell
+        #: The arguments of the owner's that this subclass cannot take,
+        #: having removed their fields with `Forget`: the names they
+        #: are passed by, and the first position one fills. None when
+        #: it takes all of them, which is almost always.
+        self.refuses = None
 
     def standing_for(self, target: type) -> "_Polymorph":
         """This registration, with `target` answering for it instead.
@@ -876,7 +863,20 @@ class _Polymorph:
         made.specs = self.specs
         made.rank = self.rank
         made.respell = self.respell
+        made.refuses = self.refuses
         return made
+
+    def takes(
+        self, args: tx.Tuple[tx.Any, ...], kwargs: tx.Mapping[str, tx.Any]
+    ) -> bool:
+        """Whether this subclass can be handed the call as it was made."""
+        refuses = self.refuses
+        if refuses is None:
+            return True
+        names, position = refuses
+        if position is not None and len(args) > position:
+            return False
+        return not any(name in kwargs for name in names)
 
     def matches(self, values: tx.Mapping[str, tx.Any]) -> bool:
         for spec in self.specs:
@@ -931,10 +931,45 @@ class _Registry:
             target, specs, priority, target.__mro__.index(owner),
             _delegation_plan(owner, target, specs), ranked,
         )
+        entry.refuses = _refused(owner, target)
         entries = _replacing(self.dispatch[0], entry)
         self.dispatch = (
             entries, discriminants(owner, _constrained(entries)), ()
         )
+
+
+def _refused(
+    owner: type, target: type
+) -> tx.Optional[tx.Tuple[tx.FrozenSet[str], tx.Optional[int]]]:
+    # The arguments `owner` takes that `target` does not, because
+    # `target` removed their fields with `Forget`: every name each one
+    # is passed by, and the first place in `owner`'s positional
+    # arguments one of them fills. A call that passes any of them
+    # cannot be handed to `target`, so `select` passes over it. A
+    # target with a hand-written `__init__` takes whatever it likes.
+    if not _generated_init(target):
+        return None
+    owner_fields = getattr(owner, _FIELDS)
+    target_fields = getattr(target, _FIELDS)
+    gone = [
+        field for name, field in owner_fields.items()
+        if field.init and name not in target_fields
+    ]
+    if not gone:
+        return None
+    names = frozenset(
+        alias for field in gone if field.kw for alias in field.aliases
+    )
+    position = None
+    if _generated_init(owner):
+        positional = [f for f in owner_fields.values() if f.positional]
+        order = [f for f in positional if not f.kw]
+        order += [f for f in positional if f.kw]
+        places = [
+            index for index, field in enumerate(order) if field in gone
+        ]
+        position = places[0] if places else None
+    return names, position
 
 
 def _replacing(
@@ -1246,7 +1281,12 @@ def select(
     """
     entries, where, left_out = found.dispatch
     values = read(where, args, kwargs)
-    candidates = [entry for entry in entries if entry.matches(values)]
+    # A subclass that removed the field of an argument the call passes
+    # cannot be handed the call, whatever it stands for.
+    candidates = [
+        entry for entry in entries
+        if entry.matches(values) and entry.takes(args, kwargs)
+    ]
     if not candidates:
         # An abstract class cannot stand in for the subclass that was
         # not found: falling through would raise Python's own "can't

@@ -605,23 +605,30 @@ writing `x: Forget = 5` behaves exactly like a base with a plain class
 attribute `x = 5`, which never hid another base's field (lookup on the
 class finds the attribute first, the field keeps its default).
 
-**Polymorphism.** Forgetting a field a base chooses by is allowed.
-`_out_of_reach` drops from a class's levels every level that `reads`
-(in `_polymorph.py`: its own registration's specs, or any entry of its
-registry) a field the class no longer has, and every level above such
-a one -- the forgetting class behaves as a `polymorphic=False`
-boundary for them, so it is never registered with them and they never
-build it or its subclasses. Calling the class itself never chose by
-the field anyway (each class dispatches only through its own registry,
-which cannot hold a spec on a field the class lacks). What is refused:
-`on=` naming a field the same class forgets; `on=` naming a field a
-base forgot (with "removed it with Forget" in the message, also from
-`check_fields`); a class whose every level is out of reach writing
-`on=`; and `register_polymorph` handing an owner a target that lacks a
-field the owner chooses by. A level that does *not* choose by the
-forgotten field still registers the class, and still hands it every
-argument it was called with -- passing the forgotten name to such an
-owner fails in the subclass's `__init__`.
+**Passing a forgotten field.** `_make_init` is handed every input
+name of every field the class lost to `Forget` (`_forgotten_inputs`,
+minus any name a field now takes) and compiles each as a hidden
+keyword-only parameter defaulting to the alias marker, whose body
+raises a `TypeError` naming the class that forgot it -- the same
+mechanism, and the same cost (one `is` per name), as an alias.
+
+**Polymorphism: decided per call.** Forgetting a field a base chooses
+by is allowed, and registration is unchanged by it: the class registers
+with the same owners it would otherwise. Each registry entry carries
+`refuses` (`_refused` in `_polymorph.py`, worked out once in
+`_Registry.add`): the input names of every owner field the target
+lacks, and the first owner position one of them fills. `select` passes
+over an entry whose target cannot take an argument the call passes,
+then chooses among the rest as usual -- so the answer does not depend
+on the order the classes were written in. An earlier version cut such
+classes off from the owners at class creation instead, which made
+`S(grade=3, kind="inverse")` pick a subclass that had forgotten `kind`
+when it happened to be registered first. Still refused: `on=` naming a
+field the same class forgets (checked first, so its message wins); `on=`
+naming a field a base forgot; a diamond that writes `on=` while its
+parents' constraints read a field it forgot (one that writes nothing is
+left unregistered); and `register_polymorph` for a value of a field the
+target lacks.
 
 ## Conventions specific to this repo (do not regress)
 

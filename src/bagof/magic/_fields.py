@@ -1877,9 +1877,10 @@ class Forget(AnnotatedField):
     it can still find what a base class holds under it, such as the
     field's old default.
 
-    A field that a base class needs to choose its subclasses by may be
-    forgotten too. Such a class is then never built by the classes that
-    choose by it, and building it directly does not choose by it either.
+    A field a base class chooses its subclasses by may be forgotten too.
+    Passing that field to the class is an error that names the class
+    that forgot it, and a base choosing a subclass passes this one over
+    whenever the call passes that field.
 
     !!! example "How it lowers"
         ```pycon

@@ -4155,9 +4155,8 @@ class TestFieldPin:
 class TestForgettingADiscriminant:
     """A class may forget a field its bases choose their subclasses by.
 
-    The classes that choose by it can neither tell it apart by that
-    field nor hand it an argument for it, so they never build it, and
-    the class itself does not choose by it either.
+    It is then passed over by any call that hands it an argument for the
+    forgotten field, and is chosen as usual by any call that does not.
     """
 
     @staticmethod
@@ -4188,18 +4187,80 @@ class TestForgettingADiscriminant:
         assert repr(plain) == "Plain(level=3)"
         assert list(signature(Plain).parameters) == ["level"]
 
-    def test_the_class_is_never_chosen_by_the_classes_above(self) -> None:
+    @pytest.mark.parametrize("inverse_first", [True, False])
+    def test_a_subclass_that_cannot_take_the_call_is_passed_over(
+        self, inverse_first: bool
+    ) -> None:
+        class Signal(Magic, polymorphic=True):
+            kind: str = "plain"
+            grade: int = 0
+
+        def inverse() -> type:
+            class Inverse(Signal, on={"kind": "inverse"}):
+                pass
+            return Inverse
+
+        if inverse_first:
+            Inverse = inverse()
+
+        class Forgetful(Signal):
+            kind: Forget
+
+        class Graded(Forgetful, on={"grade": 3}):
+            pass
+
+        if not inverse_first:
+            Inverse = inverse()
+
+        # `Graded` matches grade=3 but cannot take `kind`, so the call
+        # goes to the subclass that can, whatever order they were
+        # written in.
+        assert type(Signal(grade=3, kind="inverse")) is Inverse
+        assert type(Signal("inverse", 3)) is Inverse
+        assert type(Signal(grade=3)) is Graded
+        # Passing the forgotten field at all rules `Graded` out.
+        assert type(Signal("plain", 3)) is Signal
+        assert type(Forgetful(grade=3)) is Graded
+
+    def test_a_subclass_below_is_still_reached_without_the_field(
+        self
+    ) -> None:
         Signal, Inverse, Plain = self._signals()
 
         class Loud(Plain, on={"level": 5}):
             pass
 
-        # `Loud` is reached from `Plain`, which does not choose by
-        # `kind`, and from nothing above it.
         assert type(Plain(level=5)) is Loud
-        assert type(Inverse(level=5)) is Inverse
-        assert type(Signal(level=5)) is Signal
-        assert Loud.__dict__[_REGISTRATION][0] == (Plain,)
+        assert type(Inverse(level=5)) is Loud
+        assert type(Inverse(kind="inverse", level=5)) is Inverse
+        assert type(Signal(kind="inverse", level=5)) is Inverse
+
+    def test_passing_the_forgotten_field_names_who_forgot_it(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+
+        class Loud(Plain):
+            pass
+
+        with pytest.raises(
+            TypeError, match=r"^Plain\(\) got an argument 'kind', but "
+            r"Plain removed that field with Forget"
+        ):
+            Plain(kind="x")
+        with pytest.raises(
+            TypeError, match=r"^Loud\(\) got an argument 'kind', but "
+            r"Plain removed that field with Forget"
+        ):
+            Loud(kind="x")
+        # The signature does not show it.
+        assert list(signature(Loud).parameters) == ["level"]
+
+    def test_a_field_declared_again_is_taken_again(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+
+        class Again(Plain):
+            kind: str = "again"
+
+        assert Again(kind="x").kind == "x"
 
     def test_a_subclass_cannot_register_on_the_forgotten_field(
         self
@@ -4223,14 +4284,17 @@ class TestForgettingADiscriminant:
             TypeError, match="not a field of Plain. Plain removed it"
         ):
             Plain.register_polymorph(Again, kind="again")
-
-    def test_a_class_above_cannot_be_given_it_by_hand(self) -> None:
-        Signal, Inverse, Plain = self._signals()
         with pytest.raises(
-            TypeError, match="Plain cannot be built by Signal, which "
-            "chooses by 'kind'"
+            TypeError, match="Again cannot be registered for "
+            "kind='again': it has no field 'kind'"
         ):
-            Signal.register_polymorph(Plain, level=9)
+            Signal.register_polymorph(Again, kind="again")
+
+    def test_it_can_be_registered_by_hand_on_another_field(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+        Signal.register_polymorph(Plain, level=9)
+        assert type(Signal(level=9)) is Plain
+        assert type(Signal(level=9, kind="inverse")) is Inverse
 
     def test_forgetting_and_registering_on_it_at_once_is_refused(
         self
@@ -4242,15 +4306,36 @@ class TestForgettingADiscriminant:
             class Both(Inverse, on={"kind": "both"}):
                 kind: Forget
 
-    def test_registering_where_nothing_can_build_it_is_refused(
-        self
-    ) -> None:
+    def test_forgetting_it_and_registering_on_another_field(self) -> None:
         Signal, Inverse, Plain = self._signals()
-        with pytest.raises(
-            TypeError, match="chooses by a field Loud no longer has -- "
-            "'kind' --"
-        ):
-            class Loud(Inverse, on={"level": 1}):
+
+        class Loud(Inverse, on={"level": 1}):
+            kind: Forget
+
+        assert type(Inverse(level=1)) is Loud
+        assert type(Signal(kind="inverse", level=1)) is Inverse
+
+    def test_a_diamond_over_a_forgotten_field(self) -> None:
+        class Signal(Magic, polymorphic=True):
+            kind: str = "plain"
+            mode: str = "a"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        class Minor(Signal, on={"mode": "minor"}):
+            pass
+
+        # Combining the parents would stand for a value of `kind`, which
+        # the class no longer has: it is left out of the choice.
+        class Quiet(Inverse, Minor):
+            kind: Forget
+
+        assert _REGISTRATION not in Quiet.__dict__
+        with pytest.raises(TypeError, match="Loud stands for a value of "
+                           "'kind' through the classes it inherits from, "
+                           "but Loud removed that field with Forget"):
+            class Loud(Inverse, Minor, on={"mode": "minor"}):
                 kind: Forget
 
     def test_a_field_nobody_chooses_by_changes_nothing(self) -> None:
@@ -4267,25 +4352,8 @@ class TestForgettingADiscriminant:
         assert type(Signal(kind="low")) is Low
         assert type(Quiet(kind="low")) is Low
         assert repr(Signal(kind="low")) == "Low(kind='low')"
-
-    def test_a_pinned_field_nobody_reads_any_more_can_be_forgotten(
-        self
-    ) -> None:
-        class Signal(Magic, polymorphic=True):
-            kind: str = "plain"
-
-        class Inverse(Signal, on={"kind": "inverse"}):
-            pass
-
-        class Plain(Inverse):
-            kind: Forget
-
-        assert Inverse().kind == "inverse"
-        assert repr(Plain()) == "Plain()"
-        # The name is read the way it is on any class: a pin is a
-        # default of the field, not a class attribute, so what is found
-        # is the class attribute up the chain.
-        assert Plain().kind == Inverse.kind == "plain"
+        # Passing the forgotten field passes `Low` over.
+        assert type(Signal(kind="low", note="n")) is Signal
 
     def test_the_public_name_of_a_forgotten_field_is_refused_too(
         self
