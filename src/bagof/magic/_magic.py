@@ -2107,9 +2107,10 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     # Recorded as the field's own, so that a subclass resolving the
     # field again against its own settings does not undo it.
     field._redeclare(factory=partial(copy.copy, default))
+    # Every field reaching here has had its declaration recorded, by the
+    # builder or by `_inherit_field`.
     field.default = MISSING
-    if field._declared is not MISSING:
-        field._declared.pop("default", None)
+    field._declared.pop("default", None)
     return True
 
 

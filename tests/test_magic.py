@@ -8525,6 +8525,9 @@ class TestInheritPatch:
         class Sub(Base):
             x: Validate[..., second]
 
+        Base(1)
+        assert seen == ["first"]
+        seen.clear()
         Sub(1)
         assert seen == ["second"]
 
@@ -8542,6 +8545,20 @@ class TestInheritPatch:
         with pytest.raises(TypeError, match="missing"):
             Sub()
         assert Sub(1, [2]).y == [2]
+
+    def test_required_with_a_factory_of_the_patch_s_own(self) -> None:
+        # The inherited default goes, and the factory the patch gives
+        # builds one in its place.
+        class Base(Magic):
+            y: int = 3
+
+        class Sub(Base):
+            y: ... = Inherit(default=REQUIRED, factory=list)
+
+        assert "y" not in Sub.__dict__
+        assert Sub().y == []
+        assert Sub().y is not Sub().y
+        assert Sub(5).y == 5
 
     def test_required_on_a_plain_field_means_no_default(self) -> None:
         class Plain(Magic):
@@ -9149,6 +9166,41 @@ class TestInheritErrors:
             class Sub(Base):
                 _w: Inherit[..., "y"]  # noqa: F821
 
+    def test_a_field_forgotten_beside_another_base(self) -> None:
+        # The forgetting class has a base ahead of the one it removed
+        # the field from; the field is still found by its public name.
+        class Other(Magic):
+            z: int = 0
+
+        class Mid(Other, self._base()):
+            _y: Forget
+
+        with pytest.raises(
+            TypeError, match=r"^Sub\.y is annotated with \.\.\., which asks "
+            r"to inherit the field 'y', but Mid has already removed it "
+            r"with Forget\.",
+        ):
+            class Sub(Mid):
+                y: Inherit
+
+    def test_the_take_over_that_removed_it_is_named(self) -> None:
+        # Of the several fields `Mid` took over, the message names the
+        # one that removed `x`.
+        class Other(Magic):
+            z: int = 0
+
+        class Mid(Other, self._base()):
+            _w: Inherit[..., "_y"]  # noqa: F821
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        with pytest.raises(
+            TypeError, match=r"^Sub\.x is annotated with \.\.\., which asks "
+            r"to inherit the field 'x', but Mid has already removed it by "
+            r"taking it over as '_x'\.",
+        ):
+            class Sub(Mid):
+                x: Inherit
+
     def test_a_field_already_forgotten(self) -> None:
         Base = self._base()
 
@@ -9215,7 +9267,14 @@ class TestInheritErrors:
         class Later(Base):
             x: Inherit["_DefinedLater"]
 
+        class Unknown(Base):
+            x: Inherit["NotDefinedAnywhere"]  # noqa: F821
+
         assert len(recwarn) == 0
+        assert _table(Unknown)["x"].type.__forward_arg__ == (
+            "NotDefinedAnywhere"
+        )
+        assert Unknown().x == 3
         assert _table(Dotted)["x"].type.__forward_arg__ == (
             "proper.stringified.Type"
         )
