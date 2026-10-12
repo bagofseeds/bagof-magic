@@ -8875,6 +8875,75 @@ class TestTakingAFieldOver:
         assert list(signature(Sub).parameters) == ["x"]
         assert _table(Sub)["_x"].default == 1
 
+    def test_the_public_name_reads_the_field(self) -> None:
+        # With no property written, one is made under the public name,
+        # so the base's class attribute does not answer for the instance.
+        Base = self._base()
+
+        class Sub(Base):
+            _x: ... = Inherit("x")
+
+        sub = Sub(5)
+        assert sub.x == sub._x == 5
+        sub.x = 6
+        assert sub._x == 6
+        assert Base.x == 3
+
+        class Below(Sub):
+            pass
+
+        assert Below(7).x == 7
+
+    def test_a_property_written_by_hand_wins(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: ... = Inherit("x")
+
+            @property
+            def x(self) -> int:
+                return self._x * 10
+
+        class Below(Sub):
+            pass
+
+        assert Sub(1).x == 10
+        assert Below(1).x == 10
+
+    def test_taken_over_again_below(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: ... = Inherit("x")
+
+        class Below(Sub):
+            __x: ... = Inherit("_x")
+
+        below = Below(9)
+        assert [f.name for f in _api.fields(Below)][0] == "_Below__x"
+        assert below.x == 9
+
+    def test_a_renamed_take_over_makes_no_property(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: Inherit[..., "x", Field(alias="why")]  # noqa: F821
+
+        assert Sub(why=4).x == 3
+        assert "why" not in Sub.__dict__
+
+    def test_a_slotted_frozen_class_reads_the_public_name(self) -> None:
+        class Base(Magic, slots=True, frozen=True):
+            x: int = 3
+
+        class Sub(Base):
+            _x: ... = Inherit("x")
+
+        sub = Sub(4)
+        assert sub.x == 4
+        with pytest.raises(AttributeError):
+            sub.x = 5
+
     def test_a_slotted_frozen_class(self) -> None:
         class Base(Magic, slots=True, frozen=True):
             x: int = 3

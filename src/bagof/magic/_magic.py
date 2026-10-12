@@ -122,7 +122,7 @@ import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
 # internals
-from ._aliases import InputAliases, install_properties
+from ._aliases import ForwardingProperty, InputAliases, install_properties
 from ._arguments import *  # noqa: F401, F403
 from ._arguments import Arguments
 from ._arguments import __all__ as __all_arguments__
@@ -790,6 +790,50 @@ def _described(
             f"inherited field {field.inherit!r}"
         )
     return f"{field.name!r}, which {owner} declares"
+
+
+def _take_over_forwards(
+    fields: tx.Mapping[str, Field],
+    namespace: dict,
+    mro: tx.Sequence[type],
+) -> tx.Dict[str, ForwardingProperty]:
+    # The properties that let a field taken over under another stored
+    # name be read under the public name it kept: `_kind:
+    # Inherit[..., "kind"]` stores `_kind`, and `obj.kind` reads it.
+    # Without one, `obj.kind` finds whatever the classes above left on
+    # the class under that name -- a default, or a pinned value -- which
+    # says nothing about this instance.
+    #
+    # Whatever the class body binds under the name wins, and so does
+    # what a class that already holds the take-over binds there: that
+    # was written next to the take-over. Only what the classes above it
+    # left is covered over.
+    forwards = {}
+    for field in fields.values():
+        name = field.public_name
+        if (
+            not isinstance(field.inherit, str)
+            or field.var
+            or name == field.name
+            or name in fields
+            or name in namespace
+            or not any(
+                name in table[field.inherit].aliases
+                for table in (
+                    base.__dict__.get(_FIELDS) for base in mro
+                )
+                if table and field.inherit in table
+            )
+        ):
+            continue
+        owner = next((base for base in mro if name in base.__dict__), None)
+        if owner is not None and field.name in getattr(owner, _FIELDS, ()):
+            if not isinstance(owner.__dict__[name], ForwardingProperty):
+                continue
+        forwards[name] = ForwardingProperty(
+            field.name, "readonly" if field.frozen else True
+        )
+    return forwards
 
 
 def _check_public_names(
@@ -3079,7 +3123,10 @@ def __pre_new__(
             namespace[name] = _NEUTRAL["init"]
             generated[name] = "init"
 
-    install_properties(clsname, fields, namespace, base_mro)
+    install_properties(
+        clsname, fields, namespace, base_mro,
+        _take_over_forwards(fields, namespace, base_mro),
+    )
     namespace[_GENERATED] = generated
 
     # Add attributes to class documentation

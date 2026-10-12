@@ -4713,6 +4713,10 @@ class TestInheritingADiscriminant:
 
         assert type(Stored(kind="deep")) is Deep
         assert Stored(kind="deep")._kind == "deep"
+        # The public name reads the instance, not the value `Inverse`
+        # was pinned to.
+        assert Stored(kind="deep").kind == "deep"
+        assert Stored().kind == "inverse"
 
     def test_taking_it_over_under_another_name_is_refused(self) -> None:
         Signal, Inverse = self._signals()

@@ -220,7 +220,12 @@ def install_properties(
     fields: tx.Mapping[str, tx.Any],
     namespace: dict,
     bases: tx.Sequence[type],
+    forwards: tx.Optional[tx.Mapping[str, ForwardingProperty]] = None,
 ) -> None:
+    # `forwards` are properties the class needs whatever it inherits --
+    # the public name of a field taken over under another stored name --
+    # and the builder has already checked that nothing of the class's
+    # own stands in their way.
     inherited = {}
     for base in bases:
         for name, value in base.__dict__.items():
@@ -274,6 +279,8 @@ def install_properties(
                     "inherited attribute"
                 )
             desired[name] = ForwardingProperty(field.name, mode)
+    for name, forward in (forwards or {}).items():
+        desired.setdefault(name, forward)
     for name, previous in inherited.items():
         if isinstance(previous, ForwardingProperty) and name not in desired:
             if name not in namespace:
