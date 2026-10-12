@@ -1442,8 +1442,8 @@ def _check_written_default(
         # call, which is as far as a factory can be checked.
         if pins:
             raise TypeError(
-                f"{clsname} stands for {spec.name}={spec.text}, and its "
-                f"field {spec.name!r} says pin={field.pin!r}, which gives "
+                f"{clsname} stands for {spec.label}={spec.text}, and its "
+                f"field {spec.label!r} says pin={field.pin!r}, which gives "
                 f"the field that value, but it also has a factory. Take "
                 f"the factory out -- the pin gives the field its value -- "
                 + keep.format("the factory")
@@ -1461,8 +1461,8 @@ def _check_written_default(
     else:
         return
     raise TypeError(
-        f"{clsname} stands for {spec.name}={spec.text}, and its field "
-        f"{spec.name!r} says pin={field.pin!r}, but its default is "
+        f"{clsname} stands for {spec.label}={spec.text}, and its field "
+        f"{spec.label!r} says pin={field.pin!r}, but its default is "
         f"{default!r}. " + fix + keep.format(repr(default))
     )
 
@@ -1504,11 +1504,11 @@ def _check_discriminants(
         # only do by name.
         if not base_field.kw:
             raise TypeError(
-                f"{clsname} registers on {spec.name!r}, does not take "
-                f"{spec.name!r} when it is built, and {spec.name!r} is "
+                f"{clsname} registers on {spec.label!r}, does not take "
+                f"{spec.label!r} when it is built, and {spec.label!r} is "
                 f"positional-only on {polymorphic_base.__name__} -- so "
                 f"{polymorphic_base.__name__} cannot leave it out of the "
-                f"call that builds {clsname}. Keep {spec.name!r} a "
+                f"call that builds {clsname}. Keep {spec.label!r} a "
                 f"parameter of {clsname} (the default "
                 f"pin_discriminant='pin' does that), or make it not "
                 f"positional-only on {polymorphic_base.__name__}."
@@ -1529,9 +1529,9 @@ def _check_discriminants(
             else "holds no value of its own"
         )
         raise TypeError(
-            f"{clsname} registers on {spec.name!r}, and does not take "
-            f"{spec.name!r} when it is built -- so it stands for "
-            f"{spec.name}={spec.text} but {held}. Either give {spec.name!r} "
+            f"{clsname} registers on {spec.label!r}, and does not take "
+            f"{spec.label!r} when it is built -- so it stands for "
+            f"{spec.label}={spec.text} but {held}. Either give {spec.label!r} "
             f"a value that is {spec.text}, or write "
             f"pin_discriminant='classvar' on {clsname} and leave the field "
             f"to it: the value becomes a class attribute, and the argument "
@@ -2235,10 +2235,11 @@ def __pre_new__(
                 f"subclasses. Add polymorphic=True to the one that "
                 f"should -- `class Chord(Magic, polymorphic=True)`."
             )
+        stored, labels = (
+            _stored_names(clsname, on, fields) if speaks else ({}, {})
+        )
         own = _specifications(
-            clsname,
-            _stored_names(clsname, on, fields) if speaks else {},
-            options.pin_discriminant,
+            clsname, stored, options.pin_discriminant, labels
         )
         for spec in own:
             forgetter = (
@@ -4465,11 +4466,15 @@ class MetaMagic(ABCMeta):
         # one it came from, the same way a class statement does.
         owner = cls.__dict__.get(_GENERIC_ORIGIN, cls)
         name = getattr(target, "__name__", target)
+        stored, labels = _stored_names(
+            name, wanted, getattr(owner, _FIELDS)
+        )
         specs = _specifications(
-            name, _stored_names(name, wanted, getattr(owner, _FIELDS)),
+            name, stored,
             getattr(
                 getattr(target, _OPTIONS, None), "pin_discriminant", "pin"
             ),
+            labels,
         )
         _check_spec_fields(owner, name, specs)
         # Registering after the fact goes through the same three-case
@@ -4487,8 +4492,8 @@ class MetaMagic(ABCMeta):
             if lacking:
                 raise TypeError(
                     f"{target.__name__} cannot be registered for "
-                    f"{lacking[0].name}={lacking[0].text}: it has no "
-                    f"field {lacking[0].name!r}, since it was removed "
+                    f"{lacking[0].label}={lacking[0].text}: it has no "
+                    f"field {lacking[0].label!r}, since it was removed "
                     f"with Forget."
                 )
             _check_discriminants(

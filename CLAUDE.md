@@ -570,7 +570,10 @@ does not.
   `_Spec.name` downstream is a stored name, as before. A key naming
   one field twice (`_mode` and `mode`), or a stored name that is also
   another field's public name, is refused; an unknown key is kept as
-  written for `check_fields`, whose message lists public names.
+  written for `check_fields`, whose message lists public names. Every
+  message names a field by `_Spec.label` -- its public name, which
+  `stored_names` hands back beside the mapping -- and `_written` turns
+  the stored names dispatch reads into the names the caller passed.
 
 ### Forgetting an inherited field
 

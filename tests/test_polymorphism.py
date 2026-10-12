@@ -571,6 +571,35 @@ class TestDiscriminantsByPublicName:
                 Minor, on={"mode": "minor"}, _mode="minor"
             )
 
+    def test_messages_name_the_field_by_its_public_name(self) -> None:
+        class Aliased(Magic, polymorphic="strict"):
+            _mode: str = "major"
+
+        class Minor(Aliased, on={"_mode": "minor"}):
+            pass
+
+        class Dorian(Aliased, on={"mode": "dorian"}):
+            pass
+
+        with pytest.raises(NoPolymorphError) as caught:
+            Aliased(mode="lydian")
+        text = str(caught.value)
+        assert "matches mode='lydian'" in text
+        assert "Minor(mode='minor')" in text
+        assert "Dorian(mode='dorian')" in text
+        assert "_mode" not in text
+
+        with pytest.raises(PolymorphError, match=r"Minor is what "
+                           r"mode='minor' builds, so mode='dorian'"):
+            Minor(mode="dorian")
+
+        class Other(Aliased, on={"mode": "minor"}):
+            pass
+
+        with pytest.raises(AmbiguousPolymorphError,
+                           match=r"Aliased\(mode='minor'\) matches"):
+            Aliased(mode="minor")
+
     def test_a_name_two_fields_answer_to_is_refused(self) -> None:
         class Base(Magic, polymorphic=True):
             mode: tx.Annotated[str, field(alias="style")] = "a"

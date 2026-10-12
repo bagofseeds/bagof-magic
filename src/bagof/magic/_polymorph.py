@@ -127,7 +127,8 @@ class _Spec:
     """One `field: constraint` pair of a registration."""
 
     __slots__ = ("name", "matches", "precision", "value", "text",
-                 "narrowed", "validate", "members", "parts", "pin")
+                 "narrowed", "validate", "members", "parts", "pin",
+                 "label")
 
     def __init__(
         self,
@@ -141,8 +142,12 @@ class _Spec:
         members: tx.Optional[tx.Tuple[tx.Any, ...]] = None,
         parts: tx.Optional[tx.Tuple["_Spec", ...]] = None,
         pin: MaybeMissing[str] = MISSING,
+        label: tx.Optional[str] = None,
     ) -> None:
         self.name = name
+        #: The field as messages name it: the name the constructor
+        #: takes it by. `name` is the one the class stores it under.
+        self.label = name if label is None else label
         self.matches = matches
         self.precision = precision
         #: The one value this constraint accepts, when it accepts one
@@ -243,7 +248,10 @@ def _shape(
     return (lambda value: value == spec), _EXACT, spec, repr(spec)
 
 
-def _specification(name: str, spec: tx.Any, pin: str = "pin") -> _Spec:
+def _specification(
+    name: str, spec: tx.Any, pin: str = "pin",
+    label: tx.Optional[str] = None,
+) -> _Spec:
     """Read one value of an `on={...}` mapping."""
     matches, precision, value, text = _shape(spec)
     return _Spec(
@@ -257,6 +265,7 @@ def _specification(name: str, spec: tx.Any, pin: str = "pin") -> _Spec:
         tuple(sorted(spec, key=repr))
         if isinstance(spec, (set, frozenset)) else None,
         pin=pin,
+        label=label,
     )
 
 
@@ -325,12 +334,14 @@ def _constraint_validator(
 
 
 def specifications(
-    clsname: str, on: tx.Mapping[str, tx.Any], pin: str = "pin"
+    clsname: str, on: tx.Mapping[str, tx.Any], pin: str = "pin",
+    labels: tx.Optional[tx.Mapping[str, str]] = None,
 ) -> tx.Tuple[_Spec, ...]:
     """Read a whole `on={...}` mapping.
 
     `pin` is the `pin_discriminant` of the class the mapping describes,
-    kept on each constraint for the classes that inherit it.
+    kept on each constraint for the classes that inherit it. `labels`
+    gives the name a message should call each field by.
     """
     if not isinstance(on, tx.Mapping):
         raise TypeError(
@@ -339,8 +350,10 @@ def specifications(
             f"and was given {on!r}. Write on=None to leave {clsname} "
             f"out of the choice altogether."
         )
+    labels = labels or {}
     return tuple(
-        _specification(name, spec, pin) for name, spec in on.items()
+        _specification(name, spec, pin, labels.get(name))
+        for name, spec in on.items()
     )
 
 
@@ -356,9 +369,12 @@ def stored_names(
     field by the second, so it is worked out once here, against
     `table`. A key that names no field is kept as written, for
     `check_fields` to refuse.
+
+    Hands back the mapping keyed by stored name, and the public name of
+    each field it names, for messages.
     """
     if not isinstance(on, tx.Mapping):
-        return on
+        return on, {}
     accepted = {}
     for name, field in table.items():
         for public in field.aliases:
@@ -387,7 +403,11 @@ def stored_names(
             )
         written[stored] = key
         resolved[stored] = spec
-    return resolved
+    labels = {
+        stored: table[stored].public_name
+        for stored in resolved if stored in table
+    }
+    return resolved, labels
 
 
 def forgotten_by(
@@ -545,7 +565,7 @@ def _both(
             if all(judge.matches(value) for judge in judges)
         )
         if not members:
-            name = first.name
+            name = first.label
             raise TypeError(
                 f"Nothing can build {clsname}: it stands for "
                 f"{name}={first.text} through {' and '.join(whose)}, and "
@@ -585,6 +605,7 @@ def _both(
         validate,
         members,
         first.parts + second.parts,
+        label=first.label,
     )
 
 
@@ -887,7 +908,7 @@ class _Polymorph:
 
     def __str__(self) -> str:
         written = ", ".join(
-            f"{spec.name}={spec.text}" for spec in self.specs
+            f"{spec.label}={spec.text}" for spec in self.specs
         )
         return f"{self.target.__name__}({written})"
 
@@ -1257,10 +1278,14 @@ def as_written(cls: type) -> str:
     return cls.__dict__.get(_GENERIC_ORIGIN, cls).__name__
 
 
-def _written(values: tx.Mapping[str, tx.Any]) -> str:
+def _written(
+    values: tx.Mapping[str, tx.Any],
+    where: tx.Iterable[_Discriminant] = (),
+) -> str:
     """The arguments dispatch went on, said the way they were passed."""
+    public = {found.name: found.public for found in where}
     written = ", ".join(
-        f"{name}={value!r}"
+        f"{public.get(name, name)}={value!r}"
         for name, value in values.items()
         if value is not MISSING
     )
@@ -1296,7 +1321,7 @@ def select(
         if found.strict or abstract:
             raise NoPolymorphError(
                 _nothing_matched(cls, entries, left_out, values,
-                                 bool(abstract))
+                                 bool(abstract), where)
             )
         return None
     best = max(candidates, key=lambda entry: entry.rank)
@@ -1310,7 +1335,8 @@ def select(
                    + [entry.target.__name__ for entry in tied])
         )
         raise AmbiguousPolymorphError(
-            f"{cls.__name__}({_written(values)}) matches {names} equally "
+            f"{cls.__name__}({_written(values, where)}) matches {names} "
+            f"equally "
             f"well, and there is nothing to choose between them. Say which "
             f"one wins by giving it a higher priority -- "
             f"`class {as_written(best.target)}({as_written(cls)}, "
@@ -1370,6 +1396,7 @@ def _nothing_matched(
     left_out: tx.Tuple[_Polymorph, ...],
     values: tx.Mapping[str, tx.Any],
     abstract: bool,
+    where: tx.Iterable[_Discriminant] = (),
 ) -> str:
     why = (
         f"{cls.__name__} is abstract, so it can only be built as one of "
@@ -1405,7 +1432,7 @@ def _nothing_matched(
         if left_out else ""
     )
     return (
-        f"{why}, and none of them matches {_written(values)}. It "
+        f"{why}, and none of them matches {_written(values, where)}. It "
         f"considered:\n{considered}{aside}\nIf the one you expected is "
         f"not in that list, the module it is written in has not been "
         f"imported."
@@ -1426,7 +1453,7 @@ def check(
         if value is MISSING or spec.matches(value):
             continue
         raise PolymorphError(
-            f"{cls.__name__} is what {spec.name}={spec.text} builds, so "
-            f"{spec.name}={value!r} contradicts it. Build the class that "
+            f"{cls.__name__} is what {spec.label}={spec.text} builds, so "
+            f"{spec.label}={value!r} contradicts it. Build the class that "
             f"value belongs to instead."
         )
