@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/sliders
----
-
 # Settings
 
 Settings are class keyword arguments, not decorator arguments.

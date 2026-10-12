@@ -36,6 +36,7 @@ from bagof.magic import (
     Doc,
     Factory,
     Field,
+    Forget,
     Frozen,
     InitVar,
     KwOnly,
@@ -741,3 +742,57 @@ def test_alias_and_property_configuration_as_text() -> None:
                         {"other": "readonly"}]  # noqa: F821, UP037
 
     assert Aliased(value=2).other == 2
+
+
+class TestForgetAsText:
+    """`x: Forget` is a marker even when it arrives as text."""
+
+    def test_a_bare_forget_removes_the_field(self) -> None:
+        class Base(Magic):
+            x: int = 1
+            y: int = 2
+
+        class Sub(Base):
+            x: Forget
+
+        assert Sub.__annotations__["x"] == "Forget"
+        assert list(inspect.signature(Sub).parameters) == ["y"]
+        assert repr(Sub(5)) == "Sub(y=5)"
+
+    def test_a_value_beside_it_stays_a_class_attribute(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Sub(Base):
+            x: Forget = 9
+
+        assert list(inspect.signature(Sub).parameters) == []
+        assert Sub.x == 9
+
+    def test_the_lowered_spelling(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        class Sub(Base):
+            x: Annotated[int, Forget()]
+
+        assert list(inspect.signature(Sub).parameters) == []
+
+    def test_the_freed_public_name(self) -> None:
+        class Base(Magic):
+            x: int
+
+        class Sub(Base):
+            x: Forget
+            _x: int
+
+        assert Sub(1)._x == 1
+
+    def test_a_forget_that_is_not_there_at_runtime_says_so(self) -> None:
+        class Base(Magic):
+            x: int = 1
+
+        with pytest.warns(UserWarning, match="Sub.x is annotated with "
+                          "magic_types.Forget.*TYPE_CHECKING"):
+            class Sub(Base):
+                x: magic_types.Forget

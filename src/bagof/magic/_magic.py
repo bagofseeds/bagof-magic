@@ -106,6 +106,7 @@ __all__ = ["Magic", "magic", "HIDE_IF_NONE"]
 import ast
 import builtins
 import copy
+import keyword
 import operator
 import sys
 import warnings
@@ -129,6 +130,7 @@ from ._constants import (
     _ABSENT,
     _ARGUMENTS,
     _CONVERTER,
+    _DECLARED,
     _DEFAULT,
     _DISCARD,
     _DISPATCHING,
@@ -136,6 +138,7 @@ from ._constants import (
     _EXCEPTION,
     _FIELD_ERROR,
     _FIELDS,
+    _FORGOTTEN,
     _GENERATED,
     _GENERIC_ARGS,
     _GENERIC_CACHE,
@@ -172,6 +175,7 @@ from ._fields import (
     _OVERRIDABLE,
     HIDE_IF_NONE,
     Field,
+    Forget,
     ShowIf,
     _chain,
     _field_key_test,
@@ -193,11 +197,13 @@ from ._polymorph import check as _check_invariant
 from ._polymorph import check_fields as _check_spec_fields
 from ._polymorph import conjoin as _conjoin
 from ._polymorph import delegate as _delegate_polymorph
+from ._polymorph import forgotten_by as _forgotten_by
 from ._polymorph import has_fields as _has_spec_fields
 from ._polymorph import mark_registered as _mark_registered
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
 from ._polymorph import specifications as _specifications
+from ._polymorph import stored_names as _stored_names
 from ._resolve import POLICIES as _HINT_POLICIES
 from ._resolve import Hints, _Deferred
 from ._utils import _get_origin, rebuild_cls
@@ -428,6 +434,85 @@ def _add_fields(
             fields.setdefault(name, old_field)
 
 
+def _forgetters(mro: tx.Sequence[type]) -> tx.Dict[str, tx.List[type]]:
+    # The classes in `mro` that removed each name with `Forget`.
+    found = {}
+    for base in mro:
+        for name in base.__dict__.get(_FORGOTTEN, ()):
+            found.setdefault(name, []).append(base)
+    return found
+
+
+def _hidden_from(
+    lineage: tx.Sequence[type], forgetters: tx.Sequence[type], holder: type
+) -> bool:
+    # Whether a class of `lineage` that forgot the name inherits it from
+    # `holder`. A class that forgets a field acts as though it never had
+    # it, so it takes the field away from everything it inherited the
+    # field from -- and from nothing else: a value it writes beside
+    # `Forget` is a plain class attribute, which does not hide a field
+    # another base holds.
+    return any(
+        forgetter is not holder
+        and forgetter in lineage
+        and issubclass(forgetter, holder)
+        for forgetter in forgetters
+    )
+
+
+def _forgotten_inputs(
+    clsname: str, mro: tx.Sequence[type], removed: tx.Mapping[str, Field]
+) -> tx.Dict[str, str]:
+    # Every name a field this class lost to `Forget` was passed by --
+    # its own removals first, then each base's in MRO order -- and the
+    # class that removed it. A field that came back further down is
+    # filtered out by the caller, along with any name another field now
+    # takes.
+    found = {}
+    for field in removed.values():
+        for alias in field.aliases:
+            found.setdefault(alias, clsname)
+    for base in mro:
+        for name in base.__dict__.get(_FORGOTTEN, ()):
+            for ancestor in base.__mro__[1:]:
+                table = ancestor.__dict__.get(_FIELDS)
+                if table is not None and name in table:
+                    for alias in table[name].aliases:
+                        found.setdefault(alias, base.__name__)
+                    break
+    return found
+
+
+def _kept_holders(
+    mro: tx.Sequence[type], forgetters: tx.Sequence[type], name: str
+) -> tx.FrozenSet[type]:
+    # The classes of `mro` whose field `name` the merge takes, when some
+    # base forgot `name`.
+    #
+    # The field itself is the one of the first class in `mro` holding it
+    # that no forgetting class hides -- in `D(B, C)` where `B` forgot
+    # `x`, the `x` that `C` holds, even one `C` only inherited from the
+    # base `B` forgot it from, since `B` is not one of `C`'s ancestors.
+    # Its place is where it is in that class's own lineage: so `C`'s
+    # ancestors that hand it the field are kept too, and `D` lists `x`
+    # where `C` does. A class that `C` itself does not take the field
+    # from is left out, so a field declared again below a class that
+    # forgot it keeps the place it was declared in.
+    for holder in mro:
+        table = getattr(holder, _FIELDS, None)
+        if not table or name not in table:
+            continue
+        if _hidden_from(mro, forgetters, holder):
+            continue
+        lineage = holder.__mro__
+        return frozenset(
+            base for base in lineage
+            if name in (getattr(base, _FIELDS, None) or ())
+            and not _hidden_from(lineage, forgetters, base)
+        )
+    return frozenset()
+
+
 def _check_public_names(clsname: str, fields: tx.Dict[str, Field]) -> None:
     # Every input spelling belongs to one field, including names inherited
     # from different bases. Output methods use only the preferred name.
@@ -648,6 +733,7 @@ def _read_annotation(
     # `ClassVar`, `KwOnly` or `Frozen`.
     marker = _structural_marker(node, globals, where)
     if marker is MISSING:
+        _check_bare_marker(node, globals, where)
         return _read_type(node, source, globals)
     payload, *metadata = _subscript_args(node)
     type = _read_annotation(payload, source, globals, where)
@@ -691,6 +777,34 @@ def _structural_marker(node: ast.AST, globals: dict, where: str) -> tx.Any:
             )
         return MISSING
     return marker if _is_structural(marker) else MISSING
+
+
+#: The members of the family written bare, with no brackets: the whole
+#: annotation is the marker.
+_BARE_MARKERS = frozenset({"Forget"})
+
+
+def _check_bare_marker(node: ast.AST, globals: dict, where: str) -> None:
+    # `x: Forget` names its marker with nothing after it. When that name
+    # is not defined where the class is written, the field would quietly
+    # become one whose type is the text "Forget" -- so say so, the way
+    # an undefined subscripted marker is reported.
+    parts = _dotted_name(node)
+    if (
+        parts is None
+        or parts[-1] not in _BARE_MARKERS
+        or _lookup_dotted(parts, globals) is not MISSING
+    ):
+        return
+    warnings.warn(
+        f"{where} is annotated with {'.'.join(parts)}, which is not "
+        f"defined where the class is written, so it cannot be applied "
+        f"to the field. A name only imported under `if TYPE_CHECKING:` "
+        f"is not there at runtime -- import {parts[0]} normally for the "
+        f"annotation to take effect.",
+        _UnreadableAnnotation,
+        stacklevel=_caller_stacklevel(),
+    )
 
 
 def _decline(node: ast.AST, source: str, where: str, part: str) -> str:
@@ -1327,8 +1441,8 @@ def _check_written_default(
         # call, which is as far as a factory can be checked.
         if pins:
             raise TypeError(
-                f"{clsname} stands for {spec.name}={spec.text}, and its "
-                f"field {spec.name!r} says pin={field.pin!r}, which gives "
+                f"{clsname} stands for {spec.label}={spec.text}, and its "
+                f"field {spec.label!r} says pin={field.pin!r}, which gives "
                 f"the field that value, but it also has a factory. Take "
                 f"the factory out -- the pin gives the field its value -- "
                 + keep.format("the factory")
@@ -1346,8 +1460,8 @@ def _check_written_default(
     else:
         return
     raise TypeError(
-        f"{clsname} stands for {spec.name}={spec.text}, and its field "
-        f"{spec.name!r} says pin={field.pin!r}, but its default is "
+        f"{clsname} stands for {spec.label}={spec.text}, and its field "
+        f"{spec.label!r} says pin={field.pin!r}, but its default is "
         f"{default!r}. " + fix + keep.format(repr(default))
     )
 
@@ -1389,11 +1503,11 @@ def _check_discriminants(
         # only do by name.
         if not base_field.kw:
             raise TypeError(
-                f"{clsname} registers on {spec.name!r}, does not take "
-                f"{spec.name!r} when it is built, and {spec.name!r} is "
+                f"{clsname} registers on {spec.label!r}, does not take "
+                f"{spec.label!r} when it is built, and {spec.label!r} is "
                 f"positional-only on {polymorphic_base.__name__} -- so "
                 f"{polymorphic_base.__name__} cannot leave it out of the "
-                f"call that builds {clsname}. Keep {spec.name!r} a "
+                f"call that builds {clsname}. Keep {spec.label!r} a "
                 f"parameter of {clsname} (the default "
                 f"pin_discriminant='pin' does that), or make it not "
                 f"positional-only on {polymorphic_base.__name__}."
@@ -1414,9 +1528,9 @@ def _check_discriminants(
             else "holds no value of its own"
         )
         raise TypeError(
-            f"{clsname} registers on {spec.name!r}, and does not take "
-            f"{spec.name!r} when it is built -- so it stands for "
-            f"{spec.name}={spec.text} but {held}. Either give {spec.name!r} "
+            f"{clsname} registers on {spec.label!r}, and does not take "
+            f"{spec.label!r} when it is built -- so it stands for "
+            f"{spec.label}={spec.text} but {held}. Either give {spec.label!r} "
             f"a value that is {spec.text}, or write "
             f"pin_discriminant='classvar' on {clsname} and leave the field "
             f"to it: the value becomes a class attribute, and the argument "
@@ -1483,12 +1597,20 @@ def _pin_discriminant(
     spec: tx.Any,
     storage: str,
     mutable: str,
+    slotted: bool = False,
 ) -> bool:
     # A subclass registered for one exact value already says what that
     # field holds, so it does not have to say it twice: the field is
     # given that value as its default ("pin"), or becomes a class
     # attribute that is not stored per instance ("classvar"). Returns
     # whether the field was pinned.
+    #
+    # A pinned default is left on the class the way a written default
+    # is, so that reading it off the class agrees with every instance --
+    # and a subclass that forgets the field reads this class's value
+    # rather than the one further up. A slotted class keeps no default
+    # on the class, and a mutable one that becomes a factory has none
+    # to leave.
     #
     # Under "classvar" the field stays a parameter of `__init__` and its
     # value is thrown away, so both `Chord(mode="minor", root="A")` --
@@ -1517,7 +1639,10 @@ def _pin_discriminant(
         # the same handling a written-out default does:
         # `on={"cfg": {"a": 1}}` must not hand one dictionary to every
         # instance of the subclass.
-        _handle_mutable_default(field, mutable)
+        if _handle_mutable_default(field, mutable):
+            namespace.pop(field.name, None)
+        elif not slotted:
+            namespace[field.name] = field.default
     return True
 
 
@@ -1819,6 +1944,13 @@ def __pre_new__(
     # the most derived base's, which the loop reads off that base
     # anyway -- and nothing was written as one of *its* type variables,
     # so reading it would only undo what that base said.
+    # A name some base removed with `Forget` is taken only from the
+    # classes `_kept_holders` names.
+    forgetters = _forgetters(mro[1:])
+    kept = {
+        name: _kept_holders(mro[1:], found, name)
+        for name, found in forgetters.items()
+    }
     for b in reversed(mro[1:]):
         # Only process classes that have been processed by our
         # decorator.  That is, they have a _FIELDS attribute.
@@ -1826,15 +1958,23 @@ def __pre_new__(
         if base_fields is not None:
             base_options = getattr(b, _OPTIONS)
             options.update(base_options)
+            hidden = {
+                name for name in base_fields
+                if name in kept and b not in kept[name]
+            }
             _add_fields(
                 fields,
-                base_fields.values(),
+                [
+                    field for name, field in base_fields.items()
+                    if name not in hidden
+                ],
                 replace=True,
                 reverse=options.reverse
             )
             if arguments:
                 for field_name in base_fields:
-                    inherited_arguments[field_name] = arguments.get(b)
+                    if field_name not in hidden:
+                        inherited_arguments[field_name] = arguments.get(b)
 
     # Save final options for this class.
     options.update(Options(**kwargs))
@@ -1937,11 +2077,18 @@ def __pre_new__(
     # things, and set the d
     cls_fields = []
     written = {}
+    declared = {}
+    forgotten = []
     for field_name, type_ in cls_annotations.items():
 
         if field_name[:2] == "__":
             # Dunder name -> ignore (same behavior as attrs)
             continue
+
+        # `x: Forget` is written bare; it means what `Forget()` in the
+        # metadata does.
+        if isinstance(type_, type) and issubclass(type_, Forget):
+            type_ = tx.Annotated[tx.Any, type_()]
 
         # Make Field from annotation
         field = Field.from_hint(field_name, type_)
@@ -1968,6 +2115,14 @@ def __pre_new__(
         elif field.name in namespace:
             field.default = namespace[field.name]
 
+        # A field this class forgets is not built at all. A value
+        # written beside it stays in the namespace as a plain class
+        # attribute; with none, the name is left to ordinary lookup.
+        if field.inherit is False:
+            declared[field.name] = field._explicit()
+            forgotten.append(field.name)
+            continue
+
         if field.pin is not MISSING and _pin_action(field.pin) is None:
             raise ValueError(
                 f"pin on {clsname}.{field.name} must be 'pin', "
@@ -1984,6 +2139,12 @@ def __pre_new__(
             written[field.name] = (
                 field.default, field.factory not in (MISSING, False)
             )
+
+        # What the annotation said, before the class options fill in
+        # what it did not. `override` on a subclass restores this, and
+        # `_DECLARED` keeps this class's own copy of it.
+        field._declared = field._explicit()
+        declared[field.name] = dict(field._declared)
 
         # Set unset field options from class options
         field.setdefault(options, hints)
@@ -2006,8 +2167,31 @@ def __pre_new__(
 
         cls_fields.append(field)
 
+    # Take out what this class forgets, before its own fields go in:
+    # they may reuse a forgotten field's public name.
+    removed = {}
+    for name in forgotten:
+        if name not in fields:
+            forgetter = _forgotten_by(mro[1:], name)
+            why = (
+                f"{forgetter.__name__} has already removed it"
+                if forgetter is not None
+                else f"none of the classes {clsname} inherits from has "
+                f"a field {name!r}"
+            )
+            raise TypeError(
+                f"{clsname}.{name} is annotated with Forget, which "
+                f"removes an inherited field, but {why}. Remove the "
+                f"annotation, or name the field as the base class "
+                f"declares it."
+            )
+        removed[name] = fields.pop(name)
+    if forgotten:
+        namespace[_FORGOTTEN] = frozenset(forgotten)
+
     # Insert fields from this class, in correct order.
     _add_fields(fields, cls_fields, replace=True, reverse=options.reverse)
+    namespace[_DECLARED] = declared
 
     # Which fields carry a default only because a registration pinned
     # them -- here or further up. `_make_init` has to know, because a
@@ -2032,9 +2216,22 @@ def __pre_new__(
     # does a class built by filling in type parameters, which is not one
     # anyone wrote. A class in a single chain that says nothing is left
     # unregistered, as it always was.
+    speaks = on is not MISSING and on is not None
+    if speaks and isinstance(on, tx.Mapping):
+        for key in on:
+            gone = [
+                name for name, field in removed.items()
+                if key == name or key in field.aliases
+            ]
+            if gone:
+                raise TypeError(
+                    f"{clsname} forgets {gone[0]!r} and registers on "
+                    f"{key!r}, but a class cannot stand for a value of "
+                    f"a field it does not have. Keep the field, or leave "
+                    f"{key!r} out of on=."
+                )
     owners, targets, nearest = _registration_owners(mro[1:])
     diamond = len(nearest) >= 2
-    speaks = on is not MISSING and on is not None
     composes = diamond and on is not None and (
         speaks
         or (options.polymorphic and _GENERIC_ORIGIN not in namespace)
@@ -2048,9 +2245,24 @@ def __pre_new__(
                 f"subclasses. Add polymorphic=True to the one that "
                 f"should -- `class Chord(Magic, polymorphic=True)`."
             )
-        own = _specifications(
-            clsname, on if speaks else {}, options.pin_discriminant
+        stored, labels = (
+            _stored_names(clsname, on, fields) if speaks else ({}, {})
         )
+        own = _specifications(
+            clsname, stored, options.pin_discriminant, labels
+        )
+        for spec in own:
+            forgetter = (
+                None if spec.name in fields
+                else _forgotten_by(mro[1:], spec.name)
+            )
+            if forgetter is not None:
+                raise TypeError(
+                    f"{clsname} registers on {spec.name!r}, which is not "
+                    f"a field of {clsname}: {forgetter.__name__} removed "
+                    f"it with Forget. A class cannot stand for a value "
+                    f"of a field it does not have."
+                )
         if diamond:
             specs = claim = _conjoin(clsname, own, _registered(targets))
         else:
@@ -2061,10 +2273,39 @@ def __pre_new__(
         # when none can is that an error -- and then only for a class
         # that said what it stands for; one that merely combines its
         # parents is left out of the choice.
-        reachable = [
-            owner for owner in owners if _has_spec_fields(owner, specs)
+        #
+        # At the bottom of a diamond, what the parents stand for may read
+        # a field this class removed with Forget. Nothing can tell it
+        # apart by that field, so it is not registered for it: a class
+        # that only combines its parents is left out quietly, and one
+        # that said what it stands for is refused.
+        lost = [
+            spec.name for spec in specs
+            if spec.name not in fields
+            and (
+                spec.name in removed
+                or _forgotten_by(mro[1:], spec.name) is not None
+            )
         ]
-        if speaks and not reachable:
+        if lost and speaks:
+            forgetter = _forgotten_by(mro[1:], lost[0])
+            who = (
+                clsname if lost[0] in removed or forgetter is None
+                else forgetter.__name__
+            )
+            raise TypeError(
+                f"{clsname} stands for a value of {lost[0]!r} through the "
+                f"classes it inherits from, but {who} removed that field "
+                f"with Forget. Write on=None on "
+                f"{clsname} to leave it out of the choice, or keep the "
+                f"field."
+            )
+        if not lost:
+            reachable = [
+                owner for owner in owners
+                if _has_spec_fields(owner, specs)
+            ]
+        if speaks and not reachable and not lost:
             _check_spec_fields(owners[0], clsname, specs)
     if reachable:
         namespace[_REGISTRATION] = (
@@ -2094,7 +2335,8 @@ def __pre_new__(
                 )
             ):
                 if _pin_discriminant(
-                    field, namespace, spec, storage, options.mutable_default
+                    field, namespace, spec, storage, options.mutable_default,
+                    bool(options.slots),
                 ):
                     pinned.add(field.name)
             if narrowing:
@@ -2186,6 +2428,7 @@ def __pre_new__(
     )
     init_kwargs, sentinels, alias_params, alias_defaults = _make_init(
         fields, prepost, clsname, options, direct_assign,
+        _forgotten_inputs(clsname, mro[1:], removed),
     )
     fnbuilder.add_fn(
         name=_MAGIC("init"),
@@ -2756,6 +2999,7 @@ def _make_init(
     clsname: str,
     options: Options,
     direct_assign: bool = False,
+    forgotten: tx.Optional[tx.Mapping[str, str]] = None,
 ) -> tx.Tuple[dict, tx.Set[str]]:
 
     # The body below is written in terms of these; each is carried
@@ -2915,6 +3159,23 @@ def _make_init(
         return elems
 
     alias_elems = _alias_param_elems()
+
+    # A name a removed field was passed by is a keyword-only parameter
+    # too, defaulting to the same marker and hidden the same way, so
+    # that passing it says which class removed the field rather than
+    # Python's bare "unexpected keyword argument".
+    taken = {
+        alias for field in fields.values() for alias in field.aliases
+    } | {SELF}
+    gone = {
+        name: forgetter for name, forgetter in (forgotten or {}).items()
+        if name not in taken and name.isidentifier()
+        and not keyword.iskeyword(name)
+    }
+    for name in gone:
+        alias_params.append(name)
+        locals[_ABSENT] = MISSING
+        alias_elems.append(f"{name}={_ABSENT}")
 
     signature, doc = [], ["Parameters", "----------"]
     for _name, field in positional_onlys.items():
@@ -3138,7 +3399,19 @@ def _make_init(
     # them: a call with too few arguments never reaches the body, so
     # nothing a default would have built or unwrapped can fail first
     # and report something else instead.
-    body = [_make_alias_prelude(field) for field in aliased]
+    body = [
+        dedent(f"""
+        if {name} is not {_ABSENT}:
+            raise TypeError({message!r})
+        """)
+        for name, message in (
+            (name, f"{clsname}() got an argument {name!r}, but {forgetter} "
+             f"removed that field with Forget, so {clsname} does not "
+             f"take it.")
+            for name, forgetter in gone.items()
+        )
+    ]
+    body += [_make_alias_prelude(field) for field in aliased]
     # In parameter order, so the one reported is the first the caller
     # left out.
     body += [
@@ -4204,11 +4477,15 @@ class MetaMagic(ABCMeta):
         # one it came from, the same way a class statement does.
         owner = cls.__dict__.get(_GENERIC_ORIGIN, cls)
         name = getattr(target, "__name__", target)
+        stored, labels = _stored_names(
+            name, wanted, getattr(owner, _FIELDS)
+        )
         specs = _specifications(
-            name, wanted,
+            name, stored,
             getattr(
                 getattr(target, _OPTIONS, None), "pin_discriminant", "pin"
             ),
+            labels,
         )
         _check_spec_fields(owner, name, specs)
         # Registering after the fact goes through the same three-case
@@ -4217,6 +4494,19 @@ class MetaMagic(ABCMeta):
         # is refused here rather than building the wrong class quietly.
         claim = specs
         if isinstance(target, type) and issubclass(target, owner):
+            # A target cannot stand for a value of a field it removed
+            # with Forget.
+            target_fields = getattr(target, _FIELDS)
+            lacking = [
+                spec for spec in specs if spec.name not in target_fields
+            ]
+            if lacking:
+                raise TypeError(
+                    f"{target.__name__} cannot be registered for "
+                    f"{lacking[0].label}={lacking[0].text}: it has no "
+                    f"field {lacking[0].label!r}, since it was removed "
+                    f"with Forget."
+                )
             _check_discriminants(
                 target.__name__, owner, getattr(target, _FIELDS), specs,
                 getattr(

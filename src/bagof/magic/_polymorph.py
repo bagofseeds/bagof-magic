@@ -61,6 +61,7 @@ from bagof.validators import Validator, ValueValidationError
 # internals
 from ._constants import (
     _FIELDS,
+    _FORGOTTEN,
     _GENERATED,
     _GENERIC_ORIGIN,
     _OPTIONS,
@@ -126,7 +127,8 @@ class _Spec:
     """One `field: constraint` pair of a registration."""
 
     __slots__ = ("name", "matches", "precision", "value", "text",
-                 "narrowed", "validate", "members", "parts", "pin")
+                 "narrowed", "validate", "members", "parts", "pin",
+                 "label")
 
     def __init__(
         self,
@@ -140,8 +142,12 @@ class _Spec:
         members: tx.Optional[tx.Tuple[tx.Any, ...]] = None,
         parts: tx.Optional[tx.Tuple["_Spec", ...]] = None,
         pin: MaybeMissing[str] = MISSING,
+        label: tx.Optional[str] = None,
     ) -> None:
         self.name = name
+        #: The field as messages name it: the name the constructor
+        #: takes it by. `name` is the one the class stores it under.
+        self.label = name if label is None else label
         self.matches = matches
         self.precision = precision
         #: The one value this constraint accepts, when it accepts one
@@ -242,7 +248,10 @@ def _shape(
     return (lambda value: value == spec), _EXACT, spec, repr(spec)
 
 
-def _specification(name: str, spec: tx.Any, pin: str = "pin") -> _Spec:
+def _specification(
+    name: str, spec: tx.Any, pin: str = "pin",
+    label: tx.Optional[str] = None,
+) -> _Spec:
     """Read one value of an `on={...}` mapping."""
     matches, precision, value, text = _shape(spec)
     return _Spec(
@@ -256,6 +265,7 @@ def _specification(name: str, spec: tx.Any, pin: str = "pin") -> _Spec:
         tuple(sorted(spec, key=repr))
         if isinstance(spec, (set, frozenset)) else None,
         pin=pin,
+        label=label,
     )
 
 
@@ -324,12 +334,14 @@ def _constraint_validator(
 
 
 def specifications(
-    clsname: str, on: tx.Mapping[str, tx.Any], pin: str = "pin"
+    clsname: str, on: tx.Mapping[str, tx.Any], pin: str = "pin",
+    labels: tx.Optional[tx.Mapping[str, str]] = None,
 ) -> tx.Tuple[_Spec, ...]:
     """Read a whole `on={...}` mapping.
 
     `pin` is the `pin_discriminant` of the class the mapping describes,
-    kept on each constraint for the classes that inherit it.
+    kept on each constraint for the classes that inherit it. `labels`
+    gives the name a message should call each field by.
     """
     if not isinstance(on, tx.Mapping):
         raise TypeError(
@@ -338,9 +350,86 @@ def specifications(
             f"and was given {on!r}. Write on=None to leave {clsname} "
             f"out of the choice altogether."
         )
+    labels = labels or {}
     return tuple(
-        _specification(name, spec, pin) for name, spec in on.items()
+        _specification(name, spec, pin, labels.get(name))
+        for name, spec in on.items()
     )
+
+
+def stored_names(
+    clsname: str, on: tx.Any, table: tx.Mapping[str, tx.Any]
+) -> tx.Any:
+    """
+    Name each field of an `on={...}` mapping the way the class stores it.
+
+    A key may be the name the constructor takes the field by -- its
+    public name, or any other name it accepts -- or the name it is
+    declared under in the class body. Everything downstream reads a
+    field by the second, so it is worked out once here, against
+    `table`. A key that names no field is kept as written, for
+    `check_fields` to refuse.
+
+    Hands back the mapping keyed by stored name, and the public name of
+    each field it names, for messages.
+    """
+    if not isinstance(on, tx.Mapping):
+        return on, {}
+    accepted = {}
+    for name, field in table.items():
+        for public in field.aliases:
+            accepted.setdefault(public, name)
+    resolved = {}
+    written = {}
+    for key, spec in on.items():
+        stored = key
+        if key in table:
+            other = accepted.get(key, key)
+            if other != key:
+                raise TypeError(
+                    f"{clsname} registers on {key!r}, which could mean "
+                    f"either of two fields: {key!r} itself, or {other!r}, "
+                    f"which the constructor takes as {key!r}. Rename one "
+                    f"of them, or give one different aliases."
+                )
+        elif key in accepted:
+            stored = accepted[key]
+        if stored in written:
+            raise TypeError(
+                f"{clsname} registers on {written[stored]!r} and on "
+                f"{key!r}, which are two names for the same field. "
+                f"Name it once, as "
+                f"{table[stored].public_name!r}."
+            )
+        written[stored] = key
+        resolved[stored] = spec
+    labels = {
+        stored: table[stored].public_name
+        for stored in resolved if stored in table
+    }
+    return resolved, labels
+
+
+def forgotten_by(
+    classes: tx.Iterable[type], key: str
+) -> tx.Optional[type]:
+    """
+    The first of `classes` that removed a field `key` names, if any.
+
+    `key` may be the field's stored name or any name the constructor
+    took it by, read off the table the field was removed from.
+    """
+    for cls in classes:
+        for name in cls.__dict__.get(_FORGOTTEN, ()):
+            if key == name:
+                return cls
+            for base in cls.__mro__[1:]:
+                table = base.__dict__.get(_FIELDS)
+                if table is not None and name in table:
+                    if key in table[name].aliases:
+                        return cls
+                    break
+    return None
 
 
 def check_fields(
@@ -349,17 +438,26 @@ def check_fields(
     """
     Refuse a registration naming a field `owner` does not have.
 
-    The keys of `on={...}` name fields the way the class registering
-    with declares them, so a misspelled one is refused when the class is
-    written, rather than the first time something is built.
+    The keys of `on={...}` name fields by the name the constructor
+    takes them by (or the one the class body declares them under), so a
+    misspelled one is refused when the class is written, rather than
+    the first time something is built.
     """
     table = getattr(owner, _FIELDS)
     for spec in specs:
         if spec.name not in table:
+            names = ", ".join(
+                repr(field.public_name) for field in table.values()
+            )
+            forgetter = forgotten_by(owner.__mro__, spec.name)
+            why = (
+                f" {forgetter.__name__} removed it with Forget."
+                if forgetter is not None else ""
+            )
             raise TypeError(
                 f"{clsname} registers on {spec.name!r}, which is not a "
-                f"field of {owner.__name__}. Its fields are: "
-                f"{', '.join(repr(field) for field in table) or 'none'}."
+                f"field of {owner.__name__}.{why} Its fields are: "
+                f"{names or 'none'}."
             )
 
 
@@ -467,7 +565,7 @@ def _both(
             if all(judge.matches(value) for judge in judges)
         )
         if not members:
-            name = first.name
+            name = first.label
             raise TypeError(
                 f"Nothing can build {clsname}: it stands for "
                 f"{name}={first.text} through {' and '.join(whose)}, and "
@@ -507,6 +605,7 @@ def _both(
         validate,
         members,
         first.parts + second.parts,
+        label=first.label,
     )
 
 
@@ -729,7 +828,7 @@ def _delegation_plan(
 class _Polymorph:
     """One subclass, and what it stands for."""
 
-    __slots__ = ("target", "specs", "rank", "respell")
+    __slots__ = ("target", "specs", "rank", "respell", "refuses")
 
     def __init__(
         self,
@@ -765,6 +864,11 @@ class _Polymorph:
         #: How the owner re-spells the call to build this subclass, or
         #: None to hand it straight on.
         self.respell = respell
+        #: The arguments of the owner's that this subclass cannot take,
+        #: having removed their fields with `Forget`: the names they
+        #: are passed by, and the first position one fills. None when
+        #: it takes all of them, which is almost always.
+        self.refuses = None
 
     def standing_for(self, target: type) -> "_Polymorph":
         """This registration, with `target` answering for it instead.
@@ -780,7 +884,23 @@ class _Polymorph:
         made.specs = self.specs
         made.rank = self.rank
         made.respell = self.respell
+        made.refuses = self.refuses
         return made
+
+    def refused(
+        self, args: tx.Tuple[tx.Any, ...], kwargs: tx.Mapping[str, tx.Any]
+    ) -> tx.Optional[str]:
+        """The argument of the call this subclass cannot take, if any."""
+        refuses = self.refuses
+        if refuses is None:
+            return None
+        names, position, label = refuses
+        if position is not None and len(args) > position:
+            return label
+        for name in kwargs:
+            if name in names:
+                return name
+        return None
 
     def matches(self, values: tx.Mapping[str, tx.Any]) -> bool:
         for spec in self.specs:
@@ -791,7 +911,7 @@ class _Polymorph:
 
     def __str__(self) -> str:
         written = ", ".join(
-            f"{spec.name}={spec.text}" for spec in self.specs
+            f"{spec.label}={spec.text}" for spec in self.specs
         )
         return f"{self.target.__name__}({written})"
 
@@ -835,10 +955,55 @@ class _Registry:
             target, specs, priority, target.__mro__.index(owner),
             _delegation_plan(owner, target, specs), ranked,
         )
+        entry.refuses = _refused(owner, target)
         entries = _replacing(self.dispatch[0], entry)
         self.dispatch = (
             entries, discriminants(owner, _constrained(entries)), ()
         )
+
+
+def _refused(
+    owner: type, target: type
+) -> tx.Optional[tx.Tuple[tx.FrozenSet[str], tx.Optional[int], str]]:
+    # The arguments `target` cannot take because it removed their fields
+    # with `Forget`: every name such a field was passed by, anywhere in
+    # `target`'s ancestry -- not only the owner's fields, since a field
+    # forgotten from a class between the two can still reach the owner
+    # in the call -- and the first place in `owner`'s positional
+    # arguments one of them fills, with the name it fills it under. A
+    # call that passes any of them cannot be handed to `target`, so
+    # `select` passes over it. A target with a hand-written `__init__`
+    # takes whatever it likes.
+    if not _generated_init(target):
+        return None
+    target_fields = getattr(target, _FIELDS)
+    taken = {
+        alias for field in target_fields.values() for alias in field.aliases
+    }
+    names = set()
+    for base in target.__mro__[1:]:
+        table = base.__dict__.get(_FIELDS)
+        if table is None:
+            continue
+        for name, field in table.items():
+            if name in target_fields or not field.init or not field.kw:
+                continue
+            names.update(
+                alias for alias in field.aliases if alias not in taken
+            )
+    owner_fields = getattr(owner, _FIELDS)
+    position, label = None, ""
+    if _generated_init(owner):
+        positional = [f for f in owner_fields.values() if f.positional]
+        order = [f for f in positional if not f.kw]
+        order += [f for f in positional if f.kw]
+        for index, field in enumerate(order):
+            if field.name not in target_fields:
+                position, label = index, field.public_name
+                break
+    if not names and position is None:
+        return None
+    return frozenset(names), position, label
 
 
 def _replacing(
@@ -1126,10 +1291,14 @@ def as_written(cls: type) -> str:
     return cls.__dict__.get(_GENERIC_ORIGIN, cls).__name__
 
 
-def _written(values: tx.Mapping[str, tx.Any]) -> str:
+def _written(
+    values: tx.Mapping[str, tx.Any],
+    where: tx.Iterable[_Discriminant] = (),
+) -> str:
     """The arguments dispatch went on, said the way they were passed."""
+    public = {found.name: found.public for found in where}
     written = ", ".join(
-        f"{name}={value!r}"
+        f"{public.get(name, name)}={value!r}"
         for name, value in values.items()
         if value is not MISSING
     )
@@ -1150,7 +1319,12 @@ def select(
     """
     entries, where, left_out = found.dispatch
     values = read(where, args, kwargs)
-    candidates = [entry for entry in entries if entry.matches(values)]
+    # A subclass that removed the field of an argument the call passes
+    # cannot be handed the call, whatever it stands for.
+    matched = [entry for entry in entries if entry.matches(values)]
+    candidates = [
+        entry for entry in matched if entry.refused(args, kwargs) is None
+    ]
     if not candidates:
         # An abstract class cannot stand in for the subclass that was
         # not found: falling through would raise Python's own "can't
@@ -1160,7 +1334,8 @@ def select(
         if found.strict or abstract:
             raise NoPolymorphError(
                 _nothing_matched(cls, entries, left_out, values,
-                                 bool(abstract))
+                                 bool(abstract), where,
+                                 _passed_over(matched, args, kwargs))
             )
         return None
     best = max(candidates, key=lambda entry: entry.rank)
@@ -1174,7 +1349,8 @@ def select(
                    + [entry.target.__name__ for entry in tied])
         )
         raise AmbiguousPolymorphError(
-            f"{cls.__name__}({_written(values)}) matches {names} equally "
+            f"{cls.__name__}({_written(values, where)}) matches {names} "
+            f"equally "
             f"well, and there is nothing to choose between them. Say which "
             f"one wins by giving it a higher priority -- "
             f"`class {as_written(best.target)}({as_written(cls)}, "
@@ -1234,6 +1410,8 @@ def _nothing_matched(
     left_out: tx.Tuple[_Polymorph, ...],
     values: tx.Mapping[str, tx.Any],
     abstract: bool,
+    where: tx.Iterable[_Discriminant] = (),
+    passed_over: str = "",
 ) -> str:
     why = (
         f"{cls.__name__} is abstract, so it can only be built as one of "
@@ -1268,12 +1446,41 @@ def _nothing_matched(
         f"{cls.__name__} was asked for, and were left out."
         if left_out else ""
     )
+    if passed_over:
+        return (
+            f"{why}, and none that matches {_written(values, where)} can "
+            f"take the call: {passed_over}{aside}"
+        )
     return (
-        f"{why}, and none of them matches {_written(values)}. It "
+        f"{why}, and none of them matches {_written(values, where)}. It "
         f"considered:\n{considered}{aside}\nIf the one you expected is "
         f"not in that list, the module it is written in has not been "
         f"imported."
     )
+
+
+def _passed_over(
+    matched: tx.Iterable[_Polymorph],
+    args: tx.Tuple[tx.Any, ...],
+    kwargs: tx.Mapping[str, tx.Any],
+) -> str:
+    # Why each subclass that matched was not chosen, when it was passed
+    # over for an argument it does not take.
+    lines = []
+    for entry in matched:
+        name = entry.refused(args, kwargs)
+        if name is None:  # pragma: no cover -- it would have been chosen
+            continue
+        forgetter = forgotten_by(entry.target.__mro__, name)
+        removed = (
+            f", which {forgetter.__name__} removed with Forget"
+            if forgetter is not None else ""
+        )
+        lines.append(
+            f"\n  - {entry.target.__name__} matches, but does not take "
+            f"{name!r}{removed}"
+        )
+    return "".join(lines)
 
 
 def check(
@@ -1290,7 +1497,7 @@ def check(
         if value is MISSING or spec.matches(value):
             continue
         raise PolymorphError(
-            f"{cls.__name__} is what {spec.name}={spec.text} builds, so "
-            f"{spec.name}={value!r} contradicts it. Build the class that "
+            f"{cls.__name__} is what {spec.label}={spec.text} builds, so "
+            f"{spec.label}={value!r} contradicts it. Build the class that "
             f"value belongs to instead."
         )

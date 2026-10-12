@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/code-branch
----
-
 # Building the right subclass
 
 A class can hand back one of its subclasses, chosen from the arguments:
@@ -34,6 +30,8 @@ built on its own:
 ```pycon
 >>> MinorChord(root="A")
 MinorChord(root='A', mode='minor', variant='natural')
+>>> MinorChord.mode
+'minor'
 ```
 
 ## Saying what a subclass stands for
@@ -51,6 +49,12 @@ type to fit, or a question to answer:
 | `...` | the argument was given at all |
 
 A subclass is in the running when every constraint it declares matches.
+
+The keys of `on=` name each field the way the constructor accepts it. A
+field declared as `_mode` in the class body is passed to the constructor as
+`mode`, so `on={"mode": "minor"}` refers to that field. The name written in
+the class body is also accepted, and `on={"_mode": "minor"}` has the same
+effect.
 
 ## Which subclass wins
 
@@ -207,6 +211,55 @@ SpaceTime(name='t', unit='second', direction=None)
 ```
 
 A subclass of it can still say what it stands for, and is reached through it.
+
+### Forgetting a field a parent chooses by
+
+A subclass can forget a field even when one of its parents uses that
+field to choose a subclass:
+
+```python
+class Voice(Magic, polymorphic=True):
+    kind: str = "plain"
+    grade: int = 0
+
+class Inverted(Voice, on={"kind": "inverse"}):
+    pass
+
+class Graded(Voice):
+    kind: Forget
+
+class Third(Graded, on={"grade": 3}):
+    pass
+```
+
+When a call passes a value for the forgotten field, the subclass that
+forgot the field cannot accept the call, so it is passed over and the
+choice is made among the remaining subclasses. When the call leaves the
+field out, the subclass is chosen as usual:
+
+```pycon
+>>> Voice(grade=3)
+Third(grade=3)
+>>> Voice(grade=3, kind="inverse")
+Inverted(kind='inverse', grade=3)
+```
+
+A class cannot be chosen for a value of a field that it does not have.
+For that reason, `on={"kind": ...}` is refused on `Graded`, and on its
+subclasses for as long as `kind` remains forgotten. A subclass of `Graded`
+that declares `kind` again is not chosen by its value automatically; it
+needs its own `on=` argument, or it can be registered by hand:
+
+```python
+@Voice.register_polymorph(kind="again")
+class Again(Graded):
+    kind: str = "again"
+```
+
+```pycon
+>>> Voice(kind="again")
+Again(grade=0, kind='again')
+```
 
 ## Registering a class you did not write
 

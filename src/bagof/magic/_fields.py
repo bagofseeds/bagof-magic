@@ -43,6 +43,7 @@ __all__ = [
     "Pin",
     "Narrow",
     "NoPin",
+    "Forget",
     "PIN",
     "CLASSVAR",
     "KEEP",
@@ -128,9 +129,10 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     'key',              # Field is a key in the dict-like interface.
     'alias',            # Alternative names for this field.
     'property',         # Forwarding attribute names and access modes.
-    '_declared',        # What the field asked for (bookkeeping for override).
+    '_declared',        # What the field explicitly said (bookkeeping).
     '_narrowed_by',     # Which constraints narrowed it (bookkeeping).
     'pin',              # What a subclass matching on it does with it.
+    'inherit',          # False: remove the inherited field of this name.
 )
 class Field(SlotsBase):
     """A single field in a Magic class.
@@ -243,6 +245,12 @@ class Field(SlotsBase):
             over `pin_discriminant` on every class that matches on the
             field, including subclasses that inherit it. Also settable
             through the `Pin`, `Narrow` and `NoPin` annotations.
+        inherit : bool, optional
+            `False` removes the field of this name that the class
+            inherits, instead of declaring one: it is no longer a
+            parameter, part of the repr, the comparisons or the
+            dict-like view, and its public name is free for another
+            field. Usually written as the bare annotation `x: Forget`.
 
         Other Parameters
         ----------------
@@ -536,12 +544,24 @@ class Field(SlotsBase):
         )
         return f"{type(self).__name__}({params})"
 
+    def _explicit(self) -> tx.Dict[str, tx.Any]:
+        # Every attribute the field has been given a value for, and the
+        # value -- what its annotation (and a `field()` default) said,
+        # when read before the class options fill in the rest. The
+        # bookkeeping slots are left out: nobody declares them.
+        return {
+            slot: getattr(self, slot)
+            for slot in self._slots()
+            if not slot.startswith("_")
+            and getattr(self, slot, MISSING) is not MISSING
+        }
+
     def _redeclare(self, **values) -> None:
         # Set a value and mark it as the field's own preference, so
         # re-resolving against a different class's options preserves it.
         for attr, value in values.items():
             setattr(self, attr, value)
-            if self._declared is not MISSING and attr in self._declared:
+            if self._declared is not MISSING:
                 self._declared[attr] = value
 
     def _reresolve(
@@ -553,7 +573,7 @@ class Field(SlotsBase):
         # Reset `attrs` to the field's own declarations, then resolve
         # them again from `options`. The field's own preferences survive.
         for attr in attrs:
-            setattr(self, attr, self._declared[attr])
+            setattr(self, attr, self._declared.get(attr, MISSING))
         self.setdefault(options, hints)
 
     def setdefault(
@@ -565,11 +585,11 @@ class Field(SlotsBase):
         # the converter, validator or factory is first used.
         #
         # The field's own preferences are preserved so that `override`
-        # on a subclass can restore and re-resolve them.
+        # on a subclass can restore and re-resolve them. The builder
+        # records them before calling this; a field built by hand has
+        # them recorded here, the first time it is resolved.
         if self._declared is MISSING:
-            self._declared = {
-                attr: getattr(self, attr) for attr in _RESOLVED_ATTRS
-            }
+            self._declared = self._explicit()
         if options.kw_only and options.positional_only:
             raise ValueError(
                 "Cannot set both kw_only and positional_only to True"
@@ -1838,6 +1858,51 @@ class Narrow(Pin, BoolAnnotatedField):
 @slots
 class NoPin(Pin, BoolAnnotatedField):
     __set_slots__ = {'pin': False}
+
+
+@slots
+class Forget(AnnotatedField):
+    """
+    Remove a field the class inherits.
+
+    Write the bare name as the annotation. The field is gone from this
+    class and from every class that inherits from it: the constructor
+    no longer takes it, and the repr, the comparisons and the dict-like
+    view leave it out. Its public name is free again, so another field
+    may take it. Declaring the field again further down brings back a
+    new one.
+
+    A value written beside it stays an ordinary class attribute. With
+    nothing written, the name is looked up as on any class, so reading
+    it can still find what a base class holds under it, such as the
+    field's old default.
+
+    A field a base class chooses its subclasses by may be forgotten too.
+    Passing that field to the class is an error that names the class
+    that forgot it, and a base choosing a subclass passes this one over
+    whenever the call passes that field.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Forget()
+        Forget(inherit=False)
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Point(Magic):
+        ...     x: int
+        ...     y: int = 0
+        ...
+        >>> class Tick(Point):
+        ...     y: Forget
+        ...
+        >>> Tick(3)
+        Tick(x=3)
+        ```
+    """
+
+    __set_slots__ = {'inherit': False}
 
 
 PIN: tx.Literal["pin"] = "pin"

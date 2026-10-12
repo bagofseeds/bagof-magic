@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/arrows-rotate
----
-
 # Conversion and validation
 
 Turn them on and the type hint does the work:

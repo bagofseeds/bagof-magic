@@ -37,6 +37,7 @@ from bagof.magic import (
     ClassVar,
     ConvertTo,
     Factory,
+    Forget,
     KwOnly,
     Magic,
     MetaMagic,
@@ -487,6 +488,126 @@ class TestReadingTheArguments:
         # `on=` names the field as the class declares it; the argument
         # arrives under the public name.
         assert type(Aliased(mode="minor")) is Minor
+
+
+class TestDiscriminantsByPublicName:
+    """`on=` names a field the way the constructor takes it."""
+
+    @staticmethod
+    def _base() -> type:
+        class Aliased(Magic, polymorphic=True):
+            _mode: str = "major"
+            other: int = 0
+
+        return Aliased
+
+    def test_the_public_name_is_accepted(self) -> None:
+        Aliased = self._base()
+
+        class Minor(Aliased, on={"mode": "minor"}):
+            pass
+
+        assert type(Aliased(mode="minor")) is Minor
+        assert type(Aliased("minor")) is Minor
+        assert type(Aliased()) is Aliased
+        # It is still the stored field that carries the value, and the
+        # one the registration is recorded against.
+        assert Minor()._mode == "minor"
+        assert Minor.__dict__[_REGISTRATION][1][0].name == "_mode"
+
+    def test_the_stored_name_is_still_accepted(self) -> None:
+        Aliased = self._base()
+
+        class Minor(Aliased, on={"_mode": "minor"}):
+            pass
+
+        assert type(Aliased(mode="minor")) is Minor
+
+    def test_any_name_the_constructor_takes_is_accepted(self) -> None:
+        class Base(Magic, polymorphic=True):
+            mode: tx.Annotated[str, field(alias=("mode", "kind"))] = "a"
+
+        class B(Base, on={"kind": "b"}):
+            pass
+
+        assert type(Base(kind="b")) is B
+        assert type(Base(mode="b")) is B
+
+    def test_a_hand_registration_takes_the_public_name(self) -> None:
+        Aliased = self._base()
+
+        class Minor(Aliased):
+            pass
+
+        Aliased.register_polymorph(Minor, mode="minor")
+        assert type(Aliased(mode="minor")) is Minor
+
+    def test_an_unknown_name_is_still_refused(self) -> None:
+        Aliased = self._base()
+        with pytest.raises(TypeError, match="'nope', which is not a field") \
+                as caught:
+            class Typo(Aliased, on={"nope": 1}):
+                pass
+        # The fields are listed by the names the constructor takes.
+        assert "'mode', 'other'" in str(caught.value)
+
+    def test_both_names_for_one_field_are_refused(self) -> None:
+        Aliased = self._base()
+        with pytest.raises(
+            TypeError, match="'_mode' and on 'mode', which are two names "
+            "for the same field"
+        ):
+            class Twice(Aliased, on={"_mode": "minor", "mode": "minor"}):
+                pass
+
+    def test_both_names_are_refused_by_hand_too(self) -> None:
+        Aliased = self._base()
+
+        class Minor(Aliased):
+            pass
+
+        with pytest.raises(TypeError, match="two names for the same field"):
+            Aliased.register_polymorph(
+                Minor, on={"mode": "minor"}, _mode="minor"
+            )
+
+    def test_messages_name_the_field_by_its_public_name(self) -> None:
+        class Aliased(Magic, polymorphic="strict"):
+            _mode: str = "major"
+
+        class Minor(Aliased, on={"_mode": "minor"}):
+            pass
+
+        class Dorian(Aliased, on={"mode": "dorian"}):
+            pass
+
+        with pytest.raises(NoPolymorphError) as caught:
+            Aliased(mode="lydian")
+        text = str(caught.value)
+        assert "matches mode='lydian'" in text
+        assert "Minor(mode='minor')" in text
+        assert "Dorian(mode='dorian')" in text
+        assert "_mode" not in text
+
+        with pytest.raises(PolymorphError, match=r"Minor is what "
+                           r"mode='minor' builds, so mode='dorian'"):
+            Minor(mode="dorian")
+
+        class Other(Aliased, on={"mode": "minor"}):
+            pass
+
+        with pytest.raises(AmbiguousPolymorphError,
+                           match=r"Aliased\(mode='minor'\) matches"):
+            Aliased(mode="minor")
+
+    def test_a_name_two_fields_answer_to_is_refused(self) -> None:
+        class Base(Magic, polymorphic=True):
+            mode: tx.Annotated[str, field(alias="style")] = "a"
+            _mode: str = "b"
+
+        with pytest.raises(TypeError, match="could mean either of two"):
+            class Sub(Base, on={"mode": "x"}):
+                pass
 
 
 # ======================================================================
@@ -4053,3 +4174,383 @@ class TestFieldPin:
         assert Fancy.mode == "minor"
         with pytest.raises(ValueValidationError):
             Fancy(mode="dorian")
+
+
+# ======================================================================
+# Forgetting a field a base chooses by
+# ======================================================================
+
+
+class TestForgettingADiscriminant:
+    """A class may forget a field its bases choose their subclasses by.
+
+    It is then passed over by any call that hands it an argument for the
+    forgotten field, and is chosen as usual by any call that does not.
+    """
+
+    @staticmethod
+    def _signals() -> tx.Tuple[type, type, type]:
+        class Signal(Magic, polymorphic=True):
+            kind: str = "plain"
+            level: int = 0
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        class Plain(Inverse):
+            kind: Forget
+
+        return Signal, Inverse, Plain
+
+    def test_the_base_still_builds_what_it_did(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+        assert type(Signal(kind="inverse")) is Inverse
+        assert type(Signal(kind="inverse", level=2)) is Inverse
+        assert type(Inverse(level=2)) is Inverse
+        assert type(Signal()) is Signal
+
+    def test_the_class_builds_itself(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+        plain = Plain(level=3)
+        assert type(plain) is Plain
+        assert repr(plain) == "Plain(level=3)"
+        assert list(signature(Plain).parameters) == ["level"]
+
+    @pytest.mark.parametrize("inverse_first", [True, False])
+    def test_a_subclass_that_cannot_take_the_call_is_passed_over(
+        self, inverse_first: bool
+    ) -> None:
+        class Signal(Magic, polymorphic=True):
+            kind: str = "plain"
+            grade: int = 0
+
+        def inverse() -> type:
+            class Inverse(Signal, on={"kind": "inverse"}):
+                pass
+            return Inverse
+
+        if inverse_first:
+            Inverse = inverse()
+
+        class Forgetful(Signal):
+            kind: Forget
+
+        class Graded(Forgetful, on={"grade": 3}):
+            pass
+
+        if not inverse_first:
+            Inverse = inverse()
+
+        # `Graded` matches grade=3 but cannot take `kind`, so the call
+        # goes to the subclass that can, whatever order they were
+        # written in.
+        assert type(Signal(grade=3, kind="inverse")) is Inverse
+        assert type(Signal("inverse", 3)) is Inverse
+        assert type(Signal(grade=3)) is Graded
+        # Passing the forgotten field at all rules `Graded` out.
+        assert type(Signal("plain", 3)) is Signal
+        assert type(Forgetful(grade=3)) is Graded
+
+    @pytest.mark.parametrize("enter", ["root", "middle"])
+    def test_a_field_forgotten_below_a_middle_level_is_refused_at_the_root(
+        self, enter: str
+    ) -> None:
+        class Root(Magic, polymorphic=True):
+            kind: str = "plain"
+            grade: int = 0
+
+        class Middle(Root, polymorphic=True):
+            extra: int = 0
+
+        class Forgetful(Middle):
+            extra: Forget
+
+        class Graded(Forgetful, on={"grade": 3}, priority=1):
+            pass
+
+        class Kept(Middle, on={"grade": 3}):
+            pass
+
+        entry = Root if enter == "root" else Middle
+        # `Graded` wins on priority, but cannot take `extra`, which a
+        # class below `Root` added and `Forgetful` removed.
+        assert type(entry(grade=3, extra=1)) is Kept
+        assert type(entry(grade=3)) is Graded
+
+    def test_a_strict_class_says_why_a_match_was_passed_over(self) -> None:
+        class Signal(Magic, polymorphic="strict"):
+            kind: str = "plain"
+            grade: int = 0
+
+        class Forgetful(Signal):
+            kind: Forget
+
+        class Graded(Forgetful, on={"grade": 3}):
+            pass
+
+        with pytest.raises(NoPolymorphError) as caught:
+            Signal(grade=3, kind="x")
+        text = str(caught.value)
+        assert "none that matches grade=3 can take the call" in text
+        assert (
+            "Graded matches, but does not take 'kind', which Forgetful "
+            "removed with Forget"
+        ) in text
+        assert "none of them matches" not in text
+
+    def test_a_subclass_below_is_still_reached_without_the_field(
+        self
+    ) -> None:
+        Signal, Inverse, Plain = self._signals()
+
+        class Loud(Plain, on={"level": 5}):
+            pass
+
+        assert type(Plain(level=5)) is Loud
+        assert type(Inverse(level=5)) is Loud
+        assert type(Inverse(kind="inverse", level=5)) is Inverse
+        assert type(Signal(kind="inverse", level=5)) is Inverse
+
+    def test_passing_the_forgotten_field_names_who_forgot_it(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+
+        class Loud(Plain):
+            pass
+
+        with pytest.raises(
+            TypeError, match=r"^Plain\(\) got an argument 'kind', but "
+            r"Plain removed that field with Forget"
+        ):
+            Plain(kind="x")
+        with pytest.raises(
+            TypeError, match=r"^Loud\(\) got an argument 'kind', but "
+            r"Plain removed that field with Forget"
+        ):
+            Loud(kind="x")
+        # The signature does not show it.
+        assert list(signature(Loud).parameters) == ["level"]
+
+    def test_a_field_declared_again_is_taken_again(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+
+        class Again(Plain):
+            kind: str = "again"
+
+        assert Again(kind="x").kind == "x"
+
+    def test_a_subclass_cannot_register_on_the_forgotten_field(
+        self
+    ) -> None:
+        Signal, Inverse, Plain = self._signals()
+        with pytest.raises(
+            TypeError,
+            match="registers on 'kind', which is not a field of Again: "
+            "Plain removed it with Forget",
+        ):
+            class Again(Plain, on={"kind": "again"}):
+                pass
+
+    def test_registering_on_it_by_hand_names_who_forgot_it(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+
+        class Again(Plain):
+            pass
+
+        with pytest.raises(
+            TypeError, match="not a field of Plain. Plain removed it"
+        ):
+            Plain.register_polymorph(Again, kind="again")
+        with pytest.raises(
+            TypeError, match="Again cannot be registered for "
+            "kind='again': it has no field 'kind'"
+        ):
+            Signal.register_polymorph(Again, kind="again")
+
+    def test_it_can_be_registered_by_hand_on_another_field(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+        Signal.register_polymorph(Plain, level=9)
+        assert type(Signal(level=9)) is Plain
+        assert type(Signal(level=9, kind="inverse")) is Inverse
+
+    def test_forgetting_and_registering_on_it_at_once_is_refused(
+        self
+    ) -> None:
+        Signal, Inverse, Plain = self._signals()
+        with pytest.raises(
+            TypeError, match="Both forgets 'kind' and registers on 'kind'"
+        ):
+            class Both(Inverse, on={"kind": "both"}):
+                kind: Forget
+
+    def test_forgetting_it_and_registering_on_another_field(self) -> None:
+        Signal, Inverse, Plain = self._signals()
+
+        class Loud(Inverse, on={"level": 1}):
+            kind: Forget
+
+        assert type(Inverse(level=1)) is Loud
+        assert type(Signal(kind="inverse", level=1)) is Inverse
+
+    def test_a_diamond_over_a_forgotten_field(self) -> None:
+        class Signal(Magic, polymorphic=True):
+            kind: str = "plain"
+            mode: str = "a"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        class Minor(Signal, on={"mode": "minor"}):
+            pass
+
+        # Combining the parents would stand for a value of `kind`, which
+        # the class no longer has: it is left out of the choice.
+        class Quiet(Inverse, Minor):
+            kind: Forget
+
+        assert _REGISTRATION not in Quiet.__dict__
+        with pytest.raises(TypeError, match="Loud stands for a value of "
+                           "'kind' through the classes it inherits from, "
+                           "but Loud removed that field with Forget"):
+            class Loud(Inverse, Minor, on={"mode": "minor"}):
+                kind: Forget
+
+    def test_a_forgotten_pinned_field_reads_the_pinned_value(
+        self
+    ) -> None:
+        Signal, Inverse, Plain = self._signals()
+        # The name is read the way it is on any class, and the pin left
+        # its value on `Inverse`.
+        assert repr(Plain()) == "Plain(level=0)"
+        assert Plain.kind == Plain().kind == "inverse"
+
+    def test_a_field_nobody_chooses_by_changes_nothing(self) -> None:
+        class Signal(Magic, polymorphic=True):
+            kind: str = "plain"
+            note: str = ""
+
+        class Quiet(Signal):
+            note: Forget
+
+        class Low(Quiet, on={"kind": "low"}):
+            pass
+
+        assert type(Signal(kind="low")) is Low
+        assert type(Quiet(kind="low")) is Low
+        assert repr(Signal(kind="low")) == "Low(kind='low')"
+        # Passing the forgotten field passes `Low` over.
+        assert type(Signal(kind="low", note="n")) is Signal
+
+    def test_the_public_name_of_a_forgotten_field_is_refused_too(
+        self
+    ) -> None:
+        class Signal(Magic, polymorphic=True):
+            _kind: str = "plain"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        with pytest.raises(TypeError, match="forgets '_kind'"):
+            class Both(Inverse, on={"kind": "x"}):
+                _kind: Forget
+
+    def test_registering_below_on_the_public_name_names_who_forgot_it(
+        self
+    ) -> None:
+        class Signal(Magic, polymorphic=True):
+            _kind: str = "plain"
+            grade: int = 0
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        class Plain(Inverse):
+            _kind: Forget
+
+        with pytest.raises(
+            TypeError,
+            match="registers on 'kind', which is not a field of Again: "
+            "Plain removed it with Forget",
+        ):
+            class Again(Plain, on={"kind": "again"}):
+                pass
+
+        # A name that was never a field is not blamed on the forget.
+        with pytest.raises(
+            TypeError, match="registers on 'nope', which is not a field "
+            "of Plain. Its fields are: 'grade'"
+        ):
+            class Other(Plain, on={"nope": 1}):
+                pass
+
+
+# ======================================================================
+# A pinned value is left on the class
+# ======================================================================
+
+
+class TestPinnedValueOnTheClass:
+    """Reading a pinned discriminant off the class agrees with instances."""
+
+    @pytest.mark.parametrize("mode", ["pin", "pin+narrow", "narrow"])
+    def test_a_pin_is_a_class_attribute(self, mode: str) -> None:
+        class Signal(Magic, polymorphic=True, pin_discriminant=mode):
+            kind: str = "plain"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        assert Inverse.__dict__["kind"] == "inverse"
+        assert Inverse.kind == Inverse().kind == "inverse"
+        assert Signal.kind == "plain"
+
+    @pytest.mark.parametrize("mode", ["classvar", "classvar+narrow"])
+    def test_a_classvar_already_was(self, mode: str) -> None:
+        class Signal(Magic, polymorphic=True, pin_discriminant=mode):
+            kind: str = "plain"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        assert Inverse.kind == Inverse().kind == "inverse"
+
+    @pytest.mark.parametrize("mode", ["keep", "keep+narrow"])
+    def test_keep_pins_nothing(self, mode: str) -> None:
+        class Signal(Magic, polymorphic=True, pin_discriminant=mode):
+            kind: str = "plain"
+
+        class Inverse(Signal, on={"kind": {"inverse", "plain"}}):
+            pass
+
+        assert "kind" not in Inverse.__dict__
+        assert Inverse.kind == "plain"
+
+    def test_a_slotted_class_keeps_no_default_on_the_class(self) -> None:
+        class Signal(Magic, polymorphic=True, slots=True):
+            kind: str = "plain"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        assert "kind" not in Inverse.__dict__
+        assert Inverse().kind == "inverse"
+
+    def test_a_mutable_pin_is_built_per_instance(self) -> None:
+        class Config(Magic, polymorphic=True):
+            cfg: tx.Any = None
+
+        class Special(Config, on={"cfg": {"a": 1}}):
+            pass
+
+        assert "cfg" not in Special.__dict__
+        first, second = Special(), Special()
+        assert first.cfg == {"a": 1}
+        assert first.cfg is not second.cfg
+
+    def test_a_field_pinned_by_its_own_field_setting(self) -> None:
+        class Signal(Magic, polymorphic=True):
+            kind: Pin[str, PIN] = "plain"
+
+        class Inverse(Signal, on={"kind": "inverse"}):
+            pass
+
+        assert Inverse.kind == "inverse"

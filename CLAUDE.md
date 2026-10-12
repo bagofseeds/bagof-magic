@@ -181,6 +181,24 @@ Tests that exercise internals import them from the module that defines them
   are private bookkeeping — not constructor arguments, kept out of repr —
   and so is `_narrowed_by` (which written constraints a field's
   validator already enforces; see "Registration owners").
+- **What a field declared is recorded apart from what it resolved to.**
+  The builder sets `field._declared = field._explicit()` -- every
+  non-bookkeeping slot the annotation (and a `field()` default) gave a
+  value, and only those -- just before `setdefault` fills in the rest
+  from the options; a `Field` built by hand gets the same record the
+  first time `setdefault` runs. `_reresolve` resets an attribute to
+  `_declared.get(attr, MISSING)`, and `_redeclare` always writes into
+  the record, so a value the builder settles on (a mutable default's
+  factory, a narrowing validator) survives `override`. A field a class
+  merely inherits keeps the base's resolved answers and the base's
+  record. Each class also keeps its own copy of what its body said, as
+  `__magic_declared__` (`_DECLARED`): `{field: {attr: value}}`, read
+  from the class's own `__dict__`. Nothing reads it while building;
+  it is there for diagnostics, and for the field-inheritance work in
+  #119 that merges declarations down the MRO. `UNSET` ("this class
+  said nothing", internal to `_constants.py`) is there for that work,
+  and is distinct from `MISSING` ("no value"). The three sentinels
+  share `_Sentinel`, which keeps one instance per class.
 
 ### Reading annotations
 
@@ -544,6 +562,87 @@ does not.
   refused to be built at all. A parameterisation reads `required` and
   `invariant` off its origin's registry on every call (like `dispatch`),
   so one built before the hand registration follows it too.
+- **A pinned value is left on the class.** Under "pin" (and its
+  "+narrow" forms) `_pin_discriminant` writes the value into the
+  namespace the way a written default is, so `Inverse.kind` agrees
+  with `Inverse().kind` and a subclass that forgets the field reads
+  it; "classvar" always did. A slotted class keeps no default on the
+  class, and a mutable pin that becomes a factory leaves nothing.
+- **`on=` keys name a field by its public name.** `on={"mode": ...}`
+  reaches the field `_mode`, as does any other name the constructor
+  takes it by; the stored name is still accepted. `stored_names` in
+  `_polymorph.py` turns each key into the stored name once, before
+  `specifications` -- against the class's own field table in a class
+  statement, against the owner's in `register_polymorph` -- so every
+  `_Spec.name` downstream is a stored name, as before. A key naming
+  one field twice (`_mode` and `mode`), or a stored name that is also
+  another field's public name, is refused; an unknown key is kept as
+  written for `check_fields`, whose message lists public names. Every
+  message names a field by `_Spec.label` -- its public name, which
+  `stored_names` hands back beside the mapping -- and `_written` turns
+  the stored names dispatch reads into the names the caller passed.
+
+### Forgetting an inherited field
+
+`x: Forget` (or `Forget()` in the metadata, or `Field(inherit=False)`)
+lowers to the `Field` slot `inherit=False`. `__pre_new__` builds the
+`Field` as usual, records it in `_DECLARED`, and then skips it: it is
+never resolved and never enters the field table. After the merge of the
+bases, each forgotten name is popped from `fields` -- an error, naming
+the base that already forgot it if there is one, when no base has it --
+and the names are stored as `__magic_forgotten__` (`_FORGOTTEN`), read
+off each class's own `__dict__`. This happens before the class's own
+fields go in, so `_x: int` beside `x: Forget` may take the public name
+`x`. A value written beside `Forget` stays in the namespace as a plain
+class attribute; with none, the name is left to ordinary lookup -- a
+base's class-level default on a plain class, the base's empty member
+descriptor on a slots class (a slot cannot be taken away from a
+subclass's instances).
+
+**A forgetting class acts as though it never had the field.** It
+takes the field away from what it inherited it from, and from nothing
+else. `_kept_holders` works out, for each name some base forgot, which
+bases the merge takes that name from: the first class in the MRO that
+holds it and has no forgetting subclass among the bases (`_hidden_from`),
+plus the ancestors in that class's own lineage that hand it the field.
+The merge leaves every other copy out rather than removing it
+afterwards. So `D(B, C)` with `B` forgetting `x` gets the `x` that `C`
+holds -- even one `C` only inherited from the root `B` forgot it from --
+in the place `C` has it; and a field declared again below the
+forgetting class keeps the place it is declared in. A value written
+beside `Forget` is a plain class attribute and hides nothing: `B`
+writing `x: Forget = 5` behaves exactly like a base with a plain class
+attribute `x = 5`, which never hid another base's field (lookup on the
+class finds the attribute first, the field keeps its default).
+
+**Passing a forgotten field.** `_make_init` is handed every input
+name of every field the class lost to `Forget` (`_forgotten_inputs`,
+minus any name a field now takes) and compiles each as a hidden
+keyword-only parameter defaulting to the alias marker, whose body
+raises a `TypeError` naming the class that forgot it -- the same
+mechanism, and the same cost (one `is` per name), as an alias.
+
+**Polymorphism: decided per call.** Forgetting a field a base chooses
+by is allowed, and registration is unchanged by it: the class registers
+with the same owners it would otherwise. Each registry entry carries
+`refuses` (`_refused` in `_polymorph.py`, worked out once in
+`_Registry.add`): the input names of every field in the target's
+ancestry that the target lacks -- not only the owner's, since a field
+added and forgotten between the two still reaches the owner in the
+call -- and the first owner position a lacking field fills. `select`
+passes over an entry whose target cannot take an argument the call
+passes, then chooses among the rest as usual; when nothing is left,
+`_nothing_matched` says which matches were passed over and which
+argument each could not take -- so the answer does not depend
+on the order the classes were written in. An earlier version cut such
+classes off from the owners at class creation instead, which made
+`S(grade=3, kind="inverse")` pick a subclass that had forgotten `kind`
+when it happened to be registered first. Still refused: `on=` naming a
+field the same class forgets (checked first, so its message wins); `on=`
+naming a field a base forgot; a diamond that writes `on=` while its
+parents' constraints read a field it forgot (one that writes nothing is
+left unregistered); and `register_polymorph` for a value of a field the
+target lacks.
 
 ## Conventions specific to this repo (do not regress)
 
@@ -623,7 +722,7 @@ argued the other way:
   converters the same way. Pydantic's `model_copy` differs, and gives
   the different behaviour a different name.
 
-One deliberate departure, decided by the maintainer against the
+Deliberate departures, decided by the maintainer against the
 consensus:
 
 - **A required field may follow a defaulted one.** `dataclasses` and
@@ -634,13 +733,26 @@ consensus:
   library the shape is usually what the author meant. Checkers applying
   the `dataclasses` rules (mypy, pyright) still flag it; the docs point
   to `kw_only=True` on the declaring class for checker-clean code.
+- **A subclass can forget an inherited field** (`x: Forget`, #119).
+  None of the three can: `dataclasses` comes closest with `x:
+  ClassVar[...]`, which still leaves the name taken. A forgotten field
+  is gone from the class and everything below it, and its public name
+  is free. Checkers still see the base's field (PEP 681 cannot say
+  this).
 
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 
+**The writing style is the org guide's**: `bagofseeds/.github`, `CLAUDE.md`,
+section "Documentation" (docstring mechanics, prose, flow, concision,
+punctuation, structure, and the revision test). Read it before writing or
+editing any documentation here, and follow it where it says more than this
+section. It asks for polished, continuous prose rather than compressed
+facts; do not imitate terser pages already in this repository.
+
 Docs are for **Python developers who want to use `magic` to build clean data
 classes**. They are not experts in metaclasses, typing internals, or the
-builder's implementation. Every sentence should help them write correct,
-readable code. Apply this to every hand-written page and to every public
+builder's implementation. On top of the org guide, apply these
+repo-specific rules to every hand-written page and to every public
 docstring:
 
 1. **Lead with what the user writes.** Show the simplest spelling first.
@@ -662,9 +774,9 @@ docstring:
    well as current. The usual trap is `typing`: `Annotated` only exists from
    3.9. Prefer the package's own sugar (`Doc[int, "..."]`, `Frozen[int]`) in
    examples.
-5. **Short sentences, no filler.** If a sentence can be cut without losing
-   meaning, cut it. If an example reads as awkward, that is a signal that
-   `magic` is missing sugar. File an `enhancement` issue for the gap.
+5. **An awkward example is a missing feature.** If an example reads as
+   awkward, that is a signal that `magic` is missing sugar. File an
+   `enhancement` issue for the gap rather than explaining around it.
 
 **This applies equally to every public docstring** (anything without a leading
 underscore, reachable from `bagof.magic`). The API reference renders them

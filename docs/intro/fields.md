@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/list-ul
----
-
 # Field annotations
 
 Each field says what it does, right where it is declared:
@@ -120,6 +116,7 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | `Doc[T, "..."]` | describe the field | -- |
 | `Pin[T, mode]` | how a subclass that matches on it keeps it (see [polymorphism](polymorphism.md#pinning-one-field)) | `NoPin` |
 | `Narrow[T]` | `Pin[T, "narrow"]`: pinned, and narrowed to what the subclass stands for | `NoPin` |
+| `Forget` | remove a field the class inherits (see [below](#forgetting-an-inherited-field)) | -- |
 
 Each annotation sets exactly what its name says, and that wins over the
 class setting: on a `kw_only=True` class, `x: Positional[int]` can still
@@ -194,6 +191,111 @@ A test given as a class setting applies to every field:
 also works as a key setting, alone or with a new name:
 `Key("labels", ShowIf(bool))` keeps the key only while the value is true.
 A key is kept or left out, never reformatted, so it takes only a test.
+
+## Forgetting an inherited field
+
+A subclass can remove a field that it inherits by annotating the field's
+name with `Forget`:
+
+```python
+from bagof.magic import Forget
+
+class Pixel(Magic):
+    x: int
+    y: int = 0
+
+class Column(Pixel):
+    y: Forget
+```
+
+```pycon
+>>> Column(3)
+Column(x=3)
+>>> Column(3, y=4)
+Traceback (most recent call last):
+TypeError: Column() got an argument 'y', but Column removed that field with Forget, so Column does not take it.
+```
+
+Once forgotten, the field no longer appears in the constructor, in
+`repr()`, in comparisons, in the dict-like view or in `fields()`. The
+subclasses of `Column` do not have the field either, unless one of them
+declares `y` again.
+
+A field is usually forgotten so that its value can be stored under another
+name. Forgetting the field frees the name that the constructor accepted,
+and a new field can then take that name:
+
+```python
+class Shape(Magic):
+    size: int
+
+class Cached(Shape):
+    size: Forget
+    _size: int
+
+    @property
+    def size(self) -> int:
+        return self._size
+```
+
+```pycon
+>>> Cached(3)
+Cached(size=3)
+>>> Cached(3).size
+3
+```
+
+The constructor accepts `_size` under the name `size`, because the
+constructor drops a leading underscore from a field's name.
+
+A forgotten name is no longer a field, but it can still be an ordinary
+class attribute, and reading it follows the usual Python lookup through the
+base classes. `Column.y` therefore still returns `Pixel`'s default, `0`.
+Writing a value beside the annotation, as in `y: Forget = 1`, sets a plain
+class attribute in the same way. On a class built with `slots=True`, each
+instance still carries the base class's slot for `y`, so reading `y` on an
+instance raises `AttributeError` until a value is assigned.
+
+Forgetting a field affects only the class that forgets it and the
+subclasses of that class. When a class also inherits the same field
+through another base, the field from the other base is kept:
+
+```python
+class Plain(Pixel):
+    pass
+
+class Mixed(Column, Plain):
+    pass
+```
+
+```pycon
+>>> Mixed(1, 2)
+Mixed(x=1, y=2)
+```
+
+A value written beside `Forget` changes only what is read from the class
+itself. Each instance still holds its own value for the field that the
+other base provides:
+
+```python
+class Flat(Pixel):
+    y: Forget = 9
+
+class Both(Flat, Plain):
+    pass
+```
+
+```pycon
+>>> Both.y
+9
+>>> Both(1).y
+0
+```
+
+!!! warning "Type checkers still see the field"
+    Type checkers such as mypy and pyright have no way of knowing that a
+    field was forgotten, so they still show the field in the constructor's
+    signature.
 
 ## A required field after one with a default
 

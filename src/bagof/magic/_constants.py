@@ -71,6 +71,21 @@ _GENERIC_ARGS = '__magic_generic_args__'
 # classes.
 _GENERIC_CACHE = '__magic_generic_cache__'
 
+# The name of an attribute on the class that stores what each field
+# declared in *this* class's own body explicitly said, before the class
+# options filled in the rest: `{field name: {attribute: value}}`. Read
+# from the class's own __dict__, never inherited. Nothing the builder
+# does depends on it; it is there to say, after the fact, which class
+# asked for what.
+_DECLARED = '__magic_declared__'
+
+# The name of an attribute on the class that stores the inherited field
+# names it removed with `Forget`, as a frozenset. Read from each base's
+# own __dict__ while the fields are merged down the MRO, so that a
+# subclass of the class that forgot a field does not get it back from
+# another base that only inherited it from the same place.
+_FORGOTTEN = '__magic_forgotten__'
+
 # Name we give to classes that are only created temporarily to build the
 # MRO and then discarded.
 _DISCARD = "__magic_discard__"
@@ -155,39 +170,48 @@ _SHOWN = "__magic_shown__"
 def _RETURN_TYPE(x: str) -> str: return f"__magic_{x}_return_type__"
 
 
-class _MissingType:
+class _Sentinel:
+    """A marker with one instance per class, and a fixed repr and truth."""
+
+    _text = ""
+    _truth = False
 
     def __new__(cls) -> tx.Self:
-        if not hasattr(cls, "_instance"):
+        if "_instance" not in cls.__dict__:
             cls._instance = super().__new__(cls)
         return cls._instance
 
     def __repr__(self) -> str:
-        return "<MISSING>"
+        return self._text
 
     def __bool__(self) -> bool:
-        return False
+        return self._truth
+
+
+class _MissingType(_Sentinel):
+    _text = "<MISSING>"
 
 
 MISSING = _MissingType()
 MaybeMissing = tx.Union[T, _MissingType]
 
 
-class _RequiredType:
-
-    def __new__(cls) -> tx.Self:
-        if not hasattr(cls, "_instance"):
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "<REQUIRED>"
-
-    def __bool__(self) -> bool:
-        return True
+class _RequiredType(_Sentinel):
+    _text = "<REQUIRED>"
+    _truth = True
 
 
 REQUIRED = _RequiredType()
+
+
+class _UnsetType(_Sentinel):
+    _text = "<UNSET>"
+
+
+#: "This class said nothing about it" -- as opposed to `MISSING`, which
+#: is "there is no value" (a field with no default). Internal: the
+#: field-inheritance work reads it, nothing a user writes does.
+UNSET = _UnsetType()
 
 
 class _HasFactory:
