@@ -1,10 +1,11 @@
 # Settings
 
-Settings are class keyword arguments, not decorator arguments.
+Settings are keyword arguments to the class statement, rather than arguments
+to a decorator.
 
 ## Settings are inherited
 
-Set an option on a base class. Every subclass keeps it.
+An option set on a base class is kept by every subclass.
 
 ```python
 class Record(Magic, frozen=True, kw_only=True):
@@ -19,8 +20,9 @@ class User(Record):
 User(id=1, name='ada')
 ```
 
-A subclass can change any setting. `override=True` makes the change apply
-to inherited fields too:
+A subclass can change any setting. The change applies to the fields the
+subclass declares, and with `override=True` it applies to the inherited fields
+as well:
 
 ```python
 class Draft(Record, frozen=False, override=True):
@@ -34,9 +36,9 @@ class Draft(Record, frozen=False, override=True):
 Draft(id=2, note='')
 ```
 
-A field that names its own preference in its annotation (like `Frozen[int]`
-or `KwOnly[int]`, see [field annotations](fields.md)) keeps it regardless of
-what the class settings say.
+A field that states its own preference in its annotation, such as
+`Frozen[int]` or `KwOnly[int]`, keeps that preference whatever the class
+settings say. The [field annotations](fields.md) page lists them.
 
 ## Every setting
 
@@ -76,13 +78,13 @@ class Thing(Magic, frozen=True, kw_only=True, slots=True):
 | `reverse` | `False` | list a subclass's own fields before inherited ones |
 | `doc` | `True` | add the field table to the class docstring |
 
-Most of them also accept a string instead of `True`, which binds the
-generated method under that name. This is useful when you want to call the
-generated method from your own.
+Most of the settings that generate a method also accept a string in place
+of `True`. The generated method is then bound under that name instead, so
+that a hand-written method can call it.
 <!-- --8<-- [end:settings] -->
 
-`convert`, `validate` and `polymorphic` each get their own page: see
-[Conversion and validation](conversion.md) and
-[Building the right subclass](polymorphism.md). `alias`, `property` and
-`mapping` are covered in [Aliases and properties](aliases.md) and
+`convert` and `validate` are described in
+[Conversion and validation](conversion.md), and `polymorphic` in
+[Building the right subclass](polymorphism.md). `alias` and `property` are
+covered in [Aliases and properties](aliases.md), and `mapping` in
 [Extras](extras.md).
