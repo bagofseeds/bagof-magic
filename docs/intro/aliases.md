@@ -129,12 +129,12 @@ Traceback (most recent call last):
 TypeError: ...
 ```
 
-Static type checkers do not know this rule. The dataclass-transform
-standard that pyright and mypy follow takes the parameter name from the
-attribute name, so both checkers believe that `Cached.__init__` accepts
-`_size`. They therefore report an error on the correct call
-`Cached(size=3)`, and they report nothing on the call `Cached(_size=3)`,
-which fails when it runs.
+Static type checkers do not know this rule. They follow the
+dataclass-transform convention, which takes each constructor parameter
+name from the attribute name, so pyright and mypy both expect
+`Cached.__init__` to accept `_size`. As a result, both checkers report an
+error on the correct call `Cached(size=3)`, and neither reports anything on
+`Cached(_size=3)`, even though that call raises a `TypeError` at runtime.
 
 Declaring the input name explicitly makes the checkers agree with the
 constructor. Both pyright and mypy honour the `alias` argument of `field`:
@@ -151,9 +151,9 @@ and report `Cached(_size=3)` as an unexpected keyword argument. At runtime
 nothing changes, because `size` was already the preferred input name.
 
 A class that would rather use the same name for the attribute and the
-constructor argument can set `alias=False`, either on the class or on a
-single field. The underscore is then kept in the input name, and the
-checkers need no help:
+constructor argument can set `alias=False` on the class statement. The
+underscore is then kept in the input name, and both checkers agree with the
+constructor without further help:
 
 ```pycon
 >>> class Kept(Magic, alias=False):
@@ -161,6 +161,10 @@ checkers need no help:
 >>> Kept(_size=3)
 Kept(_size=3)
 ```
+
+Writing `alias=False` on a single field, as in `field(alias=False)`, has the
+same effect at runtime, but mypy rejects it because it expects the `alias`
+argument of a field to be a string.
 
 See [Settings](settings.md) for the `alias` and `property` class settings,
 and [Extras](extras.md) for `mapping`, which these aliases also feed into.
