@@ -75,7 +75,7 @@ MISREAD = textwrap.dedent('''
 # Each line here is one spelling a checker reports; `{}` marks where the
 # line is looked for in the checkers' output.
 REPORTED = textwrap.dedent('''
-    from typing_extensions import Annotated
+    from typing_extensions import Annotated, reveal_type
 
     from bagof.magic import (
         Alias, ClassVar, ConvertTo, Default, Doc, Frozen, Inherit, KwOnly,
@@ -101,6 +101,14 @@ REPORTED = textwrap.dedent('''
         x: ... = Inherit(frozen=True)
 
 
+    reveal_type(Changed.__init__)
+    Changed(x="nope")
+
+
+    class Locked(Base):
+        x: Frozen[...] = 0
+
+
     class Converts(Magic):
         n: Annotated[int, ConvertTo()] = 0
 
@@ -117,6 +125,7 @@ _REPORTED_BY_BOTH = [
     "shared: ClassVar[int]",
     "named: KwOnly[int]",
     'Converts(n="3")',
+    "x: Frozen[...] = 0",
 ]
 
 _REPORTED_BY_MYPY_ONLY = "x: ... = Inherit(frozen=True)"
@@ -137,6 +146,14 @@ def _said(command: tx.List[str], where: Path, name: str) -> tx.List[str]:
     starting with its line number."""
     result = subprocess.run(
         command + [name], capture_output=True, text=True, cwd=str(where)
+    )
+    # 0 is a clean file and 1 a file with errors. Anything else means the
+    # checker did not check anything -- pyright, for one, downloads Node
+    # the first time it runs -- and its silence must not pass for "no
+    # errors".
+    assert result.returncode in (0, 1), (
+        f"{command[0]} could not check {name}:\n"
+        f"{result.stdout}\n{result.stderr}"
     )
     said = []
     for line in result.stdout.splitlines():
@@ -280,6 +297,11 @@ class TestPyright:
         assert _errors_on(said, _line(REPORTED, text)), said
 
     def test_inherit_with_no_type_is_accepted(self, check: _Said) -> None:
+        # Accepted, but with `...` as the type, so the constructor
+        # checks nothing for `x`: `Changed(x="nope")` is not reported.
         said = check(_PYRIGHT, "reported.py")
         number = _line(REPORTED, _REPORTED_BY_MYPY_ONLY)
         assert _errors_on(said, number) == [], said
+        init = next(line for line in said if '"Changed.__init__"' in line)
+        assert "x: ... = Inherit(frozen=True)" in init
+        assert _errors_on(said, _line(REPORTED, 'Changed(x="nope")')) == []

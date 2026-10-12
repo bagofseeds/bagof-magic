@@ -554,9 +554,11 @@ in brackets, as in `Frozen[int]`, only becomes `Annotated[int, Frozen()]`
 when the code runs. A checker therefore reports `Frozen[int]` as a class
 that takes no type arguments, although the class works as described above.
 
-Each setting has a spelling that both checkers accept. In most cases the
-annotation is called inside `Annotated`, or the setting is given to
-`field(...)` as the default:
+Each setting has a spelling that both checkers accept. For most settings,
+write the marker with parentheses inside `Annotated`, as in
+`Annotated[int, Frozen()]`, importing `Annotated` from `typing_extensions`
+on Python 3.8. For the others, pass the setting to `field(...)`, as the
+table shows:
 
 | Reported by a checker | Accepted by both |
 | --- | --- |
@@ -585,7 +587,8 @@ A checker reads a setting given in `Annotated` as the type alone, so the
 constructor still takes an `int` for `x: Annotated[int, ConvertTo()]`,
 although the class converts any value that `int()` accepts.
 
-Neither checker can express a field that is built from an inherited one.
-mypy reports `...` as a type, in `x: Frozen[...]` and in
-`x: ... = Inherit(frozen=True)` alike, while pyright accepts the second
-spelling.
+A field that is built from an inherited one, such as
+`x: ... = Inherit(frozen=True)`, cannot be typed. mypy reports `...` as a
+type, here and in `x: Frozen[...]`. pyright accepts the first spelling, but
+it reads the type of `x` as `...`, so the constructor checks nothing for
+that argument.
