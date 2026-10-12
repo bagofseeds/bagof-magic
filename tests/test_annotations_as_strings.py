@@ -817,7 +817,8 @@ class TestInheritAsText:
             x: Frozen[...]
             y: ... = "b"
 
-        assert Sub.__annotations__["x"] == "Frozen[...]"
+        # The text is replaced by the annotation with the inherited type.
+        assert tx.get_args(Sub.__annotations__["x"])[0] is int
         assert str(inspect.signature(Sub)) == (
             "(x: int = 3, y: str = 'b') -> None"
         )
@@ -878,6 +879,17 @@ class TestInheritAsText:
         ):
             class Sub(Base):
                 _x: Inherit["x"]  # noqa: F821, UP037
+
+    def test_the_annotations_carry_the_inherited_type(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            x: Frozen[...]
+            y: ... = "b"
+
+        hints = tx.get_type_hints(Sub)
+        assert hints["x"] is int
+        assert hints["y"] is str
 
     def test_a_bare_inherit_that_is_not_there_at_runtime_says_so(
         self

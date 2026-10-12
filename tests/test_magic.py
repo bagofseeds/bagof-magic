@@ -8643,6 +8643,41 @@ class TestInheritPatch:
         assert Sub().x == 3
         assert _table(Sub)["x"].frozen is True
 
+    def test_the_annotations_carry_the_inherited_type(self) -> None:
+        class Base(Magic):
+            x: int = 1
+            y: str = "a"
+            z: float = 0.0
+
+        class Sub(Base):
+            x: Frozen[...]
+            y: ... = "b"
+            _z: Inherit[..., "z"]  # noqa: F821
+            w: int = 0
+
+        class Again(Base):
+            x: Inherit
+
+        assert tx.get_args(Sub.__annotations__["x"])[0] is int
+        assert Sub.__annotations__["y"] is str
+        assert Again.__annotations__["x"] is int
+        hints = tx.get_type_hints(Sub)
+        assert hints["x"] is int and hints["y"] is str
+        assert hints["_z"] is float
+        assert pickle.loads(pickle.dumps(hints)) == hints
+        # An annotation that gives its own type is left as written.
+        assert Sub.__annotations__["w"] is int
+
+    def test_true_or_false_is_not_a_field_name(self) -> None:
+        for spelling in (
+            lambda: Inherit[..., True], lambda: Inherit(False),
+        ):
+            with pytest.raises(
+                TypeError, match=r"^Inherit takes the name of an inherited "
+                r"field to take over, not (True|False)\. Write Inherit\(\)",
+            ):
+                spelling()
+
     def test_the_patch_of_a_patch(self) -> None:
         Base = self._base()
 

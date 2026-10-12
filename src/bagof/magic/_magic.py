@@ -1122,6 +1122,37 @@ def _decline(node: ast.AST, source: str, where: str, part: str) -> str:
     return text
 
 
+def _with_type(annotation: tx.Any, type: tx.Any) -> tx.Any:
+    # An annotation whose type was written as `...`, with `type` in its
+    # place: `Frozen[...]` becomes `Annotated[int, Frozen(...)]`, and a
+    # bare `...` or `Inherit` becomes `int`.
+    if tx.get_origin(annotation) is tx.Annotated:
+        return tx.Annotated[(type,) + tx.get_args(annotation)[1:]]
+    return type
+
+
+def _replace_annotations(namespace: dict, replaced: dict) -> None:
+    # Write these annotations over the ones the class body wrote, so
+    # that `__annotations__` and `typing.get_type_hints` give the type a
+    # field inherited rather than the `...` it was written with.
+    if "__annotations__" in namespace:
+        # Python <= 3.13; coverage runs on 3.14+, where it is dead.
+        namespace["__annotations__"].update(replaced)  # pragma: no cover
+        return
+    # Python 3.14+ (PEP 649/749): the class body left an `__annotate__`
+    # function. Annotations written into the namespace take precedence
+    # over it, so they are evaluated here once, as the builder read
+    # them, with the inherited types put in.
+    import annotationlib
+
+    annotate = annotationlib.get_annotate_from_class_namespace(namespace)
+    annotations = annotationlib.call_annotate_function(
+        annotate, annotationlib.Format.FORWARDREF
+    )
+    annotations.update(replaced)
+    namespace["__annotations__"] = annotations
+
+
 def _namespace_annotations(
     namespace: dict, globals: dict, clsname: str
 ) -> dict:
@@ -2612,6 +2643,13 @@ def __pre_new__(
         namespace[_TAKEN_OVER] = taken_over
     if inheriting:
         namespace[_PLACED] = True
+    replaced = {
+        field.name: _with_type(cls_annotations[field.name], field.type)
+        for source, field in inheriting
+        if _is_inherited_type(declared[field.name].get("type"))
+    }
+    if replaced:
+        _replace_annotations(namespace, replaced)
 
     # Insert fields from this class, in correct order.
     _add_fields(

@@ -2042,6 +2042,19 @@ class Inherit(AnnotatedField):
 
     __set_slots__ = {'inherit': True}
 
+    def __init__(self, *values: tx.Any, **kwvalues: tx.Any) -> None:
+        # The first argument names the field to take over. `True` and
+        # `False` would mean "this field" and "forget it", which `Inherit()`
+        # and `Forget` already say, so they are refused rather than read.
+        if values and isinstance(values[0], bool):
+            raise TypeError(
+                f"Inherit takes the name of an inherited field to take "
+                f"over, not {values[0]!r}. Write Inherit() or give the "
+                f"field the type ... to change the inherited field of the "
+                f"same name, or write Forget to remove it."
+            )
+        super().__init__(*values, **kwvalues)
+
     def __class_getitem__(
         cls, args: tx.Union[type, tx.Tuple]
     ) -> tx.TypeAlias:
