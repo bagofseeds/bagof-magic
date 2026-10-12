@@ -38,6 +38,7 @@ from bagof.magic import (
     Field,
     Forget,
     Frozen,
+    Inherit,
     InitVar,
     KwOnly,
     Magic,
@@ -796,3 +797,105 @@ class TestForgetAsText:
                           "magic_types.Forget.*TYPE_CHECKING"):
             class Sub(Base):
                 x: magic_types.Forget
+
+
+class TestInheritAsText:
+    """`Frozen[...]`, `...` and `Inherit` are read back from text."""
+
+    @staticmethod
+    def _base() -> type:
+        class Base(Magic):
+            x: int = 3
+            y: str = "a"
+
+        return Base
+
+    def test_a_patch(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            x: Frozen[...]
+            y: ... = "b"
+
+        # The text is replaced by the annotation with the inherited type.
+        assert tx.get_args(Sub.__annotations__["x"])[0] is int
+        assert str(inspect.signature(Sub)) == (
+            "(x: int = 3, y: str = 'b') -> None"
+        )
+        assert Sub.__dict__[m._FIELDS]["x"].frozen is True
+
+    def test_the_bare_marker(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            x: Inherit = 4
+
+        assert Sub().x == 4
+        assert Sub.__dict__[m._FIELDS]["x"].type is int
+
+    def test_annotated_with_ellipsis(self) -> None:
+        # Read back from text, this works before Python 3.12 too.
+        Base = self._base()
+
+        class Sub(Base):
+            x: Annotated[..., Frozen()]
+
+        assert Sub.__dict__[m._FIELDS]["x"].frozen is True
+        assert Sub().x == 3
+
+    def test_a_new_type(self) -> None:
+        class Base(Magic, convert=True):
+            x: int = 3
+
+        class Sub(Base):
+            x: Inherit[float]
+
+        assert Sub("2.5").x == 2.5
+
+    def test_a_new_type_not_there_at_runtime(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            x: Inherit[decimal.Decimal]
+
+        field = Sub.__dict__[m._FIELDS]["x"]
+        assert field.type == ForwardRef("decimal.Decimal")
+        assert field.default == 3
+
+    def test_a_take_over(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: Inherit[..., "x"]  # noqa: F821, UP037
+
+        assert list(inspect.signature(Sub).parameters) == ["x", "y"]
+        assert Sub(5)._x == 5
+
+    def test_a_name_that_reads_as_a_type(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError,
+            match=r'Sub\._x: Inherit\["x"\] reads "x" as the field\'s type',
+        ):
+            class Sub(Base):
+                _x: Inherit["x"]  # noqa: F821, UP037
+
+    def test_the_annotations_carry_the_inherited_type(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            x: Frozen[...]
+            y: ... = "b"
+
+        hints = tx.get_type_hints(Sub)
+        assert hints["x"] is int
+        assert hints["y"] is str
+
+    def test_a_bare_inherit_that_is_not_there_at_runtime_says_so(
+        self
+    ) -> None:
+        Base = self._base()
+        with pytest.warns(UserWarning, match="Sub.x is annotated with "
+                          "magic_types.Inherit.*TYPE_CHECKING"):
+            class Sub(Base):
+                x: magic_types.Inherit

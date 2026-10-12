@@ -67,6 +67,11 @@ If you prefer a decorator:
   [Field annotations][fields].
 - **A subclass can forget a field it inherits** with `x: Forget`, which
   frees the name for a field of its own. See [Field annotations][fields].
+- **A subclass can change part of an inherited field** and keep the rest:
+  `x: ... = Inherit(frozen=True)` freezes the inherited `x` without losing
+  its default or its aliases, and `_x: ... = Inherit("x")` stores the
+  inherited `x` under a private name while it is still read and passed as
+  `x`. See [Field annotations][fields].
 - Also included: dict-like instances, `replace`/`asdict`/`astuple`,
   mutable defaults that aren't shared, hooks around construction, generic
   classes, and docstrings generated from the fields. See [Extras][extras].

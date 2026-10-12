@@ -261,6 +261,38 @@ class Again(Graded):
 Again(grade=0, kind='again')
 ```
 
+### Taking over a field a parent chooses by
+
+A subclass can also [take over](fields.md#taking-over-an-inherited-field)
+a field that a parent uses to choose a subclass, for example to store the
+value under a private name. The parents read the arguments of a call by
+the names that the constructor accepts, so the new field has to keep the
+public name of the field that it takes over:
+
+```python
+class Logged(Voice):
+    _kind: ... = Inherit("kind")
+
+class Shouted(Logged, on={"kind": "shout"}):
+    pass
+```
+
+```pycon
+>>> Voice(kind="shout")
+Shouted(kind='shout', grade=0)
+>>> Voice(kind="shout")._kind
+'shout'
+>>> Voice(kind="shout").kind
+'shout'
+```
+
+`Logged` stores the value in `_kind`, accepts it as `kind`, and reads it
+back under that name. `Voice` still chooses the subclasses written below
+`Logged`, because a subclass is chosen by the public name of the field
+and the take-over keeps that name. A take-over that gives the field
+another public name, with `alias=`, is refused as long as a parent chooses
+its subclasses by that field.
+
 ## Registering a class you did not write
 
 ```pycon

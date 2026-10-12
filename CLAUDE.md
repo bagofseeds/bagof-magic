@@ -194,11 +194,13 @@ Tests that exercise internals import them from the module that defines them
   record. Each class also keeps its own copy of what its body said, as
   `__magic_declared__` (`_DECLARED`): `{field: {attr: value}}`, read
   from the class's own `__dict__`. Nothing reads it while building;
-  it is there for diagnostics, and for the field-inheritance work in
-  #119 that merges declarations down the MRO. `UNSET` ("this class
-  said nothing", internal to `_constants.py`) is there for that work,
-  and is distinct from `MISSING` ("no value"). The three sentinels
-  share `_Sentinel`, which keeps one instance per class.
+  it is there for diagnostics. A field built with `Inherit` starts from
+  the source field's `_declared`, which already holds everything
+  declared for it further up, so it does not need the per-class record
+  either. `UNSET` ("this class said nothing", internal to
+  `_constants.py`) is distinct from `MISSING` ("no value") and is not
+  read by anything yet. The three sentinels share `_Sentinel`, which
+  keeps one instance per class.
 
 ### Reading annotations
 
@@ -644,6 +646,101 @@ parents' constraints read a field it forgot (one that writes nothing is
 left unregistered); and `register_polymorph` for a value of a field the
 target lacks.
 
+### Building a field from an inherited one
+
+A plain redeclaration still replaces the inherited field wholesale, as
+in all three neighbours. `Inherit` (the `inherit` slot set to `True` or
+a name) asks for the other thing, and so does a field whose type is
+`...`: that rule lives in the builder (`_is_inherited_type`), not in the
+markers, so it covers `x: ... = 5`, `x: ... = Inherit(frozen=True)`,
+`Annotated[..., X()]` on 3.12+ and text alike. The docs lead with
+`Inherit` as the value (`_x: ... = Inherit("x")`), because a linter
+reads the `"x"` in `Inherit[..., "x"]` as a forward reference (F821).
+
+**The placeholder.** `Annotated` refuses `...` before 3.12, so every
+family `__class_getitem__` builds through `_annotated` in `_fields.py`,
+which puts `_InheritedType` in its place; that class claims to live in
+`builtins` under the name `...`, so `typing` prints it as `...`.
+`_read_annotation` does the same for `Annotated[..., X()]` read back
+from text. Its cost is that the class's own annotations would carry it:
+`get_type_hints` returned it as the type on 3.9+, and the hints could
+not be pickled. `_replace_annotations` therefore writes each inheriting
+field's annotation back with the inherited type in its place
+(`_with_type`) -- into `__annotations__` up to 3.13, and on 3.14 as an
+`__annotations__` entry in the namespace, which wins over
+`__annotate__` (the STRING format still shows `...`). Only classes with
+such a field are touched.
+
+**`Inherit(True)` and `Inherit(False)` are refused.** The first
+positional argument is a field name; a boolean there would silently
+mean "this field" or "forget it", which `Inherit()` and `Forget` say.
+
+- **What the field is built from.** `_inherited_source` finds the
+  inherited field (its own name for a patch, the given stored name for a
+  take-over, never a public name) and refuses what cannot be one. It
+  also catches `Inherit["x"]` -- a type, by the family's rule -- but
+  only when the text is exactly a field name (this field's, or an
+  inherited field's stored or public name) and names nothing in the
+  module; any other text is an ordinary forward reference.
+- **The merge** (`_inherit_field`). The annotation's own family members
+  are merged first, as for any field, so `Inherit` is where the field
+  starts rather than one more value in that merge and its order among
+  them does not matter. Then: the source's `_declared`, overlaid with
+  this annotation's explicit slots (a converter or validator replaces,
+  never chains), the type from the annotation else the source's
+  resolved type (already filled in for type variables), the source's
+  resolved `aliases` unless `alias` is given, and `setdefault` against
+  *this* class's options and hints -- so a step that came from the type
+  or the options is worked out again, and a callable passes through.
+  `REQUIRED` as the default drops the inherited default and factory.
+- **Narrowing.** A registration's narrowing is not part of a
+  declaration. The first narrowing records what the field declared for
+  its validator before it (`_unnarrowed`); a field built from a narrowed
+  one starts its validator from that, so a new type gets its own, and
+  `_chain_narrowing` puts the same parts back on after it.
+- **Settled answers are declarations.** For a patch to keep a pinned
+  discriminant or a mutable default promoted to a factory, those are
+  written with `_redeclare` (`_pin_discriminant`,
+  `_handle_mutable_default`, which also drops the declared default). A
+  patch that writes no default is not a field the class "writes out
+  itself" for `_pin_plan` (`writes_out`), so a registration on the same
+  class pins it.
+- **Place.** A patch keeps its place; a take-over is renamed in place.
+  `position=False` drops the inherited entry and adds the field like a
+  new one (so `reverse` applies). The class is marked `_PLACED`, and the
+  base merge in `__pre_new__` puts a marked base's fields back in that
+  base's order after merging it -- without that, a subclass of a
+  take-over class rebuilt the order from the grandparent, which had
+  lost the field, and put the new one last.
+- **A take-over is a removal, and a holder.** The source goes into
+  `removed` and `_FORGOTTEN`, so the hidden keyword parameter, the
+  per-call dispatch refusal and `Forget`'s diamond rule all apply;
+  `_TAKEN_OVER` (`{"x": "_x"}`) changes what the messages say
+  (`_removal`, `how_removed`) and one more thing: in a diamond, a copy
+  of `x` that only inherits the declaration the take-over started from
+  (`_taken_over_sources`, `_inherits_declaration`, both reading each
+  class's own `__magic_declared__`) is hidden, since the take-over
+  holds that field now. A sibling that declares `x` itself still
+  clashes, and `_check_public_names` then names the take-over.
+  `_refused` counts a positional slot as present when a field of the
+  target takes the lacking field's public name.
+- **The kept public name reads the field.** A take-over that keeps the
+  source's public name gets a `ForwardingProperty` under it
+  (`_take_over_forwards`, read-only on a frozen field), made again by
+  every class holding the field. What the class body binds under the
+  name wins, and so does what a class already holding the take-over
+  bound there; only what the classes above it left (a default, a pinned
+  value, a slot) is covered over.
+- **Discriminants.** A take-over that keeps the public name is allowed;
+  one that changes it is refused when `_chooses_by` finds a class up the
+  chain that registered on the field or holds a registry entry that
+  reads it. A spec names the field by the registering class's stored
+  name; `field_for` finds it in another class's table by its public
+  name (`_Spec.label`) when the stored name is not there, and each
+  owner is registered with the spec renamed to its own stored name
+  (`for_owner`), so the classes above a take-over still dispatch to the
+  ones below it.
+
 ## Conventions specific to this repo (do not regress)
 
 1. **Wide Python (3.8+).** Runtime code must stay old-compatible: no walrus in
@@ -739,6 +836,15 @@ consensus:
   is gone from the class and everything below it, and its public name
   is free. Checkers still see the base's field (PEP 681 cannot say
   this).
+- **A subclass can patch or take over an inherited field** (`Inherit`,
+  `x: Frozen[...]`, #119). All three neighbours replace on redeclaration,
+  so this is opt in and plain redeclaration keeps replacing. A patch's
+  own settings replace the inherited ones (no chaining), and a take-over
+  keeps the source's public name and place unless told otherwise.
+  Checkers cannot express either (PEP 681), and linters read the field
+  name in `Inherit[..., "x"]` as an undefined type; the docs lead with
+  `_x: ... = Inherit("x")`, and say to add `# noqa: F821` to the line
+  rather than turn F821 off project-wide.
 
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 

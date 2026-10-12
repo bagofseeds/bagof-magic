@@ -22,6 +22,7 @@ import bagof.magic._fields as _fields
 import bagof.magic._magic as m
 from bagof.magic import (
     HIDE_IF_NONE,
+    Alias,
     Arguments,
     ClassVar,
     ConvertTo,
@@ -34,6 +35,7 @@ from bagof.magic import (
     HideIf,
     HideIfDefault,
     HideIfNone,
+    Inherit,
     Init,
     InitVar,
     Key,
@@ -52,8 +54,10 @@ from bagof.magic import (
     NotKwOnly,
     NotPositional,
     NotPositionalOnly,
+    Pin,
     Positional,
     PositionalOnly,
+    Property,
     Repr,
     ShowIf,
     Validate,
@@ -8326,3 +8330,992 @@ class TestForget:
 
         assert list(signature(Sub).parameters) == ["y", "x"]
         assert Sub()._x == 5
+
+
+# ----------------------------------------------------------------------
+# Inherit and `...`
+
+
+def _table(cls: type) -> tx.Dict[str, Field]:
+    # A class's fields keyed by the names its body declares them under.
+    return getattr(cls, m._FIELDS)
+
+
+class TestEllipsisAsAType:
+    """`Frozen[...]` builds on every Python, and prints as written."""
+
+    def test_the_family_accepts_ellipsis_on_every_python(self) -> None:
+        for annotation in (
+            Frozen[...], NoRepr[...], Default[..., 3], Doc[..., "text"],
+            ShowIf[..., bool], HideIfNone[...], Repr[..., str],
+            Field[...], Inherit[...], Inherit[..., "x"], ConvertTo[...],  # noqa: F821
+        ):
+            assert tx.get_origin(annotation) is tx.Annotated
+            assert _fields._is_inherited_type(tx.get_args(annotation)[0])
+
+    def test_it_prints_as_ellipsis(self) -> None:
+        assert repr(Frozen[...]).endswith(
+            "Annotated[..., Frozen(frozen=True)]"
+        )
+        assert repr(Inherit[..., "x"]).endswith(  # noqa: F821
+            "Annotated[..., Inherit(inherit='x')]"
+        )
+
+    def test_a_real_type_is_left_alone(self) -> None:
+        assert tx.get_args(Frozen[int])[0] is int
+
+    def test_both_spellings_are_read_as_inherited(self) -> None:
+        assert _fields._is_inherited_type(Ellipsis)
+        assert _fields._is_inherited_type(_fields._InheritedType)
+        assert not _fields._is_inherited_type(int)
+
+    @pytest.mark.skipif(
+        not hasattr(tx, "Annotated") or __import__("sys").version_info
+        < (3, 12),
+        reason="Annotated refuses ... before Python 3.12",
+    )
+    def test_annotated_written_by_hand_from_3_12(self) -> None:
+        class Base(Magic):
+            x: int = 3
+
+        class Sub(Base):
+            x: Annotated[..., Frozen()]
+
+        assert signature(Sub).parameters["x"].default == 3
+        assert _table(Sub)["x"].frozen is True
+
+
+class TestInheritPatch:
+    """`x: Frozen[...]`, `x: ... = 5`, `x: Inherit[float]`."""
+
+    @staticmethod
+    def _base() -> type:
+        class Base(Magic, mapping=True):
+            x: Annotated[int, Field(alias="ex", repr=False, doc="the x")] = 3
+            y: str = "a"
+
+        return Base
+
+    def test_a_patch_keeps_what_it_does_not_say(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            x: Frozen[...]
+
+        field = _table(Sub)["x"]
+        assert field.frozen is True
+        assert field.type is int
+        assert field.default == 3
+        assert field.aliases == ("ex",)
+        assert field.repr is False
+        assert field.doc == "the x"
+        assert str(signature(Sub)) == "(ex: int = 3, y: str = 'a') -> None"
+        assert repr(Sub()) == "Sub(y='a')"
+        with pytest.raises(AttributeError, match="frozen"):
+            Sub().x = 4
+        # The base is untouched.
+        assert _table(Base)["x"].frozen is False
+
+    def test_a_type_of_ellipsis_with_a_default(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            x: ... = 5
+
+        assert signature(Sub).parameters["ex"].default == 5
+        assert Sub.x == 5
+        assert _table(Sub)["x"].aliases == ("ex",)
+
+    def test_the_bare_marker(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            y: Inherit = "b"
+
+        assert _table(Sub)["y"].type is str
+        assert Sub().y == "b"
+
+    def test_the_spellings_agree(self) -> None:
+        Base = self._base()
+
+        class BySubscript(Base):
+            y: Inherit[..., Field(frozen=True)]
+
+        class ByMarker(Base):
+            y: Frozen[...]
+
+        class ByField(Base):
+            y: Inherit[...] = Field(frozen=True)
+
+        class ByCall(Base):
+            y: Annotated[str, Inherit(frozen=True)]
+
+        for cls in (BySubscript, ByMarker, ByField, ByCall):
+            field = _table(cls)["y"]
+            assert field.frozen is True
+            assert field.default == "a"
+
+    def test_it_is_recorded_on_the_class(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            x: Frozen[...]
+
+        assert Sub.__dict__[m._DECLARED]["x"] == {
+            "name": "x", "type": Ellipsis, "frozen": True, "inherit": True,
+        }
+        assert m._PLACED in Sub.__dict__
+        assert m._FORGOTTEN not in Sub.__dict__
+        # The field's own record merges the base's.
+        declared = _table(Sub)["x"]._declared
+        assert declared["frozen"] is True
+        assert declared["default"] == 3
+        assert declared["doc"] == "the x"
+
+    def test_a_new_type_works_its_converter_out_again(self) -> None:
+        class Base(Magic):
+            x: ConvertTo[int] = 0
+
+        class Sub(Base):
+            x: Inherit[float]
+
+        assert Sub("2.5").x == 2.5
+        assert Base("2").x == 2
+
+    def test_a_new_type_works_its_validator_and_factory_out_again(
+        self
+    ) -> None:
+        class Base(Magic):
+            x: Validate[Factory[list]]
+
+        class Sub(Base):
+            x: Inherit[tuple]
+
+        assert Sub().x == ()
+        assert Sub((1,)).x == (1,)
+        with pytest.raises(ValidationError):
+            Sub([1])
+
+    def test_a_converter_given_by_hand_is_kept(self) -> None:
+        def double(value: tx.Any) -> int:
+            return int(value) * 2
+
+        class Base(Magic):
+            x: Annotated[int, ConvertTo(double)] = 0
+
+        class Sub(Base):
+            x: Inherit[float]
+
+        assert Sub("3").x == 6
+
+    def test_what_the_patch_says_replaces_what_the_base_said(self) -> None:
+        seen = []
+
+        def first(value: tx.Any) -> tx.Any:
+            seen.append("first")
+            return value
+
+        def second(value: tx.Any) -> tx.Any:
+            seen.append("second")
+            return value
+
+        class Base(Magic):
+            x: Validate[int, first] = 0
+
+        class Sub(Base):
+            x: Validate[..., second]
+
+        Base(1)
+        assert seen == ["first"]
+        seen.clear()
+        Sub(1)
+        assert seen == ["second"]
+
+    def test_required_removes_the_inherited_default(self) -> None:
+        class Base(Magic):
+            x: int = 3
+            y: Factory[list]
+
+        class Sub(Base):
+            x: ... = REQUIRED
+            y: Annotated[list, Inherit(default=REQUIRED)]
+
+        assert str(signature(Sub)) == "(x: int, y: list) -> None"
+        assert "x" not in Sub.__dict__
+        with pytest.raises(TypeError, match="missing"):
+            Sub()
+        assert Sub(1, [2]).y == [2]
+
+    def test_required_with_a_factory_of_the_patch_s_own(self) -> None:
+        # The inherited default goes, and the factory the patch gives
+        # builds one in its place.
+        class Base(Magic):
+            y: int = 3
+
+        class Sub(Base):
+            y: ... = Inherit(default=REQUIRED, factory=list)
+
+        assert "y" not in Sub.__dict__
+        assert Sub().y == []
+        assert Sub().y is not Sub().y
+        assert Sub(5).y == 5
+
+    def test_required_on_a_plain_field_means_no_default(self) -> None:
+        class Plain(Magic):
+            x: int = REQUIRED
+
+        assert "x" not in Plain.__dict__
+        assert signature(Plain).parameters["x"].default is Parameter.empty
+        assert _table(Plain)["x"].default is MISSING
+
+    def test_a_patch_is_resolved_against_this_class(self) -> None:
+        class Base(Magic):
+            x: int = 0
+            y: int = 0
+
+        class Sub(Base, convert=True):
+            x: ...
+
+        sub = Sub("1", "2")
+        assert sub.x == 1
+        # A field the class does not build again keeps its base's answer.
+        assert sub.y == "2"
+
+    def test_a_mutable_default_stays_a_factory(self) -> None:
+        class Base(Magic):
+            x: list = []
+
+        class Sub(Base):
+            x: Frozen[...]
+
+        assert Sub().x == []
+        assert Sub().x is not Sub().x
+
+    def test_the_field_keeps_its_place(self) -> None:
+        class Base(Magic):
+            x: int = 1
+            y: int = 2
+            z: int = 3
+
+        class Sub(Base):
+            w: int = 0
+            y: Frozen[...]
+
+        class Below(Sub):
+            pass
+
+        assert list(signature(Sub).parameters) == ["x", "y", "z", "w"]
+        assert list(signature(Below).parameters) == ["x", "y", "z", "w"]
+
+    def test_position_false_puts_it_where_it_is_written(self) -> None:
+        class Base(Magic):
+            x: int = 1
+            y: int = 2
+            z: int = 3
+
+        class Sub(Base):
+            y: Inherit[..., Field(position=False)]
+            w: int = 0
+
+        class Below(Sub):
+            v: int = 9
+
+        assert list(signature(Sub).parameters) == ["x", "z", "y", "w"]
+        # A subclass keeps that order rather than the base's.
+        assert list(signature(Below).parameters) == [
+            "x", "z", "y", "w", "v"
+        ]
+
+    def test_reverse_order(self) -> None:
+        class Base(Magic):
+            x: int = 1
+            y: int = 2
+
+        class Kept(Base, reverse=True):
+            w: int = 0
+            y: Frozen[...]
+
+        class Moved(Base, reverse=True):
+            w: int = 0
+            y: Inherit[..., Field(position=False)]
+
+        assert list(signature(Kept).parameters) == ["w", "x", "y"]
+        assert list(signature(Moved).parameters) == ["w", "y", "x"]
+
+    def test_a_filled_in_type_variable_is_kept(self) -> None:
+        class IntBox(ConvertingBox[int]):
+            item: Frozen[...]
+
+        assert _table(IntBox)["item"].type is int
+        assert IntBox("3").item == 3
+
+    def test_a_class_built_by_the_decorator(self) -> None:
+        @magic
+        class Point:
+            x: int = 3
+
+        class Sub(Point):
+            x: Frozen[...]
+
+        assert Sub().x == 3
+        assert _table(Sub)["x"].frozen is True
+
+    def test_the_annotations_carry_the_inherited_type(self) -> None:
+        class Base(Magic):
+            x: int = 1
+            y: str = "a"
+            z: float = 0.0
+
+        class Sub(Base):
+            x: Frozen[...]
+            y: ... = "b"
+            _z: Inherit[..., "z"]  # noqa: F821
+            w: int = 0
+
+        class Again(Base):
+            x: Inherit
+
+        assert tx.get_args(Sub.__annotations__["x"])[0] is int
+        assert Sub.__annotations__["y"] is str
+        assert Again.__annotations__["x"] is int
+        hints = tx.get_type_hints(Sub)
+        assert hints["x"] is int and hints["y"] is str
+        assert hints["_z"] is float
+        assert pickle.loads(pickle.dumps(hints)) == hints
+        # An annotation that gives its own type is left as written.
+        assert Sub.__annotations__["w"] is int
+
+    def test_true_or_false_is_not_a_field_name(self) -> None:
+        for spelling in (
+            lambda: Inherit[..., True], lambda: Inherit(False),
+        ):
+            with pytest.raises(
+                TypeError, match=r"^Inherit takes the name of an inherited "
+                r"field to take over, not (True|False)\. Write Inherit\(\)",
+            ):
+                spelling()
+
+    def test_the_patch_of_a_patch(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            x: Frozen[...]
+
+        class Below(Sub):
+            x: ... = 9
+
+        field = _table(Below)["x"]
+        assert field.frozen is True
+        assert field.default == 9
+        assert field.aliases == ("ex",)
+
+
+#: Each member of the family, as a function of the type it wraps, and
+#: what it changes on a field that otherwise inherits `x: int = 3`.
+_PATCHES = {
+    "Frozen": (lambda t: Frozen[t], lambda f, C: f.frozen is True),
+    "KwOnly": (
+        lambda t: KwOnly[t],
+        lambda f, C: signature(C).parameters["x"].kind
+        is Parameter.KEYWORD_ONLY,
+    ),
+    "NoRepr": (
+        lambda t: NoRepr[t], lambda f, C: repr(C()) == f"{C.__name__}()",
+    ),
+    "NoEq": (lambda t: NoEq[t], lambda f, C: f.eq is False),
+    "Doc": (lambda t: Doc[t, "about x"], lambda f, C: f.doc == "about x"),
+    "Alias": (
+        lambda t: Alias[t, "ex"], lambda f, C: C(ex=4).x == 4,
+    ),
+    "Property": (
+        lambda t: Property[t, "px"], lambda f, C: C(4).px == 4,
+    ),
+    "Default": (lambda t: Default[t, 7], lambda f, C: C().x == 7),
+    "Factory": (
+        lambda t: Factory[t, lambda: 9], lambda f, C: C().x == 9,
+    ),
+    "ConvertTo": (lambda t: ConvertTo[t], lambda f, C: C("4").x == 4),
+    "Validate": (lambda t: Validate[t], lambda f, C: f.validate),
+    "NotKey": (lambda t: NotKey[t], lambda f, C: f.public_key is None),
+    "Pin": (lambda t: Pin[t, "classvar"], lambda f, C: f.pin == "classvar"),
+    "Repr": (
+        lambda t: Repr[t, hex],
+        lambda f, C: repr(C(10)) == f"{C.__name__}(x=0xa)",
+    ),
+    "HideIfNone": (
+        lambda t: HideIfNone[t],
+        lambda f, C: isinstance(f.repr, HideIfNone),
+    ),
+}
+
+
+class TestInheritComposes:
+    """`Inherit` is where a field starts, whatever order it is written."""
+
+    @pytest.mark.parametrize("name", sorted(_PATCHES))
+    @pytest.mark.parametrize("inherit_first", [True, False])
+    def test_with_every_member_of_the_family(
+        self, name: str, inherit_first: bool
+    ) -> None:
+        wrap, check = _PATCHES[name]
+        annotation = (
+            Inherit[wrap(...)] if inherit_first else wrap(Inherit[...])
+        )
+
+        class Base(Magic):
+            x: int = 3
+
+        class Sub(Base):
+            __annotations__ = {"x": annotation}
+
+        field = _table(Sub)["x"]
+        assert field.type is int
+        assert check(field, Sub)
+        if name not in ("Default", "Factory"):
+            assert field.default == 3
+
+
+class TestTakingAFieldOver:
+    """`_x: Inherit[..., "x"]` stores `x` as `_x`, behind a property."""  # noqa: F821
+
+    @staticmethod
+    def _base(**options: tx.Any) -> type:
+        class Base(Magic, **options):
+            x: int = 3
+            y: str = "a"
+
+        return Base
+
+    def test_the_field_is_stored_behind_a_property(self) -> None:
+        Base = self._base(mapping=True)
+
+        class Sub(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+            @property
+            def x(self) -> int:
+                return self._x * 10
+
+        assert str(signature(Sub)) == "(x: int = 3, y: str = 'a') -> None"
+        assert [f.name for f in _api.fields(Sub)] == ["_x", "y"]
+        sub = Sub(1)
+        assert sub._x == 1
+        assert sub.x == 10
+        assert repr(sub) == "Sub(x=1, y='a')"
+        assert dict(sub) == {"x": 1, "y": "a"}
+        assert Sub(x=2)._x == 2
+        with pytest.raises(TypeError, match="_x"):
+            Sub(_x=1)
+        # The default is a class attribute, as a written one is.
+        assert Sub._x == 3
+
+    def test_it_is_recorded_on_the_class(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        assert Sub.__dict__[m._FORGOTTEN] == frozenset({"x"})
+        assert Sub.__dict__[m._TAKEN_OVER] == {"x": "_x"}
+        assert Sub.__dict__[m._DECLARED]["_x"]["inherit"] == "x"
+
+    def test_the_call_form(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: Annotated[int, Inherit("x", frozen=True)]
+
+        field = _table(Sub)["_x"]
+        assert field.frozen is True
+        assert field.aliases == ("x",)
+        assert field.default == 3
+
+    def test_position_false(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: Inherit[..., "x", Field(position=False)]  # noqa: F821
+            z: int = 0
+
+        class Below(Sub):
+            pass
+
+        assert list(signature(Sub).parameters) == ["y", "x", "z"]
+        assert list(signature(Below).parameters) == ["y", "x", "z"]
+
+    def test_a_subclass_keeps_the_place(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        class Below(Sub):
+            z: int = 0
+
+        assert list(signature(Below).parameters) == ["x", "y", "z"]
+        assert Below(1)._x == 1
+
+    def test_the_public_name_can_change(self) -> None:
+        Base = self._base()
+
+        class Stored(Base):
+            _x: Inherit[..., "x", Field(alias=False)]  # noqa: F821
+
+        class Renamed(Base):
+            _x: Inherit[..., "x", Field(alias="why")]  # noqa: F821
+
+        assert list(signature(Stored).parameters) == ["_x", "y"]
+        assert list(signature(Renamed).parameters) == ["why", "y"]
+        with pytest.raises(
+            TypeError,
+            match=r"^Stored\(\) got an argument 'x', but Stored took that "
+            r"field over as '_x', so Stored does not take it\.$",
+        ):
+            Stored(x=1)
+
+        class Below(Renamed):
+            pass
+
+        with pytest.raises(
+            TypeError, match=r"Renamed took that field over as '_x'"
+        ):
+            Below(x=1)
+
+    def test_a_field_of_the_same_name_is_replaced(self) -> None:
+        class Base(Magic):
+            x: int = 1
+            _x: int = Field(default=2, alias="old")
+
+        class Sub(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        assert list(signature(Sub).parameters) == ["x"]
+        assert _table(Sub)["_x"].default == 1
+
+    def test_the_public_name_reads_the_field(self) -> None:
+        # With no property written, one is made under the public name,
+        # so the base's class attribute does not answer for the instance.
+        Base = self._base()
+
+        class Sub(Base):
+            _x: ... = Inherit("x")
+
+        sub = Sub(5)
+        assert sub.x == sub._x == 5
+        sub.x = 6
+        assert sub._x == 6
+        assert Base.x == 3
+
+        class Below(Sub):
+            pass
+
+        assert Below(7).x == 7
+
+    def test_a_property_written_by_hand_wins(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: ... = Inherit("x")
+
+            @property
+            def x(self) -> int:
+                return self._x * 10
+
+        class Below(Sub):
+            pass
+
+        assert Sub(1).x == 10
+        assert Below(1).x == 10
+
+    def test_taken_over_again_below(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: ... = Inherit("x")
+
+        class Below(Sub):
+            __x: ... = Inherit("_x")
+
+        below = Below(9)
+        assert [f.name for f in _api.fields(Below)][0] == "_Below__x"
+        assert below.x == 9
+
+    def test_a_renamed_take_over_makes_no_property(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: Inherit[..., "x", Field(alias="why")]  # noqa: F821
+
+        assert Sub(why=4).x == 3
+        assert "why" not in Sub.__dict__
+
+    def test_a_slotted_frozen_class_reads_the_public_name(self) -> None:
+        class Base(Magic, slots=True, frozen=True):
+            x: int = 3
+
+        class Sub(Base):
+            _x: ... = Inherit("x")
+
+        sub = Sub(4)
+        assert sub.x == 4
+        with pytest.raises(AttributeError):
+            sub.x = 5
+
+    def test_a_slotted_frozen_class(self) -> None:
+        class Base(Magic, slots=True, frozen=True):
+            x: int = 3
+            y: int = 0
+
+        class Sub(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+            @property
+            def x(self) -> int:
+                return self._x
+
+        sub = Sub(4)
+        assert sub.x == 4
+        assert "_x" in Sub.__slots__
+        with pytest.raises(AttributeError):
+            sub._x = 1
+
+    def test_reverse_order(self) -> None:
+        Base = self._base()
+
+        class Sub(Base, reverse=True):
+            w: int = 0
+            _y: Inherit[..., "y"]  # noqa: F821
+
+        assert list(signature(Sub).parameters) == ["w", "x", "y"]
+
+    def test_a_filled_in_type_variable(self) -> None:
+        class IntBox(ConvertingBox[int]):
+            _item: Inherit[..., "item"]  # noqa: F821
+
+        class Box(ConvertingBox[_T]):
+            _item: Inherit[..., "item"]  # noqa: F821
+
+        assert IntBox("3")._item == 3
+        assert str(signature(Box[int])) == "(item: int) -> None"
+        assert Box[int]("4")._item == 4
+
+    @staticmethod
+    def _three() -> type:
+        class Base(Magic):
+            x: int = 1
+            y: int = 2
+            z: int = 3
+
+        return Base
+
+    def test_a_diamond_with_the_field_on_one_side(self) -> None:
+        # The take-over holds the field, so the copy the other side only
+        # inherits from the same declaration is not taken again.
+        Base = self._three()
+
+        class Left(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        class Right(Base):
+            w: int = 4
+
+        class Both(Left, Right):
+            pass
+
+        class Other(Right, Left):
+            pass
+
+        for cls in (Both, Other):
+            assert list(signature(cls).parameters) == ["x", "y", "z", "w"]
+            assert [f.name for f in _api.fields(cls)][0] == "_x"
+            assert cls(5)._x == 5
+
+    def test_two_take_overs_of_one_field_under_two_names(self) -> None:
+        Base = self._three()
+
+        class Left(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        class Right(Base):
+            _why: Inherit[..., "x", Field(alias="why")]  # noqa: F821
+
+        class Both(Left, Right):
+            pass
+
+        assert list(signature(Both).parameters) == ["x", "y", "z", "why"]
+
+    def test_two_bases_each_taking_one_over(self) -> None:
+        Base = self._three()
+
+        class Left(Base):
+            _y: Inherit[..., "y"]  # noqa: F821
+
+        class Right(Base):
+            _z: Inherit[..., "z"]  # noqa: F821
+
+        class Both(Left, Right):
+            pass
+
+        assert list(signature(Both).parameters) == ["x", "y", "z"]
+        assert [f.name for f in _api.fields(Both)] == ["x", "_y", "_z"]
+
+    def test_a_sibling_that_declares_the_field_itself_clashes(self) -> None:
+        Base = self._three()
+
+        class Left(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        class Right(Base):
+            x: int = 7
+
+        with pytest.raises(
+            TypeError,
+            match=r"^Both has two fields known as 'x' outside the class: "
+            r"'_x', which Left built by taking over the inherited field "
+            r"'x', and 'x', which Right declares\. Give a take-over",
+        ):
+            class Both(Left, Right):
+                pass
+
+    def test_two_take_overs_under_one_name_clash(self) -> None:
+        Base = self._three()
+
+        class Left(Base):
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        class Right(Base):
+            _q: Inherit[..., "x"]  # noqa: F821
+
+        with pytest.raises(
+            TypeError, match=r"'_q', which Right built by taking over the "
+            r"inherited field 'x'",
+        ):
+            class Both(Left, Right):
+                pass
+
+    def test_a_clash_inside_one_class_names_it(self) -> None:
+        Base = self._three()
+        with pytest.raises(
+            TypeError, match=r"'_x', which Sub built by taking over the "
+            r"inherited field 'x', and 'ex', which Sub declares",
+        ):
+            class Sub(Base):
+                _x: Inherit[..., "x"]  # noqa: F821
+                ex: Alias[int, "x"] = 0  # noqa: F821
+
+    def test_forgetting_it_below_names_the_take_over(self) -> None:
+        Base = self._base()
+
+        class Sub(Base):
+            _x: Inherit[..., "x", Field(alias=False)]  # noqa: F821
+
+        with pytest.raises(
+            TypeError, match="Sub has already removed it by taking it "
+            "over as '_x'"
+        ):
+            class Below(Sub):
+                x: Forget
+
+
+class TestInheritErrors:
+    """What cannot be inherited is refused where it is written."""
+
+    @staticmethod
+    def _base() -> type:
+        class Base(Magic):
+            x: int = 3
+            _y: int = 0
+
+        return Base
+
+    def test_ellipsis_with_nothing_to_inherit(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError,
+            match=r"^Sub\.z is annotated with \.\.\., which asks to inherit "
+            r"the field 'z', but none of the classes Sub inherits from has "
+            r"a field 'z'\. Give the field a type",
+        ):
+            class Sub(Base):
+                z: ...
+
+    def test_a_patch_with_nothing_to_patch(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError, match=r"^Sub\.z asks to change the inherited field "
+            r"'z', but none of the classes .* Leave Inherit out",
+        ):
+            class Sub(Base):
+                z: Inherit[int]
+
+    def test_a_take_over_with_nothing_to_take(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError, match=r"^Sub\._z asks to take over the inherited "
+            r"field 'z', but none of the classes",
+        ):
+            class Sub(Base):
+                _z: Inherit[..., "z"]  # noqa: F821
+
+    def test_a_field_named_by_its_public_name(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError, match=r"the inherited field known as 'y' is declared "
+            r"as '_y'\. Name it '_y'",
+        ):
+            class Sub(Base):
+                _w: Inherit[..., "y"]  # noqa: F821
+
+    def test_a_field_forgotten_beside_another_base(self) -> None:
+        # The forgetting class has a base ahead of the one it removed
+        # the field from; the field is still found by its public name.
+        class Other(Magic):
+            z: int = 0
+
+        class Mid(Other, self._base()):
+            _y: Forget
+
+        with pytest.raises(
+            TypeError, match=r"^Sub\.y is annotated with \.\.\., which asks "
+            r"to inherit the field 'y', but Mid has already removed it "
+            r"with Forget\.",
+        ):
+            class Sub(Mid):
+                y: Inherit
+
+    def test_the_take_over_that_removed_it_is_named(self) -> None:
+        # Of the several fields `Mid` took over, the message names the
+        # one that removed `x`.
+        class Other(Magic):
+            z: int = 0
+
+        class Mid(Other, self._base()):
+            _w: Inherit[..., "_y"]  # noqa: F821
+            _x: Inherit[..., "x"]  # noqa: F821
+
+        with pytest.raises(
+            TypeError, match=r"^Sub\.x is annotated with \.\.\., which asks "
+            r"to inherit the field 'x', but Mid has already removed it by "
+            r"taking it over as '_x'\.",
+        ):
+            class Sub(Mid):
+                x: Inherit
+
+    def test_a_field_already_forgotten(self) -> None:
+        Base = self._base()
+
+        class Mid(Base):
+            x: Forget
+
+        with pytest.raises(
+            TypeError, match="Mid has already removed it with Forget"
+        ):
+            class Sub(Mid):
+                x: Frozen[...]
+
+    def test_a_name_that_reads_as_a_type(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError,
+            match=r'^Sub\._x: Inherit\["x"\] reads "x" as the field\'s '
+            r'type\. To take over the inherited field x, write '
+            r'Inherit\[\.\.\., "x"\]\.$',
+        ):
+            class Sub(Base):
+                _x: Inherit["x"]  # noqa: F821
+
+    def test_a_name_that_is_a_type_is_a_type(self) -> None:
+        # `int` names no field, so it is read as the type it is.
+        class Base(Magic):
+            x: float = 3
+
+        class Sub(Base):
+            x: Inherit["int"]
+
+        assert _table(Sub)["x"].type.__forward_arg__ == "int"
+
+    def test_the_field_s_own_name_as_a_type(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError,
+            match=r'^Sub\.x: Inherit\["x"\] reads "x" as the field\'s type\. '
+            r"To change the inherited field x, write `x: Inherit` or "
+            r"`x: \.\.\.`\.$",
+        ):
+            class Sub(Base):
+                x: Inherit["x"]  # noqa: F821
+
+    def test_a_public_name_as_a_type(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError, match=r'take over the inherited field y, write '
+            r'Inherit\[\.\.\., "_y"\]',
+        ):
+            class Sub(Base):
+                _w: Inherit["y"]  # noqa: F821
+
+    def test_a_type_written_as_text_is_left_alone(
+        self, recwarn: pytest.WarningsRecorder
+    ) -> None:
+        # A dotted name, or a class defined further down the module, is
+        # a type carried by name: nothing is said about it here.
+        Base = self._base()
+
+        class Dotted(Base):
+            x: Inherit["proper.stringified.Type"]  # noqa: F821
+
+        class Later(Base):
+            x: Inherit["_DefinedLater"]
+
+        class Unknown(Base):
+            x: Inherit["NotDefinedAnywhere"]  # noqa: F821
+
+        assert len(recwarn) == 0
+        assert _table(Unknown)["x"].type.__forward_arg__ == (
+            "NotDefinedAnywhere"
+        )
+        assert Unknown().x == 3
+        assert _table(Dotted)["x"].type.__forward_arg__ == (
+            "proper.stringified.Type"
+        )
+        assert _table(Later)["x"].type.__forward_arg__ == "_DefinedLater"
+        assert _table(Later)["x"].default == 3
+
+    def test_taking_over_a_field_the_class_declares(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError, match=r"^Sub\._x takes over the inherited field "
+            r"'x', but Sub declares 'x' as well",
+        ):
+            class Sub(Base):
+                _x: Inherit[..., "x"]  # noqa: F821
+                x: Forget
+
+    def test_taking_a_field_over_twice(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError, match=r"^Sub\.b takes over the inherited field 'x', "
+            r"but Sub\.a takes it over already",
+        ):
+            class Sub(Base):
+                a: Inherit[..., "x"]  # noqa: F821
+                b: Inherit[..., "x"]  # noqa: F821
+
+    def test_position_without_inherit(self) -> None:
+        with pytest.raises(
+            TypeError, match=r"^Sub\.x sets position=, .* does not inherit",
+        ):
+            class Sub(Magic):
+                x: int = Field(position=False)
+
+    def test_a_setting_that_is_not_a_name(self) -> None:
+        Base = self._base()
+        with pytest.raises(
+            TypeError, match=r"^Sub\.x sets inherit=3, but inherit takes",
+        ):
+            class Sub(Base):
+                x: int = Field(inherit=3)
+
+
+class _DefinedLater:
+    """Named in an annotation above, before it is defined."""

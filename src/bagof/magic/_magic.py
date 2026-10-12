@@ -122,7 +122,7 @@ import typing_extensions as tx
 from bagof.core.magic import UnionType as _UnionType
 
 # internals
-from ._aliases import InputAliases, install_properties
+from ._aliases import ForwardingProperty, InputAliases, install_properties
 from ._arguments import *  # noqa: F401, F403
 from ._arguments import Arguments
 from ._arguments import __all__ as __all_arguments__
@@ -151,6 +151,7 @@ from ._constants import (
     _OBJECT,
     _OPTIONS,
     _PINNED,
+    _PLACED,
     _POLYMORPHS,
     _POST_INIT_NAME,
     _PRE_INIT_NAME,
@@ -160,6 +161,7 @@ from ._constants import (
     _RETURN_TYPE,
     _SELF,
     _SHOWN,
+    _TAKEN_OVER,
     _TYPE,
     _VALIDATOR,
     _VALUE,
@@ -176,9 +178,13 @@ from ._fields import (
     HIDE_IF_NONE,
     Field,
     Forget,
+    Inherit,
     ShowIf,
+    _annotated,
     _chain,
     _field_key_test,
+    _InheritedType,
+    _is_inherited_type,
     _stored,
 )
 from ._fields import __all__ as __all_fields__
@@ -197,8 +203,11 @@ from ._polymorph import check as _check_invariant
 from ._polymorph import check_fields as _check_spec_fields
 from ._polymorph import conjoin as _conjoin
 from ._polymorph import delegate as _delegate_polymorph
+from ._polymorph import field_for as _field_for
+from ._polymorph import for_owner as _for_owner
 from ._polymorph import forgotten_by as _forgotten_by
 from ._polymorph import has_fields as _has_spec_fields
+from ._polymorph import how_removed as _how_removed
 from ._polymorph import mark_registered as _mark_registered
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
@@ -241,7 +250,10 @@ def __post_new__(cls: type) -> type:
     if registration is not None:
         owners, specs, priority, claim = registration
         for owner in owners:
-            _register_polymorph(owner, cls, specs, priority, claim)
+            _register_polymorph(
+                owner, cls, _for_owner(owner, specs), priority,
+                _for_owner(owner, claim),
+            )
 
     # A class built by filling in a generic's type parameters chooses
     # between the same subclasses the class it came from does, each
@@ -461,26 +473,43 @@ def _hidden_from(
 
 
 def _forgotten_inputs(
-    clsname: str, mro: tx.Sequence[type], removed: tx.Mapping[str, Field]
+    clsname: str,
+    mro: tx.Sequence[type],
+    removed: tx.Mapping[str, Field],
+    taken_over: tx.Mapping[str, str],
 ) -> tx.Dict[str, str]:
-    # Every name a field this class lost to `Forget` was passed by --
-    # its own removals first, then each base's in MRO order -- and the
-    # class that removed it. A field that came back further down is
+    # Every name a field this class lost -- to `Forget`, or to a field
+    # that took it over -- was passed by, its own removals first, then
+    # each base's in MRO order, and what to say about it: which class
+    # removed the field, and how. A field that came back further down is
     # filtered out by the caller, along with any name another field now
     # takes.
     found = {}
-    for field in removed.values():
+    for name, field in removed.items():
+        how = _removal(clsname, name, taken_over)
         for alias in field.aliases:
-            found.setdefault(alias, clsname)
+            found.setdefault(alias, how)
     for base in mro:
         for name in base.__dict__.get(_FORGOTTEN, ()):
+            how = _removal(
+                base.__name__, name, base.__dict__.get(_TAKEN_OVER, {})
+            )
             for ancestor in base.__mro__[1:]:
                 table = ancestor.__dict__.get(_FIELDS)
                 if table is not None and name in table:
                     for alias in table[name].aliases:
-                        found.setdefault(alias, base.__name__)
+                        found.setdefault(alias, how)
                     break
     return found
+
+
+def _removal(
+    clsname: str, name: str, taken_over: tx.Mapping[str, str]
+) -> str:
+    # "C removed that field with Forget", or the take-over that did it.
+    if name in taken_over:
+        return f"{clsname} took that field over as {taken_over[name]!r}"
+    return f"{clsname} removed that field with Forget"
 
 
 def _kept_holders(
@@ -513,13 +542,331 @@ def _kept_holders(
     return frozenset()
 
 
-def _check_public_names(clsname: str, fields: tx.Dict[str, Field]) -> None:
+def _chooses_by(mro: tx.Sequence[type], name: str) -> tx.Optional[type]:
+    # The first class of `mro` whose subclasses are told apart by the
+    # field stored under `name` -- one registered for a value of it, or
+    # one that builds a subclass registered for a value of it.
+    for base in mro:
+        registration = base.__dict__.get(_REGISTRATION)
+        if registration is not None and any(
+            spec.name == name for spec in registration[1]
+        ):
+            return base
+        registry = base.__dict__.get(_POLYMORPHS)
+        if registry is not None and any(
+            spec.name == name
+            for entry in registry.dispatch[0] for spec in entry.specs
+        ):
+            return base
+    return None
+
+
+#: The attributes of a field that say how it inherits, rather than what
+#: it inherits: they are never carried from one field to the next.
+_INHERITING_ATTRS = ("name", "inherit", "position")
+
+
+def _inherited_source(
+    clsname: str,
+    field: Field,
+    fields: tx.Mapping[str, Field],
+    annotations: tx.Mapping[str, tx.Any],
+    globals: dict,
+    mro: tx.Sequence[type],
+) -> Field:
+    # The inherited field that `field` is built from: the one of the same
+    # name for `Inherit()` and a `...` type, the one it names for
+    # `Inherit("x")`. Refuses what cannot be one.
+    where = f"{clsname}.{field.name}"
+    inherit = field.inherit
+    if not (inherit is True or isinstance(inherit, str)):
+        raise TypeError(
+            f"{where} sets inherit={inherit!r}, but inherit takes True, "
+            f"False or the name of an inherited field."
+        )
+    # `Inherit["x"]` reads "x" as a type, like any annotation in the
+    # family. Text that is exactly the name of this field or of an
+    # inherited one, and that names no type here, was almost certainly
+    # meant as a field: this one, which a bare `Inherit` already means,
+    # or another one to take over. Any other text -- a dotted name, a
+    # class defined further down -- is a type carried by name, and is
+    # left to be looked up when it is first needed.
+    text = field.type
+    if isinstance(text, tx.ForwardRef):
+        text = text.__forward_arg__
+    if (
+        inherit is True
+        and isinstance(text, str)
+        and text.isidentifier()
+        and _lookup_dotted([text], globals) is MISSING
+    ):
+        stored = next(
+            (
+                other for other, each in fields.items()
+                if text == other or text in each.aliases
+            ),
+            None,
+        )
+        if text == field.name:
+            raise TypeError(
+                f'{where}: Inherit["{text}"] reads "{text}" as the '
+                f"field's type. To change the inherited field {text}, "
+                f"write `{text}: Inherit` or `{text}: ...`."
+            )
+        if stored is not None:
+            raise TypeError(
+                f'{where}: Inherit["{text}"] reads "{text}" as the '
+                f"field's type. To take over the inherited field "
+                f'{text}, write Inherit[..., "{stored}"].'
+            )
+    name = field.name if inherit is True else inherit
+    source = fields.get(name)
+    if source is None:
+        forgetter = _forgotten_by(mro, name)
+        known = [
+            stored for stored, other in fields.items()
+            if name in other.aliases
+        ]
+        if inherit is not True:
+            asks = f"asks to take over the inherited field {name!r}"
+            fix = "Name the field the way the base class declares it."
+        elif _is_inherited_type(field.type):
+            asks = (
+                f"is annotated with ..., which asks to inherit the "
+                f"field {name!r}"
+            )
+            fix = "Give the field a type to declare a new one."
+        else:
+            asks = f"asks to change the inherited field {name!r}"
+            fix = "Leave Inherit out to declare a new field."
+        if forgetter is not None:
+            why = (
+                f"{forgetter.__name__} has already removed it "
+                f"{_how_removed(forgetter, name)}"
+            )
+        elif known:
+            why = (
+                f"the inherited field known as {name!r} is declared as "
+                f"{known[0]!r}"
+            )
+            fix = f"Name it {known[0]!r}, the way its class declares it."
+        else:
+            why = (
+                f"none of the classes {clsname} inherits from has a "
+                f"field {name!r}"
+            )
+        raise TypeError(f"{where} {asks}, but {why}. {fix}")
+    if name != field.name and name in annotations:
+        raise TypeError(
+            f"{where} takes over the inherited field {name!r}, but "
+            f"{clsname} declares {name!r} as well. A field that is taken "
+            f"over leaves the class, so declare one or the other."
+        )
+    return source
+
+
+def _inherit_field(
+    clsname: str,
+    field: Field,
+    source: Field,
+    options: Options,
+    hints: Hints,
+    mro: tx.Sequence[type],
+) -> Field:
+    # The field `field` stands for, built from the inherited field
+    # `source`: what `source` declared, with what `field` declares
+    # itself put in its place, resolved against this class's options.
+    #
+    # What `field` declares replaces what `source` did -- a converter or
+    # a validator too, which are not chained onto the inherited one. A
+    # type of `...` keeps the inherited type, already filled in for the
+    # type variables this class's bases were written with. A converter,
+    # validator or factory that `source` worked out from its type, or
+    # left to its class's options, is worked out again here, so a new
+    # type gets its own.
+    delta = {
+        attr: value for attr, value in field._explicit().items()
+        if attr not in _INHERITING_ATTRS
+    }
+    if _is_inherited_type(delta.get("type")):
+        del delta["type"]
+    declared = {
+        attr: value for attr, value in (source._declared or {}).items()
+        if attr not in _INHERITING_ATTRS
+    }
+    # A registration's narrowing is not part of the declaration: the
+    # validator starts from what was declared before it, and the
+    # narrowing is put back on once the field is resolved.
+    parts = source._narrowed_by
+    if parts:
+        declared.pop("validator", None)
+        if source._unnarrowed is not MISSING:
+            declared["validator"] = source._unnarrowed
+    declared.update(delta)
+    if "type" not in delta:
+        declared["type"] = source.type
+    # `REQUIRED` removes the inherited default, and the factory that
+    # would otherwise build one.
+    if declared.get("default") is REQUIRED:
+        del declared["default"]
+        if "factory" not in delta:
+            declared["factory"] = False
+    # The field keeps the names it was known by outside the class -- for
+    # a take-over, the names of the field it takes over rather than ones
+    # made from its own name -- unless it says otherwise.
+    if "alias" not in delta:
+        declared["alias"] = source.aliases
+    new = Field(name=field.name)
+    for attr, value in declared.items():
+        setattr(new, attr, value)
+    new.inherit = field.inherit
+    new.position = field.position
+    new._declared = dict(declared)
+    _inherit_attrs(new, source, tuple(_INHERITABLE))
+    new.setdefault(options, hints)
+    if parts:
+        _chain_narrowing(new, parts)
+    chooser = (
+        None if new.public_name == source.public_name
+        else _chooses_by(mro, source.name)
+    )
+    if chooser is not None:
+        raise TypeError(
+            f"{clsname}.{new.name} takes over {source.name!r} and renames "
+            f"it from {source.public_name!r} to {new.public_name!r}, but "
+            f"{chooser.__name__} chooses between its subclasses by "
+            f"{source.public_name!r}, so that name has to stay. Take the "
+            f"field over without giving it an alias."
+        )
+    return new
+
+
+def _declaring_class(classes: tx.Iterable[type], name: str) -> type:
+    # The first of `classes` -- an MRO -- whose own body declares the
+    # field `name`: the class whose declaration of it the MRO's owner
+    # holds. Only asked of an MRO that holds the field, so there is one.
+    return next(
+        base for base in classes
+        if name in base.__dict__.get(_DECLARED, ())
+        and base.__dict__[_DECLARED][name].get("inherit") is not False
+    )
+
+
+def _taken_over_sources(
+    mro: tx.Sequence[type],
+) -> tx.Dict[str, tx.List[type]]:
+    # For each field name some class in `mro` took over with `Inherit`,
+    # the classes that declared the field it took over.
+    found = {}
+    for base in mro:
+        for name in base.__dict__.get(_TAKEN_OVER, ()):
+            # A field is taken over from a class that declares it, so
+            # there always is one.
+            found.setdefault(name, []).append(
+                _declaring_class(base.__mro__[1:], name)
+            )
+    return found
+
+
+def _inherits_declaration(
+    holder: type, name: str, sources: tx.Sequence[type]
+) -> bool:
+    # Whether `holder` holds the field `name` only because it inherits
+    # one of these declarations of it, rather than declaring its own.
+    declarer = _declaring_class(holder.__mro__, name)
+    return any(
+        issubclass(source, declarer) for source in sources
+    )
+
+
+def _described(
+    field: Field, clsname: str, mro: tx.Sequence[type], own: tx.Container
+) -> str:
+    # A field named the way a clash between two fields reports it: where
+    # it comes from, and the field it took over if it took one over.
+    # `own` holds the names this class's body declares.
+    owner = clsname if field.name in own else next(
+        base.__name__ for base in mro
+        if field.name in base.__dict__.get(_DECLARED, ())
+    )
+    if isinstance(field.inherit, str):
+        return (
+            f"{field.name!r}, which {owner} built by taking over the "
+            f"inherited field {field.inherit!r}"
+        )
+    return f"{field.name!r}, which {owner} declares"
+
+
+def _take_over_forwards(
+    fields: tx.Mapping[str, Field],
+    namespace: dict,
+    mro: tx.Sequence[type],
+) -> tx.Dict[str, ForwardingProperty]:
+    # The properties that let a field taken over under another stored
+    # name be read under the public name it kept: `_kind:
+    # Inherit[..., "kind"]` stores `_kind`, and `obj.kind` reads it.
+    # Without one, `obj.kind` finds whatever the classes above left on
+    # the class under that name -- a default, or a pinned value -- which
+    # says nothing about this instance.
+    #
+    # Whatever the class body binds under the name wins, and so does
+    # what a class that already holds the take-over binds there: that
+    # was written next to the take-over. Only what the classes above it
+    # left is covered over.
+    forwards = {}
+    for field in fields.values():
+        name = field.public_name
+        if (
+            not isinstance(field.inherit, str)
+            or field.var
+            or name == field.name
+            or name in fields
+            or name in namespace
+            or not any(
+                name in table[field.inherit].aliases
+                for table in (
+                    base.__dict__.get(_FIELDS) for base in mro
+                )
+                if table and field.inherit in table
+            )
+        ):
+            continue
+        owner = next((base for base in mro if name in base.__dict__), None)
+        if owner is not None and field.name in getattr(owner, _FIELDS, ()):
+            if not isinstance(owner.__dict__[name], ForwardingProperty):
+                continue
+        forwards[name] = ForwardingProperty(
+            field.name, "readonly" if field.frozen else True
+        )
+    return forwards
+
+
+def _check_public_names(
+    clsname: str,
+    fields: tx.Dict[str, Field],
+    mro: tx.Sequence[type] = (),
+    own: tx.Container = (),
+) -> None:
     # Every input spelling belongs to one field, including names inherited
     # from different bases. Output methods use only the preferred name.
     seen = {}
     for name, field in fields.items():
         for public in field.aliases:
             if public in seen:
+                other = fields[seen[public]]
+                if isinstance(other.inherit, str) or isinstance(
+                    field.inherit, str
+                ):
+                    first, second = (
+                        _described(each, clsname, mro, own)
+                        for each in (other, field)
+                    )
+                    raise TypeError(
+                        f"{clsname} has two fields known as {public!r} "
+                        f"outside the class: {first}, and {second}. Give "
+                        f"a take-over another public name with alias=, "
+                        f"or keep only one of the two."
+                    )
                 raise TypeError(
                     f"{clsname} has two fields, {seen[public]!r} and "
                     f"{name!r}, and both are known as {public!r} outside "
@@ -741,6 +1088,11 @@ def _read_annotation(
         # The type is not available yet: carry it by name, the way a
         # quoted annotation is carried.
         type = tx.ForwardRef(type)
+    elif type is Ellipsis and marker is tx.Annotated:
+        # `Annotated` refuses `...` before Python 3.12; the family's own
+        # subscriptions put the placeholder in its place, and so does
+        # this, so the text reads the same on every Python.
+        type = _InheritedType
     values = []
     for meta in metadata:
         if not _is_metadata_expression(meta, globals):
@@ -781,7 +1133,7 @@ def _structural_marker(node: ast.AST, globals: dict, where: str) -> tx.Any:
 
 #: The members of the family written bare, with no brackets: the whole
 #: annotation is the marker.
-_BARE_MARKERS = frozenset({"Forget"})
+_BARE_MARKERS = frozenset({"Forget", "Inherit"})
 
 
 def _check_bare_marker(node: ast.AST, globals: dict, where: str) -> None:
@@ -819,6 +1171,37 @@ def _decline(node: ast.AST, source: str, where: str, part: str) -> str:
         stacklevel=_caller_stacklevel(),
     )
     return text
+
+
+def _with_type(annotation: tx.Any, type: tx.Any) -> tx.Any:
+    # An annotation whose type was written as `...`, with `type` in its
+    # place: `Frozen[...]` becomes `Annotated[int, Frozen(...)]`, and a
+    # bare `...` or `Inherit` becomes `int`.
+    if tx.get_origin(annotation) is tx.Annotated:
+        return tx.Annotated[(type,) + tx.get_args(annotation)[1:]]
+    return type
+
+
+def _replace_annotations(namespace: dict, replaced: dict) -> None:
+    # Write these annotations over the ones the class body wrote, so
+    # that `__annotations__` and `typing.get_type_hints` give the type a
+    # field inherited rather than the `...` it was written with.
+    if "__annotations__" in namespace:
+        # Python <= 3.13; coverage runs on 3.14+, where it is dead.
+        namespace["__annotations__"].update(replaced)  # pragma: no cover
+        return
+    # Python 3.14+ (PEP 649/749): the class body left an `__annotate__`
+    # function. Annotations written into the namespace take precedence
+    # over it, so they are evaluated here once, as the builder read
+    # them, with the inherited types put in.
+    import annotationlib
+
+    annotate = annotationlib.get_annotate_from_class_namespace(namespace)
+    annotations = annotationlib.call_annotate_function(
+        annotate, annotationlib.Format.FORWARDREF
+    )
+    annotations.update(replaced)
+    namespace["__annotations__"] = annotations
 
 
 def _namespace_annotations(
@@ -1490,7 +1873,7 @@ def _check_discriminants(
     base_fields = getattr(polymorphic_base, _FIELDS)
     for spec in specs:
         field = fields[spec.name]
-        base_field = base_fields[spec.name]
+        base_field = _field_for(base_fields, spec)
         # (i)
         if field.init:
             continue
@@ -1577,15 +1960,29 @@ def _narrow_discriminant(
     )
     if narrowed is not MISSING:
         field.type = narrowed
+    _chain_narrowing(field, added)
+
+
+def _chain_narrowing(field: Field, parts: tx.Sequence) -> None:
+    # Make a field enforce these parts of a constraint as well, after
+    # whatever converter or validator it already carries, and record
+    # that it does.
+    done = field._narrowed_by
+    if done is MISSING:
+        done = ()
+        # What the field declared before it was first narrowed, so that
+        # a field built from this one with a new type can work its own
+        # validator out again before the narrowing goes back on.
+        field._unnarrowed = field._declared.get("validator", MISSING)
     chained = field.validator
-    for part in added:
+    for part in parts:
         chained = (
             _chain(chained, part.validate)
             if callable(chained)
             else part.validate
         )
     field._redeclare(validator=chained)
-    field._narrowed_by = tuple(done) + tuple(added)
+    field._narrowed_by = tuple(done) + tuple(parts)
     field._derived = tuple(
         attr for attr in (field._derived or ()) if attr != "validator"
     )
@@ -1620,17 +2017,18 @@ def _pin_discriminant(
         # More than one value would satisfy this constraint, so there is
         # nothing to pin the field to.
         return False
-    field.default = spec.value
+    # Each setting is recorded as the field's own, so that a subclass
+    # that builds a field from this one (`x: Frozen[...]`) keeps the pin.
+    #
     # The pin is the value, so a default the field would otherwise have
     # built for itself no longer applies -- and nothing is left behind
     # to build it with.
-    field.factory = False
+    field._redeclare(default=spec.value, factory=False)
     if storage == "classvar":
-        field.var = True
-        field.repr = False
-        field.key = False
-        field.eq = field.order = False
-        field.hash = False
+        field._redeclare(
+            var=True, repr=False, key=False, eq=False, order=False,
+            hash=False,
+        )
         # A class attribute is meant to be shared, so a mutable one is
         # not the trap `mutable_default` is about.
         namespace[field.name] = spec.value
@@ -1709,7 +2107,10 @@ def _handle_mutable_default(field: Field, action: str) -> bool:
     # Recorded as the field's own, so that a subclass resolving the
     # field again against its own settings does not undo it.
     field._redeclare(factory=partial(copy.copy, default))
+    # Every field reaching here has had its declaration recorded, by the
+    # builder or by `_inherit_field`.
     field.default = MISSING
+    field._declared.pop("default", None)
     return True
 
 
@@ -1951,6 +2352,13 @@ def __pre_new__(
         name: _kept_holders(mro[1:], found, name)
         for name, found in forgetters.items()
     }
+    # A field taken over by another name is held by the field that took
+    # it over, so no other base hands this class the same field again.
+    for name, sources in _taken_over_sources(mro[1:]).items():
+        kept[name] = frozenset(
+            holder for holder in kept.get(name, ())
+            if not _inherits_declaration(holder, name, sources)
+        )
     for b in reversed(mro[1:]):
         # Only process classes that have been processed by our
         # decorator.  That is, they have a _FIELDS attribute.
@@ -1971,6 +2379,19 @@ def __pre_new__(
                 replace=True,
                 reverse=options.reverse
             )
+            # A class that placed a field built from an inherited one
+            # has an order of its own that merging its bases does not
+            # give -- a field taken over where the old one was, or one
+            # moved to where it is written -- so its order is kept for
+            # the fields it has.
+            if _PLACED in b.__dict__:
+                fields = {
+                    **{
+                        name: fields[name]
+                        for name in base_fields if name in fields
+                    },
+                    **fields,
+                }
             if arguments:
                 for field_name in base_fields:
                     if field_name not in hidden:
@@ -2079,6 +2500,11 @@ def __pre_new__(
     written = {}
     declared = {}
     forgotten = []
+    # The fields this class builds from inherited ones, each with the
+    # name of the field it is built from, and the inherited fields taken
+    # over by another name.
+    inheriting = []
+    taken_over = {}
     for field_name, type_ in cls_annotations.items():
 
         if field_name[:2] == "__":
@@ -2089,6 +2515,9 @@ def __pre_new__(
         # metadata does.
         if isinstance(type_, type) and issubclass(type_, Forget):
             type_ = tx.Annotated[tx.Any, type_()]
+        # So is `x: Inherit`, which means `x: Inherit[...]`.
+        elif isinstance(type_, type) and issubclass(type_, Inherit):
+            type_ = _annotated(Ellipsis, type_())
 
         # Make Field from annotation
         field = Field.from_hint(field_name, type_)
@@ -2115,6 +2544,11 @@ def __pre_new__(
         elif field.name in namespace:
             field.default = namespace[field.name]
 
+        # A type of `...` asks for the type of the inherited field of the
+        # same name, and with it everything else that field declared.
+        if _is_inherited_type(field.type) and field.inherit is MISSING:
+            field.inherit = True
+
         # A field this class forgets is not built at all. A value
         # written beside it stays in the namespace as a plain class
         # attribute; with none, the name is left to ordinary lookup.
@@ -2122,6 +2556,14 @@ def __pre_new__(
             declared[field.name] = field._explicit()
             forgotten.append(field.name)
             continue
+
+        if field.position is not MISSING and field.inherit is MISSING:
+            raise TypeError(
+                f"{clsname}.{field.name} sets position=, which says where "
+                f"a field built from an inherited one goes, but the field "
+                f"does not inherit. Use Inherit to build it from an "
+                f"inherited field, or leave position out."
+            )
 
         if field.pin is not MISSING and _pin_action(field.pin) is None:
             raise ValueError(
@@ -2131,23 +2573,65 @@ def __pre_new__(
                 f"not {field.pin!r}"
             )
 
+        # What the annotation said, before the class options fill in
+        # what it did not. `override` on a subclass restores this, and
+        # `_DECLARED` keeps this class's own copy of it, with a type of
+        # `...` spelled the way it was written.
+        declared[field.name] = field._explicit()
+        if declared[field.name].get("type") is _InheritedType:
+            declared[field.name]["type"] = Ellipsis
+
+        # `REQUIRED` written as a default says the field has none. It is
+        # not left behind as a class attribute.
+        if namespace.get(field.name, MISSING) is REQUIRED:
+            namespace.pop(field.name)
+
+        if field.inherit is MISSING:
+            if field.default is REQUIRED:
+                field.default = MISSING
+            field._declared = field._explicit()
+            # Set unset field options from class options
+            field.setdefault(options, hints)
+        else:
+            # Built from an inherited field, and resolved against this
+            # class's options on the way. Only the fields this class
+            # builds that way are resolved again: every other inherited
+            # field keeps the answers its own class gave it.
+            source = _inherited_source(
+                clsname, field, fields, cls_annotations, globals, mro[1:]
+            )
+            if source.name in taken_over:
+                raise TypeError(
+                    f"{clsname}.{field.name} takes over the inherited "
+                    f"field {source.name!r}, but "
+                    f"{clsname}.{taken_over[source.name]} takes it over "
+                    f"already. A field can be taken over once."
+                )
+            if source.name != field.name:
+                taken_over[source.name] = field.name
+            field = _inherit_field(
+                clsname, field, source, options, hints, mro[1:]
+            )
+            if (
+                source.name != field.name
+                and field.default is not MISSING
+                and not field.build
+            ):
+                # A field that takes another over is given its default
+                # as a class attribute, as one written out would be.
+                namespace[field.name] = field.default
+            inheriting.append((source.name, field))
+
         # What a field with a `pin` of its own was written with, before
-        # the class options fill in a factory and a mutable default is
+        # the class options filled in a factory and a mutable default is
         # turned into one -- `_check_written_default` compares the pin
         # against what the author wrote, not against what was made of it.
         if field.pin is not MISSING:
             written[field.name] = (
-                field.default, field.factory not in (MISSING, False)
+                field._declared.get("default", MISSING),
+                field._declared.get("factory", MISSING)
+                not in (MISSING, False),
             )
-
-        # What the annotation said, before the class options fill in
-        # what it did not. `override` on a subclass restores this, and
-        # `_DECLARED` keeps this class's own copy of it.
-        field._declared = field._explicit()
-        declared[field.name] = dict(field._declared)
-
-        # Set unset field options from class options
-        field.setdefault(options, hints)
 
         # A mutable default is promoted to a factory (or rejected),
         # so that instances do not end up sharing one object.
@@ -2174,7 +2658,8 @@ def __pre_new__(
         if name not in fields:
             forgetter = _forgotten_by(mro[1:], name)
             why = (
-                f"{forgetter.__name__} has already removed it"
+                f"{forgetter.__name__} has already removed it "
+                f"{_how_removed(forgetter, name)}"
                 if forgetter is not None
                 else f"none of the classes {clsname} inherits from has "
                 f"a field {name!r}"
@@ -2186,11 +2671,49 @@ def __pre_new__(
                 f"declares it."
             )
         removed[name] = fields.pop(name)
-    if forgotten:
-        namespace[_FORGOTTEN] = frozenset(forgotten)
+
+    # A field built from an inherited one takes that field's place,
+    # unless it asked to go where it is written. One that takes over
+    # another field removes that field, the way `Forget` does; it also
+    # replaces an inherited field of its own name, as any field declared
+    # again does.
+    in_place = {}
+    for source, field in inheriting:
+        if source != field.name:
+            removed[source] = fields[source]
+            if field.name in fields:
+                del fields[field.name]
+        if field.position is False:
+            del fields[source]
+        else:
+            in_place[source] = field
+    if in_place:
+        fields = {
+            in_place[name].name if name in in_place else name:
+            in_place.get(name, field)
+            for name, field in fields.items()
+        }
+    if removed:
+        namespace[_FORGOTTEN] = frozenset(removed)
+    if taken_over:
+        namespace[_TAKEN_OVER] = taken_over
+    if inheriting:
+        namespace[_PLACED] = True
+    replaced = {
+        field.name: _with_type(cls_annotations[field.name], field.type)
+        for source, field in inheriting
+        if _is_inherited_type(declared[field.name].get("type"))
+    }
+    if replaced:
+        _replace_annotations(namespace, replaced)
 
     # Insert fields from this class, in correct order.
-    _add_fields(fields, cls_fields, replace=True, reverse=options.reverse)
+    _add_fields(
+        fields,
+        [field for field in cls_fields if field not in in_place.values()],
+        replace=True,
+        reverse=options.reverse,
+    )
     namespace[_DECLARED] = declared
 
     # Which fields carry a default only because a registration pinned
@@ -2223,13 +2746,24 @@ def __pre_new__(
                 name for name, field in removed.items()
                 if key == name or key in field.aliases
             ]
-            if gone:
+            if not gone or any(
+                key == name or key in field.aliases
+                for name, field in fields.items()
+            ):
+                continue
+            if gone[0] in taken_over:
                 raise TypeError(
-                    f"{clsname} forgets {gone[0]!r} and registers on "
-                    f"{key!r}, but a class cannot stand for a value of "
-                    f"a field it does not have. Keep the field, or leave "
-                    f"{key!r} out of on=."
+                    f"{clsname} registers on {key!r}, but "
+                    f"{clsname}.{taken_over[gone[0]]} takes that field "
+                    f"over under another name, so {clsname} has no field "
+                    f"{key!r}. Name the field by its new name in on=."
                 )
+            raise TypeError(
+                f"{clsname} forgets {gone[0]!r} and registers on "
+                f"{key!r}, but a class cannot stand for a value of "
+                f"a field it does not have. Keep the field, or leave "
+                f"{key!r} out of on=."
+            )
     owners, targets, nearest = _registration_owners(mro[1:])
     diamond = len(nearest) >= 2
     composes = diamond and on is not None and (
@@ -2260,7 +2794,8 @@ def __pre_new__(
                 raise TypeError(
                     f"{clsname} registers on {spec.name!r}, which is not "
                     f"a field of {clsname}: {forgetter.__name__} removed "
-                    f"it with Forget. A class cannot stand for a value "
+                    f"it {_how_removed(forgetter, spec.name)}. A class "
+                    f"cannot stand for a value "
                     f"of a field it does not have."
                 )
         if diamond:
@@ -2289,14 +2824,17 @@ def __pre_new__(
         ]
         if lost and speaks:
             forgetter = _forgotten_by(mro[1:], lost[0])
-            who = (
-                clsname if lost[0] in removed or forgetter is None
-                else forgetter.__name__
+            how = (
+                _removal(clsname, lost[0], taken_over)
+                if lost[0] in removed or forgetter is None
+                else _removal(
+                    forgetter.__name__, lost[0],
+                    forgetter.__dict__.get(_TAKEN_OVER, {}),
+                )
             )
             raise TypeError(
                 f"{clsname} stands for a value of {lost[0]!r} through the "
-                f"classes it inherits from, but {who} removed that field "
-                f"with Forget. Write on=None on "
+                f"classes it inherits from, but {how}. Write on=None on "
                 f"{clsname} to leave it out of the choice, or keep the "
                 f"field."
             )
@@ -2322,10 +2860,19 @@ def __pre_new__(
         # honours is skipped, and the rest is applied the way the field's
         # own `pin` says, or else the way the class that wrote each
         # constraint says (see `_pin_plan`).
+        # The fields this class writes out itself. One built from an
+        # inherited field without a default of its own (`kind:
+        # Frozen[...]`) leaves the value to the pin, as an inherited
+        # field does.
+        writes_out = {
+            name for name, record in declared.items()
+            if record.get("inherit") in (None, False)
+            or "default" in record or "factory" in record
+        }
         for spec in specs:
             field = fields[spec.name]
             storage, narrowing, always = _pin_plan(
-                clsname, field, spec, own, cls_annotations, written,
+                clsname, field, spec, own, writes_out, written,
                 options.convert_defaults,
             )
             if storage != "keep" and (
@@ -2349,7 +2896,7 @@ def __pre_new__(
         # because a base pinned it is already accounted for by that base's
         # `_PINNED`, and one with no default here is filtered out below.
         pinned.update(
-            spec.name for spec in own if spec.name in cls_annotations
+            spec.name for spec in own if spec.name in writes_out
         )
         for owner in reachable:
             _check_discriminants(
@@ -2373,7 +2920,7 @@ def __pre_new__(
                 f'{attr_name!r} is a field but has no type annotation'
             )
 
-    _check_public_names(clsname, fields)
+    _check_public_names(clsname, fields, mro[1:], declared)
     _check_public_keys(clsname, fields)
 
     # Remember all of the fields on our class (including bases).
@@ -2428,7 +2975,7 @@ def __pre_new__(
     )
     init_kwargs, sentinels, alias_params, alias_defaults = _make_init(
         fields, prepost, clsname, options, direct_assign,
-        _forgotten_inputs(clsname, mro[1:], removed),
+        _forgotten_inputs(clsname, mro[1:], removed, taken_over),
     )
     fnbuilder.add_fn(
         name=_MAGIC("init"),
@@ -2582,7 +3129,10 @@ def __pre_new__(
             namespace[name] = _NEUTRAL["init"]
             generated[name] = "init"
 
-    install_properties(clsname, fields, namespace, base_mro)
+    install_properties(
+        clsname, fields, namespace, base_mro,
+        _take_over_forwards(fields, namespace, base_mro),
+    )
     namespace[_GENERATED] = generated
 
     # Add attributes to class documentation
@@ -3405,10 +3955,9 @@ def _make_init(
             raise TypeError({message!r})
         """)
         for name, message in (
-            (name, f"{clsname}() got an argument {name!r}, but {forgetter} "
-             f"removed that field with Forget, so {clsname} does not "
-             f"take it.")
-            for name, forgetter in gone.items()
+            (name, f"{clsname}() got an argument {name!r}, but {how}, "
+             f"so {clsname} does not take it.")
+            for name, how in gone.items()
         )
     ]
     body += [_make_alias_prelude(field) for field in aliased]
@@ -4494,18 +5043,20 @@ class MetaMagic(ABCMeta):
         # is refused here rather than building the wrong class quietly.
         claim = specs
         if isinstance(target, type) and issubclass(target, owner):
-            # A target cannot stand for a value of a field it removed
-            # with Forget.
+            # A target cannot stand for a value of a field it removed,
+            # with Forget or by taking it over under another name.
             target_fields = getattr(target, _FIELDS)
             lacking = [
                 spec for spec in specs if spec.name not in target_fields
             ]
             if lacking:
+                forgetter = _forgotten_by(target.__mro__, lacking[0].name)
                 raise TypeError(
                     f"{target.__name__} cannot be registered for "
                     f"{lacking[0].label}={lacking[0].text}: it has no "
-                    f"field {lacking[0].label!r}, since it was removed "
-                    f"with Forget."
+                    f"field {lacking[0].label!r}, since "
+                    f"{forgetter.__name__} removed it "
+                    f"{_how_removed(forgetter, lacking[0].name)}."
                 )
             _check_discriminants(
                 target.__name__, owner, getattr(target, _FIELDS), specs,

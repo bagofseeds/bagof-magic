@@ -86,6 +86,20 @@ _DECLARED = '__magic_declared__'
 # another base that only inherited it from the same place.
 _FORGOTTEN = '__magic_forgotten__'
 
+# The name of an attribute on the class that maps each inherited field it
+# took over with `Inherit("x")` to the field that took it over, as a dict
+# `{"x": "_x"}`. The field taken over is listed in `_FORGOTTEN` as well,
+# since it has left the class the same way; this says how, so that an
+# error can say so. Read from each class's own __dict__.
+_TAKEN_OVER = '__magic_taken_over__'
+
+# The name of an attribute set on a class that built a field from an
+# inherited one (with `Inherit` or a `...` type). Such a field can sit
+# where merging the class's bases would not put it, so a subclass keeps
+# the class's own order for the fields it has. Read from each class's own
+# __dict__.
+_PLACED = '__magic_placed__'
+
 # Name we give to classes that are only created temporarily to build the
 # MRO and then discarded.
 _DISCARD = "__magic_discard__"

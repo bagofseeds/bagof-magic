@@ -44,6 +44,8 @@ __all__ = [
     "Narrow",
     "NoPin",
     "Forget",
+    "Inherit",
+    "REQUIRED",
     "PIN",
     "CLASSVAR",
     "KEEP",
@@ -101,6 +103,36 @@ _RESOLVED_ATTRS = tuple(dict.fromkeys(
 ))
 
 
+class _InheritedType:
+    """Stands for `...` as the type of a field built from a family member.
+
+    `Frozen[...]` asks for the inherited field's own type, but `Annotated`
+    refuses `...` before Python 3.12, so the family puts this in its place.
+    The builder reads it the same way it reads `...`. Named after what it
+    stands for, so a printed annotation still shows `...`.
+    """
+
+
+# `typing` spells a class from `builtins` by its bare name, so an
+# annotation holding this prints as `Annotated[..., Frozen(...)]`.
+_InheritedType.__module__ = "builtins"
+_InheritedType.__qualname__ = _InheritedType.__name__ = "..."
+
+
+def _is_inherited_type(type: tx.Any) -> bool:
+    """Whether a field's type says "the type of the field it inherits"."""
+    return type is Ellipsis or type is _InheritedType
+
+
+def _annotated(type: tx.Any, *metadata: tx.Any) -> tx.TypeAlias:
+    # `Annotated[type, *metadata]`, which every subscription in the family
+    # builds. A `...` type is carried by `_InheritedType`, since
+    # `Annotated` refuses it before Python 3.12.
+    if type is Ellipsis:
+        type = _InheritedType
+    return tx.Annotated[(type,) + metadata]
+
+
 def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     """Feed one callable's result into another: `first`, then `second`."""
     def chained(value: tx.Any) -> tx.Any:
@@ -131,8 +163,10 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     'property',         # Forwarding attribute names and access modes.
     '_declared',        # What the field explicitly said (bookkeeping).
     '_narrowed_by',     # Which constraints narrowed it (bookkeeping).
+    '_unnarrowed',      # Its validator before narrowing (bookkeeping).
     'pin',              # What a subclass matching on it does with it.
-    'inherit',          # False: remove the inherited field of this name.
+    'inherit',          # False: forget; True: patch; str: take over.
+    'position',         # Inheriting: take the inherited field's place.
 )
 class Field(SlotsBase):
     """A single field in a Magic class.
@@ -245,12 +279,25 @@ class Field(SlotsBase):
             over `pin_discriminant` on every class that matches on the
             field, including subclasses that inherit it. Also settable
             through the `Pin`, `Narrow` and `NoPin` annotations.
-        inherit : bool, optional
-            `False` removes the field of this name that the class
-            inherits, instead of declaring one: it is no longer a
-            parameter, part of the repr, the comparisons or the
-            dict-like view, and its public name is free for another
-            field. Usually written as the bare annotation `x: Forget`.
+        inherit : bool or str, optional
+            How the field relates to a field the class inherits. `False`
+            removes the inherited field of this name instead of
+            declaring one: it is no longer a parameter, part of the
+            repr, the comparisons or the dict-like view, and its public
+            name is free for another field. `True` changes the inherited
+            field of this name: the field keeps everything the base
+            class declared for it, except what this annotation says
+            again. A string names an inherited field for this field to
+            take over: that field leaves the class, and this one starts
+            from its declaration, its public name and its place in the
+            constructor. These are usually written as `x: Forget`,
+            `x: Frozen[...]` and `_x: Inherit[..., "x"]`.
+        position : bool, default=True
+            Read only when the field inherits, that is when `inherit` is
+            `True` or a name. `True` puts the field where the inherited
+            field was, so that positional arguments keep their meaning.
+            `False` puts it where it is written in the class body, as a
+            new field would be.
 
         Other Parameters
         ----------------
@@ -337,7 +384,7 @@ class Field(SlotsBase):
         if not isinstance(t, tuple):
             t = (t,)
         t, *args = t
-        return tx.Annotated[(t, cls(True)) + tuple(args)]
+        return _annotated(t, cls(True), *args)
 
     @property
     def init(self) -> bool:
@@ -536,7 +583,9 @@ class Field(SlotsBase):
         # only make every repr longer.
         shown = (
             slot for slot in self._slots()
-            if slot not in ("_declared", "_derived", "_narrowed_by")
+            if slot not in (
+                "_declared", "_derived", "_narrowed_by", "_unnarrowed"
+            )
             and getattr(self, slot, MISSING) is not MISSING
         )
         params = ", ".join(
@@ -860,10 +909,16 @@ class AnnotatedField(Field):
 
         for name, value in zip(set_slots, values):
             kwvalues[name] = value
+        # A slot the class marks `REQUIRED` has to be given. A value of
+        # `REQUIRED` given on purpose, as in `Inherit(default=REQUIRED)`,
+        # is a value like any other.
+        if any(
+            value is REQUIRED and name not in kwvalues
+            for name, value in set_slots.items()
+        ):
+            raise TypeError(f"Missing required argument for {cls.__name__!r}")
         for name, value in set_slots.items():
             kwvalues.setdefault(name, value)
-        if any(value is REQUIRED for value in kwvalues.values()):
-            raise TypeError(f"Missing required argument for {cls.__name__!r}")
         super().__init__(**kwvalues)
 
     def __class_getitem__(
@@ -880,7 +935,7 @@ class AnnotatedField(Field):
             raise TypeError(
                 f"Missing required argument for {cls.__name__!r}[]"
             )
-        return tx.Annotated[(t, cls(*values)) + tuple(args)]
+        return _annotated(t, cls(*values), *args)
 
 
 @slots
@@ -896,7 +951,7 @@ class BoolAnnotatedField(AnnotatedField):
         t, *args = args
         # No positional value: each slot takes the value its declaring
         # class set. Anything after the type stays as metadata.
-        return tx.Annotated[(t, cls()) + tuple(args)]
+        return _annotated(t, cls(), *args)
 
 
 @slots
@@ -1334,7 +1389,7 @@ class Repr(BoolAnnotatedField):
             and not issubclass(cls, InversedBoolAnnotatedField)
         ):
             t, how, *rest = args
-            return tx.Annotated[(t, cls(how)) + tuple(rest)]
+            return _annotated(t, cls(how), *rest)
         # Named rather than `super()`: the `slots` decorator rebuilds the
         # class, and before 3.10 a classmethod's `super()` keeps pointing
         # at the class it was first written in.
@@ -1416,9 +1471,9 @@ class ShowIf(Repr):
                     f"{cls.__name__}[int, bool]."
                 )
             t, test, *rest = args
-            return tx.Annotated[(t, cls(test)) + tuple(rest)]
+            return _annotated(t, cls(test), *rest)
         t, *rest = args
-        return tx.Annotated[(t, cls()) + tuple(rest)]
+        return _annotated(t, cls(), *rest)
 
     # Whether the constructor and the subscription take a test.
     _takes_test = True
@@ -1904,6 +1959,136 @@ class Forget(AnnotatedField):
 
     __set_slots__ = {'inherit': False}
 
+
+@slots
+class Inherit(AnnotatedField):
+    """
+    Build a field from a field the class inherits.
+
+    A field that a subclass declares again normally replaces the
+    inherited field completely, so the default, the aliases and every
+    other setting written in the base class are lost. `Inherit` keeps
+    them instead. Written as the value of a field whose type is `...`,
+    as in `x: ... = Inherit(frozen=True)`, it starts the field from what
+    the base class declared and changes only the settings it is given.
+    `Inherit` accepts every keyword that `Field` accepts. A plain value
+    after `...`, as in `x: ... = 5`, changes nothing but the default, and
+    a default of `REQUIRED` removes the inherited default.
+
+    Given the name of another inherited field, as in
+    `_x: ... = Inherit("x")`, `Inherit` takes that field over. The
+    inherited field leaves the class, and the new field starts from the
+    inherited field's declaration, its public name and its place in the
+    constructor. The class also receives a property under the public
+    name that reads and assigns the new field, unless the class body
+    defines something under that name itself. The public name can be
+    changed with `alias=`, in which case no property is made, and
+    `position=False` places the field where it is written in the class
+    body rather than where the inherited field was.
+
+    `Inherit` can also be written in the brackets of an annotation, where
+    the first argument is the type, as for every annotation in the
+    family. `x: Inherit[float]` keeps the inherited field but gives it a
+    new type, and a converter, validator or factory that was worked out
+    from the old type is worked out again from the new one.
+    `Inherit["Node"]` is read as a forward reference to a class named
+    `Node`. `Inherit[..., "x"]` keeps the inherited type and takes over
+    `x`. Linters such as Ruff and Pyflakes read the string `"x"` in that
+    annotation as a forward reference and report it as an undefined name
+    (F821), so code that a linter checks either adds `# noqa: F821` to the
+    line or writes `Inherit` as the value instead.
+
+    Every other annotation in the family accepts `...` as its type in the
+    same way, so `x: Frozen[...]` is another spelling of
+    `x: ... = Inherit(frozen=True)`. These spellings work on every
+    supported version of Python, whereas `Annotated[..., Frozen()]`
+    written by hand works only from Python 3.12, because older versions
+    of `Annotated` refuse `...` as a type.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Inherit()
+        Inherit(inherit=True)
+        >>> Inherit("x", position=False)
+        Inherit(inherit='x', position=False)
+        >>> Inherit[float]
+        typing.Annotated[float, Inherit(inherit=True)]
+        >>> Inherit[..., "x"]
+        typing.Annotated[..., Inherit(inherit='x')]
+        ```
+
+    !!! example "Changing an inherited field"
+        ```pycon
+        >>> class Point(Magic):
+        ...     x: int = 0
+        ...     y: int = 0
+        ...
+        >>> class Pinned(Point):
+        ...     x: ... = Inherit(frozen=True)
+        ...     y: ... = 1
+        ...
+        >>> Pinned()
+        Pinned(x=0, y=1)
+        ```
+
+    !!! example "Taking a field over"
+        ```pycon
+        >>> class Account(Magic):
+        ...     balance: int = 0
+        ...
+        >>> class Audited(Account):
+        ...     _balance: ... = Inherit("balance")
+        ...
+        >>> Audited(10)
+        Audited(balance=10)
+        >>> Audited(10).balance
+        10
+        >>> [f.name for f in fields(Audited)]
+        ['_balance']
+        ```
+    """
+
+    __set_slots__ = {'inherit': True}
+
+    def __init__(self, *values: tx.Any, **kwvalues: tx.Any) -> None:
+        # The first argument names the field to take over. `True` and
+        # `False` would mean "this field" and "forget it", which `Inherit()`
+        # and `Forget` already say, so they are refused rather than read.
+        if values and isinstance(values[0], bool):
+            raise TypeError(
+                f"Inherit takes the name of an inherited field to take "
+                f"over, not {values[0]!r}. Write Inherit() or give the "
+                f"field the type ... to change the inherited field of the "
+                f"same name, or write Forget to remove it."
+            )
+        super().__init__(*values, **kwvalues)
+
+    def __class_getitem__(
+        cls, args: tx.Union[type, tx.Tuple]
+    ) -> tx.TypeAlias:
+        # `Inherit[..., "x"]` takes over `x`. Anything after the type
+        # that is not a field's name -- `Inherit[..., Field(...)]` -- is
+        # metadata, as on the rest of the family, rather than a name.
+        if (
+            isinstance(args, tuple) and len(args) > 1
+            and not isinstance(args[1], (str, bool))
+        ):
+            t, *rest = args
+            return _annotated(t, cls(), *rest)
+        return AnnotatedField.__dict__["__class_getitem__"].__func__(
+            cls, args
+        )
+
+
+# Bound again here, with a docstring, so that the API reference lists it
+# among the field annotations: the name is imported from `_constants`
+# and is public from this module. Not a mistake to tidy away.
+REQUIRED = REQUIRED
+"""A default that says the field has none.
+
+Written as the default of a field that inherits, as in `x: ... = REQUIRED`,
+it removes the default the field inherited, so the field has to be passed.
+"""
 
 PIN: tx.Literal["pin"] = "pin"
 """Give the field the value the subclass stands for, as its default."""

@@ -52,6 +52,7 @@ __all__ = [
 ]
 
 # stdlib
+import copy
 import enum
 
 # dependencies
@@ -67,6 +68,7 @@ from ._constants import (
     _OPTIONS,
     _POLYMORPHS,
     _REGISTRATION,
+    _TAKEN_OVER,
     MISSING,
     MaybeMissing,
 )
@@ -421,15 +423,32 @@ def forgotten_by(
     """
     for cls in classes:
         for name in cls.__dict__.get(_FORGOTTEN, ()):
-            if key == name:
+            if key == name or key in _removed_aliases(cls, name):
                 return cls
-            for base in cls.__mro__[1:]:
-                table = base.__dict__.get(_FIELDS)
-                if table is not None and name in table:
-                    if key in table[name].aliases:
-                        return cls
-                    break
     return None
+
+
+def _removed_aliases(cls: type, name: str) -> tx.Tuple[str, ...]:
+    # The names the field `cls` removed under `name` was passed by, read
+    # off the nearest base that has it.
+    for base in cls.__mro__[1:]:
+        table = base.__dict__.get(_FIELDS)
+        if table is not None and name in table:
+            return table[name].aliases
+    return ()  # pragma: no cover -- a class only removes what it has
+
+
+def how_removed(cls: type, key: str) -> str:
+    """
+    How `cls` removed the field `key` names, worded to follow "removed".
+
+    A field leaves a class either through `Forget` or because another
+    field took it over with `Inherit`.
+    """
+    for name, taker in cls.__dict__.get(_TAKEN_OVER, {}).items():
+        if key == name or key in _removed_aliases(cls, name):
+            return f"by taking it over as {taker!r}"
+    return "with Forget"
 
 
 def check_fields(
@@ -451,7 +470,8 @@ def check_fields(
             )
             forgetter = forgotten_by(owner.__mro__, spec.name)
             why = (
-                f" {forgetter.__name__} removed it with Forget."
+                f" {forgetter.__name__} removed it "
+                f"{how_removed(forgetter, spec.name)}."
                 if forgetter is not None else ""
             )
             raise TypeError(
@@ -461,10 +481,47 @@ def check_fields(
             )
 
 
+def field_for(table: tx.Mapping[str, tx.Any], spec: _Spec) -> tx.Any:
+    """
+    The field of `table` that `spec` constrains, or None.
+
+    A spec names the field the way the class that wrote it stores it. A
+    class above or below may store the same field under another name --
+    one that took it over keeps its public name -- so a table without
+    that stored name is searched by the public name, which is the name
+    the call passes it by.
+    """
+    found = table.get(spec.name)
+    if found is not None:
+        return found
+    return next(
+        (field for field in table.values() if spec.label in field.aliases),
+        None,
+    )
+
+
+def for_owner(owner: type, specs: tx.Sequence[_Spec]) -> tx.Tuple[_Spec, ...]:
+    """
+    `specs` with each field named the way `owner` stores it.
+
+    The owner reads the arguments of a call into its own fields, so the
+    constraints it checks have to name those.
+    """
+    table = getattr(owner, _FIELDS)
+    renamed = []
+    for spec in specs:
+        field = field_for(table, spec)
+        if field is not None and field.name != spec.name:
+            spec = copy.copy(spec)
+            spec.name = field.name
+        renamed.append(spec)
+    return tuple(renamed)
+
+
 def has_fields(owner: type, specs: tx.Iterable[_Spec]) -> bool:
     """Whether `owner` has every field `specs` constrains."""
     table = getattr(owner, _FIELDS)
-    return all(spec.name in table for spec in specs)
+    return all(field_for(table, spec) is not None for spec in specs)
 
 
 # ----------------------------------------------------------------------
@@ -807,7 +864,7 @@ def _delegation_plan(
     drops = []
     for spec in specs:
         owner_field = owner_fields.get(spec.name)
-        target_field = target_fields.get(spec.name)
+        target_field = field_for(target_fields, spec)
         if owner_field is None or target_field is None:  # pragma: no cover
             # Defensive: a spec name is validated against the owner's
             # fields, and the target is a subclass carrying all of them,
@@ -998,7 +1055,11 @@ def _refused(
         order = [f for f in positional if not f.kw]
         order += [f for f in positional if f.kw]
         for index, field in enumerate(order):
-            if field.name not in target_fields:
+            # A field another one took over under the same public name
+            # is still there, as far as the call is concerned.
+            if field.name not in target_fields and (
+                field.public_name not in taken
+            ):
                 position, label = index, field.public_name
                 break
     if not names and position is None:
@@ -1473,7 +1534,8 @@ def _passed_over(
             continue
         forgetter = forgotten_by(entry.target.__mro__, name)
         removed = (
-            f", which {forgetter.__name__} removed with Forget"
+            f", which {forgetter.__name__} removed "
+            f"{how_removed(forgetter, name)}"
             if forgetter is not None else ""
         )
         lines.append(
