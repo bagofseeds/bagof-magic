@@ -61,6 +61,7 @@ from bagof.validators import Validator, ValueValidationError
 # internals
 from ._constants import (
     _FIELDS,
+    _FORGOTTEN,
     _GENERATED,
     _GENERIC_ORIGIN,
     _OPTIONS,
@@ -389,6 +390,46 @@ def stored_names(
     return resolved
 
 
+def forgotten_by(
+    classes: tx.Iterable[type], key: str
+) -> tx.Optional[type]:
+    """
+    The first of `classes` that removed a field `key` names, if any.
+
+    `key` may be the field's stored name or any name the constructor
+    took it by, read off the table the field was removed from.
+    """
+    for cls in classes:
+        for name in cls.__dict__.get(_FORGOTTEN, ()):
+            if key == name:
+                return cls
+            for base in cls.__mro__[1:]:
+                table = base.__dict__.get(_FIELDS)
+                if table is not None and name in table:
+                    if key in table[name].aliases:
+                        return cls
+                    break
+    return None
+
+
+def reads(cls: type) -> tx.Set[str]:
+    """
+    The fields `cls` reads to choose what to build.
+
+    What it stands for itself, if it is registered somewhere, and what
+    every subclass registered with it stands for, by stored name.
+    """
+    names = set()
+    registration = cls.__dict__.get(_REGISTRATION)
+    if registration is not None:
+        names.update(spec.name for spec in registration[1])
+    found = cls.__dict__.get(_POLYMORPHS)
+    if isinstance(found, _Registry):
+        for entry in found.dispatch[0]:
+            names.update(spec.name for spec in entry.specs)
+    return names
+
+
 def check_fields(
     owner: type, clsname: str, specs: tx.Iterable[_Spec]
 ) -> None:
@@ -406,9 +447,14 @@ def check_fields(
             names = ", ".join(
                 repr(field.public_name) for field in table.values()
             )
+            forgetter = forgotten_by(owner.__mro__, spec.name)
+            why = (
+                f" {forgetter.__name__} removed it with Forget."
+                if forgetter is not None else ""
+            )
             raise TypeError(
                 f"{clsname} registers on {spec.name!r}, which is not a "
-                f"field of {owner.__name__}. Its fields are: "
+                f"field of {owner.__name__}.{why} Its fields are: "
                 f"{names or 'none'}."
             )
 

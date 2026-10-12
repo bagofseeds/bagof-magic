@@ -137,6 +137,7 @@ from ._constants import (
     _EXCEPTION,
     _FIELD_ERROR,
     _FIELDS,
+    _FORGOTTEN,
     _GENERATED,
     _GENERIC_ARGS,
     _GENERIC_CACHE,
@@ -174,6 +175,7 @@ from ._fields import (
     _OVERRIDABLE,
     HIDE_IF_NONE,
     Field,
+    Forget,
     ShowIf,
     _chain,
     _field_key_test,
@@ -195,8 +197,10 @@ from ._polymorph import check as _check_invariant
 from ._polymorph import check_fields as _check_spec_fields
 from ._polymorph import conjoin as _conjoin
 from ._polymorph import delegate as _delegate_polymorph
+from ._polymorph import forgotten_by as _forgotten_by
 from ._polymorph import has_fields as _has_spec_fields
 from ._polymorph import mark_registered as _mark_registered
+from ._polymorph import reads as _reads
 from ._polymorph import register as _register_polymorph
 from ._polymorph import select as _select_polymorph
 from ._polymorph import specifications as _specifications
@@ -431,6 +435,43 @@ def _add_fields(
             fields.setdefault(name, old_field)
 
 
+def _hides(forgetter: type, name: str, holder: type) -> bool:
+    # Whether `forgetter`, which comes before `holder` in the order a
+    # class looks things up in, keeps `holder`'s field `name` from it.
+    # It does for a field it inherits itself, and for every field of
+    # that name when it binds the name in its own body -- a property, a
+    # method, a value written beside `Forget` -- which is the same
+    # "is the name in the namespace?" test a lookup makes.
+    return name in forgetter.__dict__.get(_FORGOTTEN, ()) and (
+        holder in forgetter.__mro__ or name in forgetter.__dict__
+    )
+
+
+def _hidden(
+    mro: tx.Sequence[type], index: int, names: tx.Iterable[str]
+) -> tx.Set[str]:
+    # Which of `names`, held by `mro[index]`, a base earlier in `mro`
+    # removed with `Forget` -- so that `mro[index]` does not hand them
+    # on. Leaving them out of the merge, rather than taking them out
+    # afterwards, keeps a field declared again further down in the
+    # place it was declared.
+    #
+    # A base that forgot a name hides the field of every class it
+    # inherits from, so a subclass never gets that field back. In a
+    # diamond, `D(B, C)`, a field `C` holds that `B` never inherited is
+    # still `D`'s -- unless `B` binds the name itself, which ends the
+    # lookup there. So each name goes to the first class in `mro` that
+    # holds it and that no forgetting base before it hides.
+    holder = mro[index]
+    earlier = [
+        base for base in mro[:index] if base.__dict__.get(_FORGOTTEN)
+    ]
+    return {
+        name for name in names
+        if any(_hides(forgetter, name, holder) for forgetter in earlier)
+    }
+
+
 def _check_public_names(clsname: str, fields: tx.Dict[str, Field]) -> None:
     # Every input spelling belongs to one field, including names inherited
     # from different bases. Output methods use only the preferred name.
@@ -651,6 +692,7 @@ def _read_annotation(
     # `ClassVar`, `KwOnly` or `Frozen`.
     marker = _structural_marker(node, globals, where)
     if marker is MISSING:
+        _check_bare_marker(node, globals, where)
         return _read_type(node, source, globals)
     payload, *metadata = _subscript_args(node)
     type = _read_annotation(payload, source, globals, where)
@@ -694,6 +736,34 @@ def _structural_marker(node: ast.AST, globals: dict, where: str) -> tx.Any:
             )
         return MISSING
     return marker if _is_structural(marker) else MISSING
+
+
+#: The members of the family written bare, with no brackets: the whole
+#: annotation is the marker.
+_BARE_MARKERS = frozenset({"Forget"})
+
+
+def _check_bare_marker(node: ast.AST, globals: dict, where: str) -> None:
+    # `x: Forget` names its marker with nothing after it. When that name
+    # is not defined where the class is written, the field would quietly
+    # become one whose type is the text "Forget" -- so say so, the way
+    # an undefined subscripted marker is reported.
+    parts = _dotted_name(node)
+    if (
+        parts is None
+        or parts[-1] not in _BARE_MARKERS
+        or _lookup_dotted(parts, globals) is not MISSING
+    ):
+        return
+    warnings.warn(
+        f"{where} is annotated with {'.'.join(parts)}, which is not "
+        f"defined where the class is written, so it cannot be applied "
+        f"to the field. A name only imported under `if TYPE_CHECKING:` "
+        f"is not there at runtime -- import {parts[0]} normally for the "
+        f"annotation to take effect.",
+        _UnreadableAnnotation,
+        stacklevel=_caller_stacklevel(),
+    )
 
 
 def _decline(node: ast.AST, source: str, where: str, part: str) -> str:
@@ -1134,9 +1204,29 @@ def _polymorphic_levels(mro: tx.Sequence[type]) -> tx.List[type]:
     ]
 
 
+def _out_of_reach(
+    levels: tx.Sequence[type], fields: tx.Container[str]
+) -> tx.List[type]:
+    # The levels that cannot build a class holding only `fields`: each
+    # one that chooses by a field the class no longer has -- it was
+    # removed with `Forget` on the way down -- and every level above
+    # such a one, which reaches the class only through it. A class can
+    # lack a field a level has in no other way, since fields are always
+    # inherited.
+    lost = [
+        level for level in levels
+        if any(name not in fields for name in _reads(level))
+    ]
+    return [
+        level for level in levels
+        if any(issubclass(below, level) for below in lost)
+    ]
+
+
 def _registration_owners(
     mro: tx.Sequence[type],
-) -> tx.Tuple[tx.List[type], tx.List[type], tx.List[type]]:
+    fields: tx.Optional[tx.Container[str]] = None,
+) -> tx.Tuple[tx.List[type], tx.List[type], tx.List[type], tx.List[type]]:
     # Which classes up the chain a subclass registers with, which of
     # them are registered somewhere themselves, and the nearest of those
     # -- one per branch of the hierarchy, so two of them mean the class
@@ -1154,7 +1244,15 @@ def _registration_owners(
     # At the bottom of a diamond, the root(s) are owners too. There the
     # two parents are siblings that may tie, and only a registration at
     # the root, whose constraint covers both of theirs, out-ranks them.
+    #
+    # Given the fields of the class, a level that chooses by a field the
+    # class has forgotten is left out, with every level above it, as if
+    # a class between them had turned `polymorphic` off: it could not
+    # read that field off the class, and could not hand the class an
+    # argument for it. Those levels come back as the fourth value.
     levels = _polymorphic_levels(mro)
+    cut = [] if fields is None else _out_of_reach(levels, fields)
+    levels = [level for level in levels if level not in cut]
     targets = [base for base in levels if _REGISTRATION in base.__dict__]
     nearest = [
         target for target in targets
@@ -1176,7 +1274,7 @@ def _registration_owners(
             if level not in owners
             and not _polymorphic_levels(level.__mro__[1:])
         ]
-    return owners, targets, nearest
+    return owners, targets, nearest, cut
 
 
 def _registered(
@@ -1822,22 +1920,30 @@ def __pre_new__(
     # the most derived base's, which the loop reads off that base
     # anyway -- and nothing was written as one of *its* type variables,
     # so reading it would only undo what that base said.
-    for b in reversed(mro[1:]):
+    for index in reversed(range(1, len(mro))):
+        b = mro[index]
         # Only process classes that have been processed by our
         # decorator.  That is, they have a _FIELDS attribute.
         base_fields = getattr(b, _FIELDS, None)
         if base_fields is not None:
             base_options = getattr(b, _OPTIONS)
             options.update(base_options)
+            # A field a base before this one removed with `Forget` is
+            # not handed on (see `_hidden`).
+            hidden = _hidden(mro[1:], index - 1, base_fields)
             _add_fields(
                 fields,
-                base_fields.values(),
+                [
+                    field for name, field in base_fields.items()
+                    if name not in hidden
+                ],
                 replace=True,
                 reverse=options.reverse
             )
             if arguments:
                 for field_name in base_fields:
-                    inherited_arguments[field_name] = arguments.get(b)
+                    if field_name not in hidden:
+                        inherited_arguments[field_name] = arguments.get(b)
 
     # Save final options for this class.
     options.update(Options(**kwargs))
@@ -1941,11 +2047,17 @@ def __pre_new__(
     cls_fields = []
     written = {}
     declared = {}
+    forgotten = []
     for field_name, type_ in cls_annotations.items():
 
         if field_name[:2] == "__":
             # Dunder name -> ignore (same behavior as attrs)
             continue
+
+        # `x: Forget` is written bare; it means what `Forget()` in the
+        # metadata does.
+        if isinstance(type_, type) and issubclass(type_, Forget):
+            type_ = tx.Annotated[tx.Any, type_()]
 
         # Make Field from annotation
         field = Field.from_hint(field_name, type_)
@@ -1971,6 +2083,14 @@ def __pre_new__(
         # as the default value for this field.
         elif field.name in namespace:
             field.default = namespace[field.name]
+
+        # A field this class forgets is not built at all. A value
+        # written beside it stays in the namespace as a plain class
+        # attribute; with none, the name is left to ordinary lookup.
+        if field.inherit is False:
+            declared[field.name] = field._explicit()
+            forgotten.append(field.name)
+            continue
 
         if field.pin is not MISSING and _pin_action(field.pin) is None:
             raise ValueError(
@@ -2016,6 +2136,28 @@ def __pre_new__(
 
         cls_fields.append(field)
 
+    # Take out what this class forgets, before its own fields go in:
+    # they may reuse a forgotten field's public name.
+    removed = {}
+    for name in forgotten:
+        if name not in fields:
+            forgetter = _forgotten_by(mro[1:], name)
+            why = (
+                f"{forgetter.__name__} has already removed it"
+                if forgetter is not None
+                else f"none of the classes {clsname} inherits from has "
+                f"a field {name!r}"
+            )
+            raise TypeError(
+                f"{clsname}.{name} is annotated with Forget, which "
+                f"removes an inherited field, but {why}. Remove the "
+                f"annotation, or name the field as the base class "
+                f"declares it."
+            )
+        removed[name] = fields.pop(name)
+    if forgotten:
+        namespace[_FORGOTTEN] = frozenset(forgotten)
+
     # Insert fields from this class, in correct order.
     _add_fields(fields, cls_fields, replace=True, reverse=options.reverse)
     namespace[_DECLARED] = declared
@@ -2043,15 +2185,40 @@ def __pre_new__(
     # does a class built by filling in type parameters, which is not one
     # anyone wrote. A class in a single chain that says nothing is left
     # unregistered, as it always was.
-    owners, targets, nearest = _registration_owners(mro[1:])
+    owners, targets, nearest, cut = _registration_owners(mro[1:], fields)
     diamond = len(nearest) >= 2
     speaks = on is not MISSING and on is not None
+    if speaks and isinstance(on, tx.Mapping):
+        for key in on:
+            gone = [
+                name for name, field in removed.items()
+                if key == name or key in field.aliases
+            ]
+            if gone:
+                raise TypeError(
+                    f"{clsname} forgets {gone[0]!r} and registers on "
+                    f"{key!r}, but a class cannot stand for a value of "
+                    f"a field it does not have. Keep the field, or leave "
+                    f"{key!r} out of on=."
+                )
     composes = diamond and on is not None and (
         speaks
         or (options.polymorphic and _GENERIC_ORIGIN not in namespace)
     )
     reachable = []
     if speaks or composes:
+        if not owners and cut:
+            lost = sorted({
+                name for level in cut for name in _reads(level)
+                if name not in fields
+            })
+            raise TypeError(
+                f"{clsname} says with on= which arguments it stands for, "
+                f"but every class it inherits from that builds its "
+                f"subclasses chooses by a field {clsname} no longer has "
+                f"-- {', '.join(repr(name) for name in lost)} -- "
+                f"so none of them can build it."
+            )
         if not owners:
             raise TypeError(
                 f"{clsname} says with on= which arguments it stands for, "
@@ -2064,6 +2231,18 @@ def __pre_new__(
             _stored_names(clsname, on, fields) if speaks else {},
             options.pin_discriminant,
         )
+        for spec in own:
+            forgetter = (
+                None if spec.name in fields
+                else _forgotten_by(mro[1:], spec.name)
+            )
+            if forgetter is not None:
+                raise TypeError(
+                    f"{clsname} registers on {spec.name!r}, which is not "
+                    f"a field of {clsname}: {forgetter.__name__} removed "
+                    f"it with Forget. A class cannot stand for a value "
+                    f"of a field it does not have."
+                )
         if diamond:
             specs = claim = _conjoin(clsname, own, _registered(targets))
         else:
@@ -4230,6 +4409,22 @@ class MetaMagic(ABCMeta):
         # is refused here rather than building the wrong class quietly.
         claim = specs
         if isinstance(target, type) and issubclass(target, owner):
+            # A target that has forgotten a field the owner chooses by
+            # could neither be told apart by it nor be handed it.
+            target_fields = getattr(target, _FIELDS)
+            lacking = sorted(
+                field_name
+                for field_name in _reads(owner) | {s.name for s in specs}
+                if field_name not in target_fields
+            )
+            if lacking:
+                raise TypeError(
+                    f"{target.__name__} cannot be built by "
+                    f"{_as_written(cls)}, which chooses by "
+                    f"{', '.join(repr(n) for n in lacking)}: "
+                    f"{target.__name__} has no such field, since it was "
+                    f"removed with Forget."
+                )
             _check_discriminants(
                 target.__name__, owner, getattr(target, _FIELDS), specs,
                 getattr(
@@ -4241,7 +4436,9 @@ class MetaMagic(ABCMeta):
             # registered classes above it stand for.
             claim = _whole_claim(
                 target.__name__, specs,
-                _registration_owners(target.__mro__[1:])[1],
+                _registration_owners(
+                    target.__mro__[1:], target_fields
+                )[1],
             )
         # Only with `owner`: the hand path registers exactly where it is
         # called. The record it leaves on `target` is what lets a later

@@ -43,6 +43,7 @@ __all__ = [
     "Pin",
     "Narrow",
     "NoPin",
+    "Forget",
     "PIN",
     "CLASSVAR",
     "KEEP",
@@ -131,6 +132,7 @@ def _chain(first: tx.Callable, second: tx.Callable) -> tx.Callable:
     '_declared',        # What the field explicitly said (bookkeeping).
     '_narrowed_by',     # Which constraints narrowed it (bookkeeping).
     'pin',              # What a subclass matching on it does with it.
+    'inherit',          # False: remove the inherited field of this name.
 )
 class Field(SlotsBase):
     """A single field in a Magic class.
@@ -243,6 +245,12 @@ class Field(SlotsBase):
             over `pin_discriminant` on every class that matches on the
             field, including subclasses that inherit it. Also settable
             through the `Pin`, `Narrow` and `NoPin` annotations.
+        inherit : bool, optional
+            `False` removes the field of this name that the class
+            inherits, instead of declaring one: it is no longer a
+            parameter, part of the repr, the comparisons or the
+            dict-like view, and its public name is free for another
+            field. Usually written as the bare annotation `x: Forget`.
 
         Other Parameters
         ----------------
@@ -1850,6 +1858,50 @@ class Narrow(Pin, BoolAnnotatedField):
 @slots
 class NoPin(Pin, BoolAnnotatedField):
     __set_slots__ = {'pin': False}
+
+
+@slots
+class Forget(AnnotatedField):
+    """
+    Remove a field the class inherits.
+
+    Write the bare name as the annotation. The field is gone from this
+    class and from every class that inherits from it: the constructor
+    no longer takes it, and the repr, the comparisons and the dict-like
+    view leave it out. Its public name is free again, so another field
+    may take it. Declaring the field again further down brings back a
+    new one.
+
+    A value written beside it stays an ordinary class attribute. With
+    nothing written, the name is looked up as on any class, so reading
+    it can still find what a base class holds under it, such as the
+    field's old default.
+
+    A field that a base class needs to choose its subclasses by may be
+    forgotten too. Such a class is then never built by the classes that
+    choose by it, and building it directly does not choose by it either.
+
+    !!! example "How it lowers"
+        ```pycon
+        >>> Forget()
+        Forget(inherit=False)
+        ```
+
+    !!! example "In a class"
+        ```pycon
+        >>> class Point(Magic):
+        ...     x: int
+        ...     y: int = 0
+        ...
+        >>> class Tick(Point):
+        ...     y: Forget
+        ...
+        >>> Tick(3)
+        Tick(x=3)
+        ```
+    """
+
+    __set_slots__ = {'inherit': False}
 
 
 PIN: tx.Literal["pin"] = "pin"

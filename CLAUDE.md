@@ -572,6 +572,50 @@ does not.
   another field's public name, is refused; an unknown key is kept as
   written for `check_fields`, whose message lists public names.
 
+### Forgetting an inherited field
+
+`x: Forget` (or `Forget()` in the metadata, or `Field(inherit=False)`)
+lowers to the `Field` slot `inherit=False`. `__pre_new__` builds the
+`Field` as usual, records it in `_DECLARED`, and then skips it: it is
+never resolved and never enters the field table. After the merge of the
+bases, each forgotten name is popped from `fields` -- an error, naming
+the base that already forgot it if there is one, when no base has it --
+and the names are stored as `__magic_forgotten__` (`_FORGOTTEN`), read
+off each class's own `__dict__`. This happens before the class's own
+fields go in, so `_x: int` beside `x: Forget` may take the public name
+`x`. A value written beside `Forget` stays in the namespace as a plain
+class attribute; with none, the name is left to ordinary lookup -- a
+base's class-level default on a plain class, the base's empty member
+descriptor on a slots class (a slot cannot be taken away from a
+subclass's instances).
+
+**The merge leaves hidden fields out rather than taking them out
+afterwards** (`_hidden`), so a field declared again further down keeps
+the place it is declared in. A base `F` that forgot `n` hides holder
+`H`'s field `n` when `F` comes before `H` in the MRO and either `H` is
+in `F.__mro__` (it is a field `F` inherited) or `F` binds `n` in its own
+`__dict__` (`_hides`). So `D(B, C)` with `B` forgetting `x` unbound gets
+`C`'s `x` (even one `C` merely inherited from the common root), and
+gets none if `B` wrote `x: Forget = value`, a property or a method.
+
+**Polymorphism.** Forgetting a field a base chooses by is allowed.
+`_out_of_reach` drops from a class's levels every level that `reads`
+(in `_polymorph.py`: its own registration's specs, or any entry of its
+registry) a field the class no longer has, and every level above such
+a one -- the forgetting class behaves as a `polymorphic=False`
+boundary for them, so it is never registered with them and they never
+build it or its subclasses. Calling the class itself never chose by
+the field anyway (each class dispatches only through its own registry,
+which cannot hold a spec on a field the class lacks). What is refused:
+`on=` naming a field the same class forgets; `on=` naming a field a
+base forgot (with "removed it with Forget" in the message, also from
+`check_fields`); a class whose every level is out of reach writing
+`on=`; and `register_polymorph` handing an owner a target that lacks a
+field the owner chooses by. A level that does *not* choose by the
+forgotten field still registers the class, and still hands it every
+argument it was called with -- passing the forgotten name to such an
+owner fails in the subclass's `__init__`.
+
 ## Conventions specific to this repo (do not regress)
 
 1. **Wide Python (3.8+).** Runtime code must stay old-compatible: no walrus in
@@ -650,7 +694,7 @@ argued the other way:
   converters the same way. Pydantic's `model_copy` differs, and gives
   the different behaviour a different name.
 
-One deliberate departure, decided by the maintainer against the
+Deliberate departures, decided by the maintainer against the
 consensus:
 
 - **A required field may follow a defaulted one.** `dataclasses` and
@@ -661,6 +705,12 @@ consensus:
   library the shape is usually what the author meant. Checkers applying
   the `dataclasses` rules (mypy, pyright) still flag it; the docs point
   to `kw_only=True` on the declaring class for checker-clean code.
+- **A subclass can forget an inherited field** (`x: Forget`, #119).
+  None of the three can: `dataclasses` comes closest with `x:
+  ClassVar[...]`, which still leaves the name taken. A forgotten field
+  is gone from the class and everything below it, and its public name
+  is free. Checkers still see the base's field (PEP 681 cannot say
+  this).
 
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 

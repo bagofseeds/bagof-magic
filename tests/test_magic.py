@@ -29,6 +29,7 @@ from bagof.magic import (
     Doc,
     Factory,
     Field,
+    Forget,
     Frozen,
     HideIf,
     HideIfDefault,
@@ -7903,3 +7904,348 @@ class TestBuiltWithType:
         assert C.__qualname__ == "C"
         assert C.__repr__.__qualname__ == "C.__repr__"
         assert C.__init__.__qualname__ == "C.__init__"
+
+
+# ======================================================================
+# Forgetting an inherited field
+# ======================================================================
+
+
+_FT = tx.TypeVar("_FT")
+
+
+class TestForget:
+    """`x: Forget` removes an inherited field from a class and below."""
+
+    @staticmethod
+    def _point() -> type:
+        class Point(Magic, order=True, mapping=True, match_args=True):
+            x: int = 3
+            y: int = 0
+
+        return Point
+
+    def test_the_field_is_gone_from_everything_generated(self) -> None:
+        Point = self._point()
+
+        class Tick(Point):
+            x: Forget
+
+        assert list(signature(Tick).parameters) == ["y"]
+        tick = Tick(1)
+        assert repr(tick) == "Tick(y=1)"
+        assert tick == Tick(1) and tick != Tick(2)
+        assert Tick(1) < Tick(2)
+        assert dict(tick) == {"y": 1}
+        assert Tick.__match_args__ == ("y",)
+        assert [f.name for f in _api.fields(Tick)] == ["y"]
+        assert list(_api.fields_dict(Tick)) == ["y"]
+        assert _api.asdict(tick) == {"y": 1}
+        assert _api.replace(tick, y=5) == Tick(5)
+        with pytest.raises(TypeError):
+            Tick(x=1)
+        # The base is untouched.
+        assert list(signature(Point).parameters) == ["x", "y"]
+
+    def test_it_is_recorded_on_the_class(self) -> None:
+        Point = self._point()
+
+        class Tick(Point):
+            x: Forget
+
+        assert Tick.__dict__[m._FORGOTTEN] == frozenset({"x"})
+        assert m._FORGOTTEN not in Point.__dict__
+        assert Tick.__dict__[m._DECLARED]["x"]["inherit"] is False
+
+    def test_it_lowers_to_a_field_setting(self) -> None:
+        assert repr(Forget()) == "Forget(inherit=False)"
+        Point = self._point()
+
+        class ByAnnotated(Point):
+            x: Annotated[int, Forget()]
+
+        class ByField(Point):
+            x: int = Field(inherit=False)
+
+        assert list(signature(ByAnnotated).parameters) == ["y"]
+        assert list(signature(ByField).parameters) == ["y"]
+        assert "x" not in ByField.__dict__
+
+    def test_a_subclass_stays_without_it(self) -> None:
+        Point = self._point()
+
+        class Tick(Point):
+            x: Forget
+
+        class Tock(Tick):
+            z: int = 9
+
+        assert list(signature(Tock).parameters) == ["y", "z"]
+
+    def test_declaring_it_again_further_down_brings_a_new_one(
+        self
+    ) -> None:
+        Point = self._point()
+
+        class Tick(Point):
+            x: Forget
+
+        class Again(Tick):
+            x: str = "again"
+
+        class Below(Again):
+            pass
+
+        # The new field is declared where it is written, and its
+        # subclasses keep it there rather than in the old one's place.
+        assert list(signature(Again).parameters) == ["y", "x"]
+        assert list(signature(Below).parameters) == ["y", "x"]
+        assert _api.fields_dict(Below)["x"].type is str
+        assert Below(1).x == "again"
+
+    def test_a_value_beside_it_is_a_plain_class_attribute(self) -> None:
+        Point = self._point()
+
+        class Tick(Point):
+            x: Forget = 7
+
+        assert list(signature(Tick).parameters) == ["y"]
+        assert Tick.x == 7
+        assert Tick(1).x == 7
+        assert "x" not in repr(Tick(1))
+
+    def test_without_slots_the_base_default_is_still_read(self) -> None:
+        # Nothing is put in the way of an ordinary lookup: the default
+        # the base class holds as a class attribute is found there.
+        Point = self._point()
+
+        class Tick(Point):
+            x: Forget
+
+        assert Tick.x == 3
+        assert Tick(1).x == 3
+        tick = Tick(1)
+        tick.x = 5
+        assert tick.x == 5
+        assert tick == Tick(1)
+
+    def test_with_slots_the_base_slot_is_still_there(self) -> None:
+        # A slot cannot be taken away from instances of a subclass, so
+        # the name reads as the base's empty slot: the class attribute is
+        # the slot itself and an instance holds no value until one is
+        # assigned.
+        class Point(Magic, slots=True):
+            x: int = 3
+            y: int = 0
+
+        class Tick(Point):
+            x: Forget
+
+        assert list(signature(Tick).parameters) == ["y"]
+        assert isinstance(Tick.x, m.MemberDescriptorType)
+        tick = Tick(1)
+        with pytest.raises(AttributeError):
+            tick.x  # noqa: B018
+        tick.x = 4
+        assert tick.x == 4
+        assert repr(tick) == "Tick(y=1)"
+
+    def test_a_frozen_class_forgets_too(self) -> None:
+        class Point(Magic, frozen=True):
+            x: int = 3
+            y: int = 0
+
+        class Tick(Point):
+            x: Forget
+
+        tick = Tick(1)
+        assert repr(tick) == "Tick(y=1)"
+        with pytest.raises(AttributeError):
+            tick.y = 2
+
+    def test_the_public_name_is_free_again(self) -> None:
+        class Base(Magic):
+            x: int
+
+        class Stored(Base):
+            x: Forget
+            _x: int
+
+            @property
+            def x(self) -> int:
+                return self._x * 10
+
+        assert list(signature(Stored).parameters) == ["x"]
+        stored = Stored(1)
+        assert stored._x == 1
+        assert stored.x == 10
+        assert repr(stored) == "Stored(x=1)"
+
+    def test_without_forgetting_the_public_name_clashes(self) -> None:
+        class Base(Magic):
+            x: int
+
+        with pytest.raises(TypeError, match="both are known as 'x'"):
+            class Stored(Base):
+                _x: int
+
+    def test_a_name_no_base_has_is_refused(self) -> None:
+        Point = self._point()
+        with pytest.raises(
+            TypeError,
+            match=r"Bad\.z is annotated with Forget.* none of the classes "
+            r"Bad inherits from has a field 'z'",
+        ):
+            class Bad(Point):
+                z: Forget
+
+    def test_forgetting_twice_is_refused(self) -> None:
+        Point = self._point()
+
+        class Tick(Point):
+            x: Forget
+
+        with pytest.raises(TypeError, match="Tick has already removed it"):
+            class Again(Tick):
+                x: Forget
+
+    def test_forgetting_is_by_the_stored_name(self) -> None:
+        class Base(Magic):
+            _x: int = 0
+
+        with pytest.raises(TypeError, match="has a field 'x'"):
+            class Sub(Base):
+                x: Forget
+
+        class Sub(Base):
+            _x: Forget
+
+        assert list(signature(Sub).parameters) == []
+
+    def test_a_forwarding_property_goes_with_its_field(self) -> None:
+        class Base(Magic):
+            _x: Annotated[int, Field(property=True)] = 1
+
+        assert Base().x == 1
+
+        class Sub(Base):
+            _x: Forget
+
+        with pytest.raises(AttributeError):
+            Sub().x  # noqa: B018
+
+    def test_a_diamond_keeps_a_field_the_forgetting_side_does_not_reach(
+        self
+    ) -> None:
+        class Root(Magic):
+            x: int = 1
+
+        class Left(Root):
+            x: Forget
+
+        class Right(Root):
+            pass
+
+        class Other(Magic):
+            x: int = 7
+
+        # `Left` forgets `x` without binding the name, so the lookup
+        # goes on to `Right`, which holds `x`.
+        class Both(Left, Right):
+            pass
+
+        assert list(signature(Both).parameters) == ["x"]
+        assert Both().x == 1
+
+        # Through an unrelated class, the field is that class's own.
+        class Mixed(Left, Other):
+            pass
+
+        assert signature(Mixed).parameters["x"].default == 7
+
+        # In the other order, the forgetting side is not consulted first.
+        class Flipped(Right, Left):
+            pass
+
+        assert list(signature(Flipped).parameters) == ["x"]
+
+    def test_a_diamond_loses_the_field_when_the_name_is_bound(
+        self
+    ) -> None:
+        class Root(Magic):
+            x: int = 1
+
+        class Left(Root):
+            x: Forget = 5
+
+        class Right(Root):
+            pass
+
+        class Other(Magic):
+            x: int = 7
+
+        class Both(Left, Right):
+            pass
+
+        class Mixed(Left, Other):
+            pass
+
+        assert list(signature(Both).parameters) == []
+        assert list(signature(Mixed).parameters) == []
+        assert Both.x == 5 and Mixed.x == 5
+
+    def test_a_generic_base(self) -> None:
+        class Box(Magic, tx.Generic[_FT], convert=True):
+            item: _FT
+            label: str = ""
+
+        class Bare(Box[int]):
+            label: Forget
+
+        assert list(signature(Bare).parameters) == ["item"]
+        assert Bare("3").item == 3
+
+        class Bare2(Box[_FT]):
+            label: Forget
+
+        assert Bare2[int]("4").item == 4
+        assert list(signature(Bare2[int]).parameters) == ["item"]
+
+    def test_a_class_built_by_the_decorator(self) -> None:
+        @magic
+        class Point:
+            x: int = 3
+            y: int = 0
+
+        class Tick(Point):
+            x: Forget
+
+        assert list(signature(Tick).parameters) == ["y"]
+        assert repr(Tick(2)) == "Tick(y=2)"
+
+    def test_reverse_order(self) -> None:
+        class Base(Magic, reverse=True):
+            a: int = 1
+            b: int = 2
+
+        class Sub(Base):
+            c: int = 3
+            a: Forget
+
+        assert list(signature(Sub).parameters) == ["c", "b"]
+
+    def test_a_field_written_on_the_same_class_is_not_forgotten(
+        self
+    ) -> None:
+        # `Forget` takes out what was inherited; another field of the
+        # class may take its public name in the same body.
+        class Base(Magic):
+            x: int = 1
+            y: int = 2
+
+        class Sub(Base):
+            _x: int = 5
+            x: Forget
+
+        assert list(signature(Sub).parameters) == ["y", "x"]
+        assert Sub()._x == 5
