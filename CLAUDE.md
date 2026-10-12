@@ -47,11 +47,6 @@ src/bagof/magic/
                 #   converter, a validator or a factory raises
   _polymorph.py # the registry, the constraint shapes and the dispatch
                 #   behind the `polymorphic` option
-  _checkers.py  # what a type checker is told the annotation family is:
-                #   under TYPE_CHECKING each subscripted marker is an
-                #   `Annotated[T, ...]` alias; at runtime it re-exports
-                #   `_fields` unchanged. `__init__.py` imports it after
-                #   `_magic`, and that order matters (see its comments)
 tests/
   test_magic.py                 # the builder, option by option
   test_docstrings.py            # every `pycon` block in a docstring or page

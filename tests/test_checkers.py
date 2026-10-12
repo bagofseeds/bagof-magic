@@ -1,17 +1,22 @@
-"""What a type checker reads the annotation family as.
+"""What mypy and pyright report about the annotation family.
 
-`Frozen[int]` becomes `Annotated[int, Frozen()]` when the code runs, but
-a checker never runs it: to a checker, `Frozen` has to be declared as
-something that, subscripted with a type, stands for that type. Those
-declarations live in `_checkers`, behind `TYPE_CHECKING`, so the checks
-here are of two kinds. The first kind runs everywhere and makes sure the
-declarations cover the whole family and change nothing at run time. The
-second asks mypy and pyright themselves, and is skipped where either is
-not installed.
+A type checker never runs `Frozen[int]`, so it cannot know that the
+subscription stands for `Annotated[int, Frozen()]`: it reads `Frozen` as
+the class it is, which takes no type arguments. The "Type checkers"
+section of `docs/intro/fields.md` lists the spellings that both checkers
+accept instead. The tests here hold the page to what the checkers say:
+
+- `CLEAN` is every spelling the page recommends, and both checkers have
+  to accept it without a word and read the constructor it describes;
+- `MISREAD` is accepted, but read differently from what the class does,
+  and the page says how;
+- `REPORTED` is every spelling the page says a checker reports, so a
+  checker that starts accepting one is noticed and the page can change.
+
+Each checker is skipped where it is not installed. The versions pinned in
+`tests/requirements.txt` are the ones these messages were written against.
 """
-import ast
 import importlib.util
-import inspect
 import shutil
 import subprocess
 import sys
@@ -21,286 +26,260 @@ from pathlib import Path
 import pytest
 import typing_extensions as tx
 
-import bagof.magic
-import bagof.magic._checkers as checkers
-import bagof.magic._fields as fields
+CLEAN = textwrap.dedent('''
+    import typing
+    from typing import Optional
 
-# The markers whose call is the usual spelling, or which are never
-# complete without a value, stay classes to a checker too.
-_KEPT_AS_CLASSES = {
-    "Default", "Doc", "ShowIf", "HideIf", "HideIfNone", "HideIfDefault",
-    "Key", "Inherit", "Forget",
-}
+    from typing_extensions import Annotated, reveal_type
 
-
-def _checker_bindings() -> tx.Dict[str, str]:
-    """Each name the `TYPE_CHECKING` branch binds, and how it binds it:
-    "alias" for an `Annotated` alias, or the module it is imported from.
-    """
-    tree = ast.parse(inspect.getsource(checkers))
-    branch = next(
-        node for node in tree.body
-        if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.dump(node.test)
-    )
-    bound = {}
-    for node in branch.body:
-        if isinstance(node, ast.ImportFrom):
-            for name in node.names:
-                bound[name.asname or name.name] = (
-                    "." * node.level + (node.module or "")
-                )
-        else:
-            # Nothing but imports and assignments belongs in the branch.
-            assert isinstance(node, ast.Assign)
-            for target in node.targets:
-                assert isinstance(target, ast.Name)
-                bound[target.id] = (
-                    "alias" if _annotates_with(node.value, target.id) else ""
-                )
-    return bound
-
-
-def _annotates_with(value: ast.expr, marker: str) -> bool:
-    """Whether `value` is `tx.Annotated[T, _fields.<marker>]`: an alias
-    carrying its own marker, rather than a copy of a neighbour's.
-    """
-    if not (
-        isinstance(value, ast.Subscript)
-        and isinstance(value.value, ast.Attribute)
-        and value.value.attr == "Annotated"
-    ):
-        return False
-    return any(
-        isinstance(node, ast.Attribute) and node.attr == marker
-        and isinstance(node.value, ast.Name) and node.value.id == "_fields"
-        for node in ast.walk(value)
+    from bagof.magic import (
+        ConvertTo, Doc, Frozen, HideIfNone, Magic, Pin, field,
     )
 
 
-class TestNothingChangesWhenTheCodeRuns:
-
-    def test_the_family_is_listed_whole(self) -> None:
-        assert sorted(checkers.__all__) == sorted(fields.__all__)
-
-    @pytest.mark.parametrize("name", fields.__all__)
-    def test_each_name_is_the_same_object(self, name: str) -> None:
-        assert getattr(checkers, name) is getattr(fields, name)
-        assert getattr(bagof.magic, name) is getattr(fields, name)
-
-    def test_subscription_still_builds_annotated(self) -> None:
-        hint = bagof.magic.Frozen[int]
-        assert tx.get_origin(hint) is tx.Annotated
-        kind, marker = tx.get_args(hint)
-        assert kind is int
-        assert type(marker) is fields.Frozen
+    class Clean(Magic):
+        _x: int = field(alias="x")
+        _why: int = field(alias="why", default=0)
+        frozen: Annotated[int, Frozen()] = 0
+        documented: Annotated[int, Doc("how many")] = 0
+        pinned: Annotated[str, Pin("classvar")] = ""
+        hidden: Annotated[Optional[int], HideIfNone()] = None
+        converted: Annotated[int, ConvertTo()] = 0
+        retries: int = 3
+        items: list = field(factory=list)
+        named: int = field(kw_only=True)
+        shared: typing.ClassVar[int] = 0
 
 
-class TestTheCheckerDeclarationsCoverTheFamily:
+    reveal_type(Clean.__init__)
+    reveal_type(Clean(1, 2, named=3).frozen)
+    Clean(x=1, why=2, named=3)
+    Clean(1, named=3)
+''')
 
-    def test_the_package_binds_the_checker_declarations_last(self) -> None:
-        # Both checkers follow `_magic`'s `__all__` too, and keep
-        # whichever star import comes last. pyright keeps the class when
-        # `_magic` comes after `_checkers`, so the order is checked here
-        # as well, where it does not depend on pyright being installed.
-        tree = ast.parse(inspect.getsource(bagof.magic))
-        starred = [
-            node.module for node in tree.body
-            if isinstance(node, ast.ImportFrom)
-            and any(name.name == "*" for name in node.names)
-        ]
-        assert starred[-1] == "_checkers"
-        assert starred.index("_magic") < starred.index("_checkers")
+MISREAD = textwrap.dedent('''
+    from typing_extensions import Annotated, reveal_type
 
-    def test_an_alias_needs_its_own_marker(self) -> None:
-        own = ast.parse("tx.Annotated[T, _fields.Frozen]").body[0]
-        other = ast.parse("tx.Annotated[T, _fields.Kw]").body[0]
-        bare = ast.parse("_fields.Frozen").body[0]
-        assert isinstance(own, ast.Expr)
-        assert isinstance(other, ast.Expr)
-        assert isinstance(bare, ast.Expr)
-        assert _annotates_with(own.value, "Frozen")
-        assert not _annotates_with(other.value, "Frozen")
-        assert not _annotates_with(bare.value, "Frozen")
-
-    @pytest.mark.parametrize("name", fields.__all__)
-    def test_each_name_is_declared_for_a_checker(self, name: str) -> None:
-        # A marker added to `_fields` and forgotten here would reach a
-        # checker as the class, and `Marker[int]` would be reported.
-        assert name in _checker_bindings()
-
-    @pytest.mark.parametrize("name", fields.__all__)
-    def test_each_marker_is_an_alias_unless_kept(self, name: str) -> None:
-        how = _checker_bindings()[name]
-        if name == "ClassVar":
-            assert how == "typing_extensions"
-        elif name == "InitVar":
-            assert how == "dataclasses"
-        elif name in _KEPT_AS_CLASSES or not isinstance(
-            getattr(fields, name), type
-        ) or name == "Field":
-            assert how == "._fields"
-        else:
-            assert how == "alias"
+    from bagof.magic import Alias, Factory, KwOnly, Magic
 
 
-# Every marker that a checker reads as an alias, written as a field.
-_ALIASED = sorted(
-    name for name, how in _checker_bindings().items() if how == "alias"
-)
+    class Misread(Magic):
+        items: Annotated[list, Factory()]
+        _y: Annotated[int, Alias("why")] = 0
+        later: Annotated[int, KwOnly()] = 0
 
-FIXTURE = (
-    "from typing import Optional\n"
-    "from typing_extensions import Annotated, reveal_type\n"
-    "from bagof.magic import (\n"
-    "    ClassVar, Default, Doc, Field, Forget, HideIf, HideIfDefault,\n"
-    "    HideIfNone, Inherit, InitVar, Key, Magic, ShowIf,\n"
-    + "".join(f"    {name},\n" for name in _ALIASED)
-    + ")\n\n\n"
-    "class Every(Magic):\n"
-    + "".join(
-        f"    {name.lower()}: {name}[int] = 0\n"
-        for name in _ALIASED
+
+    reveal_type(Misread.__init__)
+''')
+
+# Each line here is one spelling a checker reports; `{}` marks where the
+# line is looked for in the checkers' output.
+REPORTED = textwrap.dedent('''
+    from typing_extensions import Annotated
+
+    from bagof.magic import (
+        Alias, ClassVar, ConvertTo, Default, Doc, Frozen, Inherit, KwOnly,
+        Magic, Pin,
     )
-    + textwrap.dedent('''
-        reveal_type(Every().frozen)
-        Every(frozen="nope")
 
 
-        class Standard(Magic):
-            first: int
-            shared: ClassVar[str] = "s"
-            passed: InitVar[int] = 0
+    class Reported(Magic):
+        frozen: Frozen[int] = 0
+        alias: Alias[int, "why"] = 0
+        default: Default[int, 3] = 3
+        pin: Pin[str, "classvar"] = ""
+        doc: Doc[int, "how many"] = 0
+        shared: ClassVar[int] = 0
+        named: KwOnly[int] = 0
 
 
-        Standard(1, 2)
+    class Base(Magic):
+        x: int = 0
 
 
-        class Kept(Magic):
-            doc: Annotated[int, Doc("how many")] = 0
-            default: Annotated[int, Default(3)] = 3
-            hidden: Annotated[Optional[int], HideIfNone()] = None
-            keyed: Annotated[int, Key("k", ShowIf(bool))] = 0
-            unset: Annotated[int, HideIf(bool), HideIfDefault()] = 0
-            named: Annotated[int, Field(alias="why")] = 0
-            inherited: Annotated[int, Inherit()] = 0
-            gone: Annotated[int, Forget()] = 0
+    class Changed(Base):
+        x: ... = Inherit(frozen=True)
 
 
-        reveal_type(Kept().doc)
-    ''')
-)
+    class Converts(Magic):
+        n: Annotated[int, ConvertTo()] = 0
 
 
-def _clean(said: str) -> tx.List[str]:
-    """The diagnostics, without the file's path in front of them."""
+    Converts(n="3")
+''')
+
+_REPORTED_BY_BOTH = [
+    "frozen: Frozen[int]",
+    'alias: Alias[int, "why"]',
+    "default: Default[int, 3]",
+    'pin: Pin[str, "classvar"]',
+    'doc: Doc[int, "how many"]',
+    "shared: ClassVar[int]",
+    "named: KwOnly[int]",
+    'Converts(n="3")',
+]
+
+_REPORTED_BY_MYPY_ONLY = "x: ... = Inherit(frozen=True)"
+
+
+def _line(source: str, text: str) -> int:
+    """The number of the line of `source` that holds `text`."""
+    numbers = [
+        number for number, line in enumerate(source.splitlines(), 1)
+        if text in line
+    ]
+    assert len(numbers) == 1, text
+    return numbers[0]
+
+
+def _said(command: tx.List[str], where: Path, name: str) -> tx.List[str]:
+    """What a checker said about one file, one line per diagnostic, each
+    starting with its line number."""
+    result = subprocess.run(
+        command + [name], capture_output=True, text=True, cwd=str(where)
+    )
+    said = []
+    for line in result.stdout.splitlines():
+        if f"{name}:" in line:
+            said.append(line.split(f"{name}:", 1)[1])
+    return said
+
+
+def _errors_on(said: tx.List[str], number: int) -> tx.List[str]:
     return [
-        line.split("fixture.py", 1)[1] for line in said.splitlines()
-        if "fixture.py:" in line
+        line for line in said
+        if line.startswith(f"{number}:") and "error" in line
     ]
 
 
+def _errors(said: tx.List[str]) -> tx.List[str]:
+    return [line for line in said if " error" in line]
+
+
+_Said = tx.Callable[[tx.List[str], str], tx.List[str]]
+
+
 @pytest.fixture(scope="module")
-def fixture_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+def check(tmp_path_factory: pytest.TempPathFactory) -> _Said:
+    """Run a checker on one of the sources, once per module."""
     where = tmp_path_factory.mktemp("checkers")
-    (where / "fixture.py").write_text(FIXTURE)
-    return where
+    for name, source in [
+        ("clean.py", CLEAN), ("misread.py", MISREAD),
+        ("reported.py", REPORTED),
+    ]:
+        (where / name).write_text(source)
+    seen: tx.Dict[tx.Tuple[str, str], tx.List[str]] = {}
+
+    def said(command: tx.List[str], name: str) -> tx.List[str]:
+        key = (command[0], name)
+        if key not in seen:
+            seen[key] = _said(command, where, name)
+        return seen[key]
+
+    return said
 
 
-@pytest.fixture(scope="module")
-def mypy_said(fixture_dir: Path) -> tx.List[str]:
-    result = subprocess.run(
-        [
-            sys.executable, "-m", "mypy",
-            "--no-error-summary", "--follow-imports=silent",
-            "--no-incremental", "fixture.py",
-        ],
-        capture_output=True, text=True, cwd=str(fixture_dir),
-    )
-    return _clean(result.stdout)
+_MYPY = [
+    sys.executable, "-m", "mypy",
+    "--no-error-summary", "--follow-imports=silent", "--no-incremental",
+]
+_PYRIGHT = ["pyright", "--pythonpath", sys.executable]
 
-
-@pytest.fixture(scope="module")
-def pyright_said(fixture_dir: Path) -> tx.List[str]:
-    result = subprocess.run(
-        ["pyright", "--pythonpath", sys.executable, "fixture.py"],
-        capture_output=True, text=True, cwd=str(fixture_dir),
-    )
-    return _clean(result.stdout)
-
-
-@pytest.mark.skipif(
+_skip_mypy = pytest.mark.skipif(
     importlib.util.find_spec("mypy") is None, reason="mypy is not installed"
 )
-class TestMypy:
-
-    def test_a_marker_stands_for_its_type(
-        self, mypy_said: tx.List[str]
-    ) -> None:
-        # Older releases of mypy spell it `builtins.int`.
-        assert any(
-            line.endswith(('Revealed type is "int"',
-                           'Revealed type is "builtins.int"'))
-            for line in mypy_said
-        )
-
-    def test_the_type_is_checked(self, mypy_said: tx.List[str]) -> None:
-        assert any(
-            'incompatible type "str"; expected "int"' in line
-            for line in mypy_said
-        )
-
-    def test_class_variables_and_init_variables(
-        self, mypy_said: tx.List[str]
-    ) -> None:
-        # `Standard(1, 2)` is accepted: `shared` is not a parameter, so
-        # the 2 goes to `passed`.
-        assert not any("Standard" in line for line in mypy_said)
-
-    def test_nothing_else_is_reported(self, mypy_said: tx.List[str]) -> None:
-        errors = [line for line in mypy_said if ": error:" in line]
-        assert len(errors) == 1, mypy_said
-
-
-@pytest.mark.skipif(
+_skip_pyright = pytest.mark.skipif(
     shutil.which("pyright") is None, reason="pyright is not installed"
 )
+
+
+class TestTheSpellingsRun:
+    """What the page recommends does what it says when the code runs."""
+
+    def test_the_clean_spellings(self) -> None:
+        namespace: tx.Dict[str, tx.Any] = {}
+        exec(CLEAN.split("reveal_type(")[0], namespace)
+        clean = namespace["Clean"](x=1, why=2, named=3)
+        assert (clean._x, clean._why, clean.named) == (1, 2, 3)
+        assert clean.items == []
+        assert namespace["Clean"](x=1, converted="4", named=0).converted == 4
+        assert namespace["Clean"].shared == 0
+        with pytest.raises(TypeError):
+            namespace["Clean"](1, 2, 3)
+        with pytest.raises(TypeError):
+            namespace["Clean"](x=1, why=2, named=3, shared=4)
+
+    def test_the_misread_spellings(self) -> None:
+        # What a checker misses: the factory gives a default, the input
+        # name is `why`, and `later` is keyword-only.
+        namespace: tx.Dict[str, tx.Any] = {}
+        exec(MISREAD.split("reveal_type(")[0], namespace)
+        misread = namespace["Misread"](why=1, later=2)
+        assert (misread.items, misread._y, misread.later) == ([], 1, 2)
+
+
+@_skip_mypy
+class TestMypy:
+
+    def test_the_clean_spellings_are_accepted(
+        self, check: _Said
+    ) -> None:
+        said = check(_MYPY, "clean.py")
+        assert _errors(said) == [], said
+        init = next(line for line in said if "Revealed type is \"def" in line)
+        assert "x: builtins.int, why: builtins.int =," in init
+        assert "items: builtins.list[Any] =" in init
+        assert "*, named: builtins.int" in init
+        assert "shared" not in init
+        assert any(
+            line.endswith('Revealed type is "builtins.int"') for line in said
+        )
+
+    def test_the_misread_spellings(self, check: _Said) -> None:
+        said = check(_MYPY, "misread.py")
+        assert _errors(said) == [], said
+        init = next(line for line in said if "Revealed type is" in line)
+        assert "items: builtins.list[Any]," in init
+        assert "_y: builtins.int =" in init
+        assert "*" not in init
+
+    @pytest.mark.parametrize(
+        "text", _REPORTED_BY_BOTH + [_REPORTED_BY_MYPY_ONLY]
+    )
+    def test_reported(self, check: _Said, text: str) -> None:
+        said = check(_MYPY, "reported.py")
+        assert _errors_on(said, _line(REPORTED, text)), said
+
+
+@_skip_pyright
 class TestPyright:
 
-    def test_a_marker_stands_for_its_type(
-        self, pyright_said: tx.List[str]
+    def test_the_clean_spellings_are_accepted(
+        self, check: _Said
     ) -> None:
-        said = "\n".join(pyright_said)
-        assert '"Every().frozen" is "int"' in said
-        assert '"Kept().doc" is "int"' in said
+        said = check(_PYRIGHT, "clean.py")
+        assert _errors(said) == [], said
+        init = next(line for line in said if '"Clean.__init__"' in line)
+        assert "(self: Clean, x: int, why: int = 0," in init
+        assert "items: list[Unknown] = list" in init
+        assert "*, named: int)" in init
+        assert "shared" not in init
+        assert any('.frozen" is "int"' in line for line in said)
 
-    def test_the_type_is_checked(self, pyright_said: tx.List[str]) -> None:
-        assert any(
-            '"Literal[\'nope\']" cannot be assigned to parameter "frozen"'
-            in line for line in pyright_said
-        )
+    def test_the_misread_spellings(self, check: _Said) -> None:
+        said = check(_PYRIGHT, "misread.py")
+        assert _errors(said) == [], said
+        init = next(line for line in said if '"Misread.__init__"' in line)
+        assert "items: list[Unknown]," in init
+        assert "_y: int = 0" in init
+        assert "*" not in init
 
-    def test_a_class_variable_is_still_a_parameter(
-        self, pyright_said: tx.List[str]
-    ) -> None:
-        # pyright leaves a class variable out of the constructor only
-        # when `ClassVar` is imported from `typing` itself, in the same
-        # file; the one `bagof.magic` hands on is read as the type alone.
-        # The docs say so. If a later pyright follows the re-export, this
-        # fails when the pinned version in the test requirements is
-        # raised, and the docs can stop saying so.
-        assert any(
-            'parameter "shared" of type "str"' in line
-            for line in pyright_said
-        )
+    @pytest.mark.parametrize("text", _REPORTED_BY_BOTH)
+    def test_reported(self, check: _Said, text: str) -> None:
+        said = check(_PYRIGHT, "reported.py")
+        assert _errors_on(said, _line(REPORTED, text)), said
 
-    def test_nothing_else_is_reported(
-        self, pyright_said: tx.List[str]
-    ) -> None:
-        # The two expected errors are the ones the tests above look for;
-        # anything else is a marker pyright does not read as its type.
-        errors = [
-            line for line in pyright_said
-            if " - error:" in line
-            and '"frozen"' not in line and '"shared"' not in line
-        ]
-        assert errors == [], pyright_said
+    def test_inherit_with_no_type_is_accepted(self, check: _Said) -> None:
+        said = check(_PYRIGHT, "reported.py")
+        number = _line(REPORTED, _REPORTED_BY_MYPY_ONLY)
+        assert _errors_on(said, number) == [], said

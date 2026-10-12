@@ -363,7 +363,7 @@ writing the same change. The three classes below are equivalent:
         value: Inherit[..., Field(frozen=True)]
     ```
 
-From Python 3.12, `value: Annotated[..., Field(frozen=True)]` is a fourth equivalent
+From Python 3.12, `value: Annotated[..., Frozen()]` is a fourth equivalent
 spelling. Older versions of `Annotated` refuse `...` as a type, so code
 that has to run on those versions uses one of the spellings above.
 
@@ -546,75 +546,46 @@ override, [Conversion and validation](conversion.md) for `ConvertTo` and
 `Validate`, and [Aliases and properties](aliases.md) for `Alias`,
 `Property` and `ReadOnlyProperty`.
 
-## What a type checker sees
+## Type checkers
 
-mypy and pyright read an annotation from this family as the type in its
-brackets. A checker reads `count: Frozen[int] = 0` as `count: int = 0`, so
-the constructor takes an `int` for `count` and `obj.count` is an `int`.
-This holds for every annotation in the table above that is written with a
-type alone, such as `KwOnly[int]`, `ConvertTo[int]`, `NoRepr[str]` or
-`Narrow[str]`, and for annotations nested inside one another.
+Type checkers such as mypy and pyright read the code without running it.
+The annotations in this family are classes, and writing one with a type
+in brackets, as in `Frozen[int]`, only becomes `Annotated[int, Frozen()]`
+when the code runs. A checker therefore reports `Frozen[int]` as a class
+that takes no type arguments, although the class works as described above.
 
-The checker sees the type, but not what the annotation does to the class.
-A field written as `KwOnly[int]` or `NoInit[int]` is still an ordinary
-parameter to a checker. The exceptions are `ClassVar` and `InitVar`, which
-mypy reads as the standard `ClassVar` and `InitVar`, so a class variable is
-left out of the constructor. pyright recognises those two only when they
-are imported from `typing` and `dataclasses`, and otherwise reads them as
-the type alone.
+Each setting has a spelling that both checkers accept. In most cases the
+annotation is called inside `Annotated`, or the setting is given to
+`field(...)` as the default:
 
-Two consequences of this are worth knowing. A field written as
-`items: Factory[list]` with no default is still a required argument to a
-checker, because the checker does not know that a factory builds the
-default. Writing `items: list = field(factory=list)` instead gives the
-same field, and both checkers accept a call that leaves it out. Similarly,
-a field written as `n: ConvertTo[int]` accepts only an `int` to a checker,
+| Reported by a checker | Accepted by both |
+| --- | --- |
+| `x: Frozen[int] = 0`, and any other annotation with a type in brackets | `x: Annotated[int, Frozen()] = 0` |
+| `n: Alias[int, "why"] = 0` | `n: int = field(alias="why", default=0)` |
+| `n: Default[int, 3]` | `n: int = 3` |
+| `n: Pin[str, "classvar"]`, `n: Doc[int, "..."]` | `n: Annotated[str, Pin("classvar")]`, `n: Annotated[int, Doc("...")]` |
+| `items: Factory[list]`, read as having no default | `items: list = field(factory=list)` |
+| `n: KwOnly[int]`, read as positional | `n: int = field(kw_only=True)` |
+| `n: ClassVar[int] = 0`, with `ClassVar` from `bagof.magic` | `n: typing.ClassVar[int] = 0` |
+
+The class treats `typing.ClassVar` exactly as it treats the `ClassVar` of
+this family, so the last row changes nothing when the code runs.
+
+`Annotated` does not help with every setting, because a checker accepts
+the annotation but does not know what it does. A checker reads
+`items: Annotated[list, Factory()]` as a field with no default, and reads
+`n: Annotated[int, KwOnly()]` as a parameter that can be passed by
+position. A checker also reads `_n: Annotated[int, Alias("why")]` as a
+parameter named `_n`, so an input name has to be given with
+`field(alias=...)` for a checker to know it. The same applies to a field
+whose name starts with an underscore, which is described under
+[Aliases and properties](aliases.md#fields-that-start-with-an-underscore).
+
+A checker reads a setting given in `Annotated` as the type alone, so the
+constructor still takes an `int` for `x: Annotated[int, ConvertTo()]`,
 although the class converts any value that `int()` accepts.
 
-Because each of these annotations is a type alias to a checker,
-`isinstance(x, Frozen)` is reported by both checkers.
-
-A checker reports an annotation that carries a value after the type, such
-as `Alias[str, "label"]`, `Default[int, 3]`, `Doc[int, "..."]`,
-`Pin[str, "classvar"]`, `Repr[float, fn]`, `ShowIf[int, bool]` or
-`Inherit[..., "x"]`, because the value is not a type. The class still
-works. For code that a checker accepts, write the type alone and give the
-setting to `Field(...)` inside `Annotated`, or write a default as an
-ordinary default:
-
-=== "Accepted by a checker"
-
-    ```python
-    from typing_extensions import Annotated
-
-    from bagof.magic import Field, Magic
-
-    class Item(Magic):
-        label: Annotated[str, Field(alias="name")] = ""
-        retries: Annotated[int, Field(doc="how many times to retry")] = 3
-        price: Annotated[float, Field(repr="{:.2f}".format)] = 0.0
-    ```
-
-=== "Reported by a checker"
-
-    ```python
-    from bagof.magic import Alias, Default, Doc, Magic, Repr
-
-    class Item(Magic):
-        label: Alias[str, "name"] = ""
-        retries: Doc[Default[int, 3], "how many times to retry"]
-        price: Repr[float, "{:.2f}".format] = 0.0
-    ```
-
-`Default`, `Doc`, `ShowIf`, `HideIf`, `HideIfNone`, `HideIfDefault`, `Key`,
-`Inherit` and `Forget` are usually written as calls or on their own, as in
-`Annotated[int, Doc("...")]`, `repr=HideIfNone()` and `= Inherit("x")`,
-and a checker accepts them in those places. A checker reports them when
-they are written with a type in brackets, as in `HideIfNone[int]`. The
-other annotations work the other way round: a checker accepts them with a
-type in brackets. pyright also reports a call such as `Frozen()`, which
-mypy accepts; `Field(frozen=True)` is the equivalent that both checkers
-accept.
-
-mypy also reports `...` used as the type, as in `x: Frozen[...]`, while
-pyright accepts it.
+Neither checker can express a field that is built from an inherited one.
+mypy reports `...` as a type, in `x: Frozen[...]` and in
+`x: ... = Inherit(frozen=True)` alike, while pyright accepts the second
+spelling.
