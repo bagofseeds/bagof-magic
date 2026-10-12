@@ -652,19 +652,36 @@ A plain redeclaration still replaces the inherited field wholesale, as
 in all three neighbours. `Inherit` (the `inherit` slot set to `True` or
 a name) asks for the other thing, and so does a field whose type is
 `...`: that rule lives in the builder (`_is_inherited_type`), not in the
-markers, so it covers `x: ... = 5`, `Annotated[..., X()]` on 3.12+ and
-text alike. `Annotated` refuses `...` before 3.12, so every family
-`__class_getitem__` builds through `_annotated` in `_fields.py`, which
-puts `_InheritedType` in its place; that class claims to live in
+markers, so it covers `x: ... = 5`, `x: ... = Inherit(frozen=True)`,
+`Annotated[..., X()]` on 3.12+ and text alike. The docs lead with
+`Inherit` as the value (`_x: ... = Inherit("x")`), because a linter
+reads the `"x"` in `Inherit[..., "x"]` as a forward reference (F821).
+
+**The placeholder.** `Annotated` refuses `...` before 3.12, so every
+family `__class_getitem__` builds through `_annotated` in `_fields.py`,
+which puts `_InheritedType` in its place; that class claims to live in
 `builtins` under the name `...`, so `typing` prints it as `...`.
 `_read_annotation` does the same for `Annotated[..., X()]` read back
-from text.
+from text. Its cost is that the class's own annotations would carry it:
+`get_type_hints` returned it as the type on 3.9+, and the hints could
+not be pickled. `_replace_annotations` therefore writes each inheriting
+field's annotation back with the inherited type in its place
+(`_with_type`) -- into `__annotations__` up to 3.13, and on 3.14 as an
+`__annotations__` entry in the namespace, which wins over
+`__annotate__` (the STRING format still shows `...`). Only classes with
+such a field are touched.
+
+**`Inherit(True)` and `Inherit(False)` are refused.** The first
+positional argument is a field name; a boolean there would silently
+mean "this field" or "forget it", which `Inherit()` and `Forget` say.
 
 - **What the field is built from.** `_inherited_source` finds the
   inherited field (its own name for a patch, the given stored name for a
   take-over, never a public name) and refuses what cannot be one. It
-  also catches `Inherit["x"]` -- a type, by the family's rule -- when
-  `"x"` is an inherited field and not a name in the module.
+  also catches `Inherit["x"]` -- a type, by the family's rule -- but
+  only when the text is exactly a field name (this field's, or an
+  inherited field's stored or public name) and names nothing in the
+  module; any other text is an ordinary forward reference.
 - **The merge** (`_inherit_field`). The annotation's own family members
   are merged first, as for any field, so `Inherit` is where the field
   starts rather than one more value in that merge and its order among
@@ -676,12 +693,18 @@ from text.
   *this* class's options and hints -- so a step that came from the type
   or the options is worked out again, and a callable passes through.
   `REQUIRED` as the default drops the inherited default and factory.
-  A registration's narrowing is not part of a declaration: `_narrowed_by`
-  is carried, and re-chained after a validator the patch replaces.
+- **Narrowing.** A registration's narrowing is not part of a
+  declaration. The first narrowing records what the field declared for
+  its validator before it (`_unnarrowed`); a field built from a narrowed
+  one starts its validator from that, so a new type gets its own, and
+  `_chain_narrowing` puts the same parts back on after it.
 - **Settled answers are declarations.** For a patch to keep a pinned
   discriminant or a mutable default promoted to a factory, those are
   written with `_redeclare` (`_pin_discriminant`,
-  `_handle_mutable_default`, which also drops the declared default).
+  `_handle_mutable_default`, which also drops the declared default). A
+  patch that writes no default is not a field the class "writes out
+  itself" for `_pin_plan` (`writes_out`), so a registration on the same
+  class pins it.
 - **Place.** A patch keeps its place; a take-over is renamed in place.
   `position=False` drops the inherited entry and adds the field like a
   new one (so `reverse` applies). The class is marked `_PLACED`, and the
@@ -689,18 +712,34 @@ from text.
   base's order after merging it -- without that, a subclass of a
   take-over class rebuilt the order from the grandparent, which had
   lost the field, and put the new one last.
-- **A take-over is a removal.** The source goes into `removed` and
-  `_FORGOTTEN`, so the hidden keyword parameter, the per-call dispatch
-  refusal and the diamond rule all apply unchanged; `_TAKEN_OVER`
-  (`{"x": "_x"}`) only changes what the messages say (`_removal`,
-  `how_removed`). `_refused` counts a positional slot as present when a
-  field of the target takes the lacking field's public name.
+- **A take-over is a removal, and a holder.** The source goes into
+  `removed` and `_FORGOTTEN`, so the hidden keyword parameter, the
+  per-call dispatch refusal and `Forget`'s diamond rule all apply;
+  `_TAKEN_OVER` (`{"x": "_x"}`) changes what the messages say
+  (`_removal`, `how_removed`) and one more thing: in a diamond, a copy
+  of `x` that only inherits the declaration the take-over started from
+  (`_taken_over_sources`, `_inherits_declaration`, both reading each
+  class's own `__magic_declared__`) is hidden, since the take-over
+  holds that field now. A sibling that declares `x` itself still
+  clashes, and `_check_public_names` then names the take-over.
+  `_refused` counts a positional slot as present when a field of the
+  target takes the lacking field's public name.
+- **The kept public name reads the field.** A take-over that keeps the
+  source's public name gets a `ForwardingProperty` under it
+  (`_take_over_forwards`, read-only on a frozen field), made again by
+  every class holding the field. What the class body binds under the
+  name wins, and so does what a class already holding the take-over
+  bound there; only what the classes above it left (a default, a pinned
+  value, a slot) is covered over.
 - **Discriminants.** A take-over that keeps the public name is allowed;
   one that changes it is refused when `_chooses_by` finds a class up the
   chain that registered on the field or holds a registry entry that
-  reads it. A subclass of the take-over class that writes `on=` registers
-  with the levels that have the new stored name (the take-over class),
-  not with the ones above it.
+  reads it. A spec names the field by the registering class's stored
+  name; `field_for` finds it in another class's table by its public
+  name (`_Spec.label`) when the stored name is not there, and each
+  owner is registered with the spec renamed to its own stored name
+  (`for_owner`), so the classes above a take-over still dispatch to the
+  ones below it.
 
 ## Conventions specific to this repo (do not regress)
 
@@ -803,8 +842,9 @@ consensus:
   own settings replace the inherited ones (no chaining), and a take-over
   keeps the source's public name and place unless told otherwise.
   Checkers cannot express either (PEP 681), and linters read the field
-  name in `Inherit[..., "x"]` as an undefined type; the docs show
-  `field(inherit="x")` as the lint-clean spelling.
+  name in `Inherit[..., "x"]` as an undefined type; the docs lead with
+  `_x: ... = Inherit("x")`, and say to add `# noqa: F821` to the line
+  rather than turn F821 off project-wide.
 
 ## Documentation style (`README.md`, `docs/*.md`, public docstrings)
 

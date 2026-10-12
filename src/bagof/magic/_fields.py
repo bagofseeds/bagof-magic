@@ -1968,35 +1968,42 @@ class Inherit(AnnotatedField):
     A field that a subclass declares again normally replaces the
     inherited field completely, so the default, the aliases and every
     other setting written in the base class are lost. `Inherit` keeps
-    them instead. The field starts from what the base class declared and
-    changes only what the annotation says again. A type written as `...`
-    has the same meaning, so `x: Frozen[...]` makes the inherited field
-    `x` frozen and leaves the rest of it alone, and `x: ... = 5` changes
-    nothing but its default. Any other type replaces the inherited type,
-    and a converter, validator or factory that was worked out from the
-    old type is worked out again from the new one. A default of
-    `REQUIRED` removes the inherited default.
+    them instead. Written as the value of a field whose type is `...`,
+    as in `x: ... = Inherit(frozen=True)`, it starts the field from what
+    the base class declared and changes only the settings it is given.
+    `Inherit` accepts every keyword that `Field` accepts. A plain value
+    after `...`, as in `x: ... = 5`, changes nothing but the default, and
+    a default of `REQUIRED` removes the inherited default.
 
-    Given the name of another inherited field, `Inherit` takes that field
-    over. The inherited field leaves the class, and the annotated field
-    starts from the inherited field's declaration, its public name and
-    its place in the constructor. The usual reason to take a field over
-    is to store the value under a private name behind a property that
-    keeps the public one. The public name can be changed with `alias=`,
-    and `position=False` places the field where it is written in the
-    class body rather than where the inherited field was.
+    Given the name of another inherited field, as in
+    `_x: ... = Inherit("x")`, `Inherit` takes that field over. The
+    inherited field leaves the class, and the new field starts from the
+    inherited field's declaration, its public name and its place in the
+    constructor. The class also receives a property under the public
+    name that reads and assigns the new field, unless the class body
+    defines something under that name itself. The public name can be
+    changed with `alias=`, in which case no property is made, and
+    `position=False` places the field where it is written in the class
+    body rather than where the inherited field was.
 
-    As for every annotation in the family, the first argument in the
-    brackets is the type. `Inherit[..., "x"]` therefore keeps the
-    inherited type and takes over `x`, while `Inherit["Node"]` changes
-    the type to the class `Node`. The call form takes the name of the
-    field to take over as its first argument, followed by any keyword
-    that `Field` accepts, as in `Inherit("x", alias=False)`.
+    `Inherit` can also be written in the brackets of an annotation, where
+    the first argument is the type, as for every annotation in the
+    family. `x: Inherit[float]` keeps the inherited field but gives it a
+    new type, and a converter, validator or factory that was worked out
+    from the old type is worked out again from the new one.
+    `Inherit["Node"]` is read as a forward reference to a class named
+    `Node`. `Inherit[..., "x"]` keeps the inherited type and takes over
+    `x`. Linters such as Ruff and Pyflakes read the string `"x"` in that
+    annotation as a forward reference and report it as an undefined name
+    (F821), so code that a linter checks either adds `# noqa: F821` to the
+    line or writes `Inherit` as the value instead.
 
-    Spellings such as `Frozen[...]` and `Inherit[..., "x"]` work on every
-    supported version of Python. Writing `Annotated[..., Frozen()]` by
-    hand works only from Python 3.12, because older versions of
-    `Annotated` refuse `...` as a type.
+    Every other annotation in the family accepts `...` as its type in the
+    same way, so `x: Frozen[...]` is another spelling of
+    `x: ... = Inherit(frozen=True)`. These spellings work on every
+    supported version of Python, whereas `Annotated[..., Frozen()]`
+    written by hand works only from Python 3.12, because older versions
+    of `Annotated` refuse `...` as a type.
 
     !!! example "How it lowers"
         ```pycon
@@ -2017,7 +2024,7 @@ class Inherit(AnnotatedField):
         ...     y: int = 0
         ...
         >>> class Pinned(Point):
-        ...     x: Frozen[...]
+        ...     x: ... = Inherit(frozen=True)
         ...     y: ... = 1
         ...
         >>> Pinned()
@@ -2030,16 +2037,14 @@ class Inherit(AnnotatedField):
         ...     balance: int = 0
         ...
         >>> class Audited(Account):
-        ...     _balance: Inherit[..., "balance"]
-        ...
-        ...     @property
-        ...     def balance(self):
-        ...         return self._balance
+        ...     _balance: ... = Inherit("balance")
         ...
         >>> Audited(10)
         Audited(balance=10)
         >>> Audited(10).balance
         10
+        >>> [f.name for f in fields(Audited)]
+        ['_balance']
         ```
     """
 
@@ -2075,6 +2080,9 @@ class Inherit(AnnotatedField):
         )
 
 
+# Bound again here, with a docstring, so that the API reference lists it
+# among the field annotations: the name is imported from `_constants`
+# and is public from this module. Not a mistake to tidy away.
 REQUIRED = REQUIRED
 """A default that says the field has none.
 

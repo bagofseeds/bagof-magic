@@ -305,9 +305,9 @@ When a subclass declares a field again, the new declaration replaces the
 inherited field completely, and the default, the aliases and every other
 setting written in the base class are lost. `dataclasses`, `attrs` and
 `pydantic` behave in the same way. A subclass that wants to change only
-part of an inherited field writes `...` in place of the type, and the field
-then keeps everything that the base class declared for it except what the
-new annotation says again:
+part of an inherited field writes `...` in place of the type and gives the
+changes to `Inherit` as its value. The field then keeps everything that
+the base class declared for it, except what `Inherit` says again:
 
 ```python
 class Reading(Magic):
@@ -315,7 +315,7 @@ class Reading(Magic):
     unit: Doc[str, "The unit the value is measured in."] = "m"
 
 class Locked(Reading):
-    value: Frozen[...]
+    value: ... = Inherit(frozen=True)
     unit: ... = "cm"
 ```
 
@@ -331,26 +331,26 @@ AttributeError: Cannot set frozen field 'value'
 
 In `Locked`, the field `value` becomes frozen and keeps its type and its
 default, while the field `unit` receives a new default and keeps its type
-and its documentation. Every annotation in the family accepts `...` as its
-type in the same way, and a bare `...` with a value changes nothing but the
-default. A default of `REQUIRED` removes the inherited default, so that the
-field has to be passed.
+and its documentation. A plain value after `...` changes nothing but the
+default, and a default of `REQUIRED` removes the inherited default, so
+that the field has to be passed.
 
-The annotation behind these spellings is `Inherit`, which can be written
-on its own. The three classes below are equivalent:
+`Inherit` accepts every keyword that `Field` accepts. Every annotation in
+the family also accepts `...` as its type, which gives a second way of
+writing the same change. The three classes below are equivalent:
 
-=== "`...`"
+=== "`Inherit` as the value"
 
     ```python
     class LockedA(Reading):
-        value: Frozen[...]
+        value: ... = Inherit(frozen=True)
     ```
 
-=== "`Inherit` with a field"
+=== "An annotation of the family"
 
     ```python
     class LockedB(Reading):
-        value: Inherit[...] = field(frozen=True)
+        value: Frozen[...]
     ```
 
 === "`Inherit` with metadata"
@@ -362,7 +362,7 @@ on its own. The three classes below are equivalent:
 
 From Python 3.12, `value: Annotated[..., Frozen()]` is a fourth equivalent
 spelling. Older versions of `Annotated` refuse `...` as a type, so code
-that has to run on those versions uses the spellings above.
+that has to run on those versions uses one of the spellings above.
 
 A type other than `...` replaces the inherited type, as in
 `amount: Inherit[float]`. A converter, a validator or a factory that the
@@ -383,6 +383,10 @@ class Precise(Measure):
 Precise(amount=2.5)
 ```
 
+As for every annotation in the family, the first argument in the brackets
+is the type, so `Inherit["Node"]` is read as a forward reference to a
+class named `Node`, which is looked up when the field is first used.
+
 A setting that the new annotation gives replaces the inherited setting, and
 this applies to a converter or a validator as well, which is replaced
 rather than run after the inherited one. Any setting that neither the base
@@ -392,10 +396,9 @@ fields that `Sub` does not mention keep the behaviour they had in `Base`.
 
 ## Taking over an inherited field
 
-A subclass sometimes needs to store an inherited field under a private name
-and give access to the value through a property of the public name.
-`Inherit` takes over the inherited field when it is given the field's name
-after the type:
+A subclass sometimes needs to store an inherited field under a private name.
+`Inherit` takes over the inherited field when it is given the name of that
+field:
 
 ```python
 class Tile(Magic):
@@ -403,11 +406,7 @@ class Tile(Magic):
     colour: str = "grey"
 
 class CachedTile(Tile):
-    _size: Inherit[..., "size"]
-
-    @property
-    def size(self) -> int:
-        return self._size
+    _size: ... = Inherit("size")
 ```
 
 ```pycon
@@ -423,14 +422,34 @@ The inherited field `size` leaves the class in the same way as a forgotten
 field does, and the field `_size` starts from the declaration of `size`.
 The new field therefore keeps the type, the default, the public name and
 the place in the constructor of the field that it takes over, so
-`CachedTile(3)` means what `Tile(3)` means. Any of these can be changed in
-the same annotation: `alias=` gives the field another public name, and
-`position=False` places it where it is written in the class body instead
-of where the inherited field was.
+`CachedTile(3)` means what `Tile(3)` means. Because the public name is
+kept, the class also receives a property under that name, which reads and
+assigns `_size`. A property or any other attribute that the class body
+defines under the same name is kept instead, which is how the class can
+decide what reading `size` does:
+
+```python
+class LoudTile(Tile):
+    _size: ... = Inherit("size")
+
+    @property
+    def size(self) -> str:
+        return f"{self._size} tiles"
+```
+
+```pycon
+>>> LoudTile(3).size
+'3 tiles'
+```
+
+Any setting of the field can be changed in the same call. `alias=` gives
+the field another public name, in which case no property is made, and
+`position=False` places the field where it is written in the class body
+instead of where the inherited field was:
 
 ```python
 class Hidden(Tile):
-    _size: Inherit[..., "size", Field(alias=False, position=False)]
+    _size: ... = Inherit("size", alias=False, position=False)
 ```
 
 ```pycon
@@ -441,24 +460,15 @@ Traceback (most recent call last):
 TypeError: Hidden() got an argument 'size', but Hidden took that field over as '_size', so Hidden does not take it.
 ```
 
-As for every annotation in the family, the first argument in the brackets
-is the type, so `Inherit["size"]` would read `"size"` as the name of a
-type. When that name is not a type but the name of an inherited field, the
-class is refused with a message that points to `Inherit[..., "size"]`.
-
-Linters such as Ruff and Pyflakes read a string inside an annotation as the
-name of a type, and report `"size"` in `Inherit[..., "size"]` as an
-undefined name. The take-over can also be written as a default, which
-linters do not read in this way:
-
-```python
-class CachedTileB(Tile):
-    _size: ... = field(inherit="size")
-
-    @property
-    def size(self) -> int:
-        return self._size
-```
+The take-over can also be written in the brackets, as
+`_size: Inherit[..., "size"]`, where the name follows the type. Linters
+such as Ruff and Pyflakes read every string inside an annotation as a
+forward reference to a type, so they report `"size"` there as an
+undefined name (F821). Code that a linter checks either adds
+`# noqa: F821` to that line or uses the spelling with `Inherit` as the
+value; turning F821 off for a whole project would hide genuine mistakes.
+`_size: Annotated[int, Inherit("size")]` is also accepted by linters, at
+the cost of writing the type again.
 
 !!! warning "Type checkers still see the old field"
     Type checkers have no way of knowing that a field was changed or taken
