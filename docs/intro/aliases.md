@@ -113,5 +113,58 @@ Signatures show the preferred name, and constructor documentation lists
 alternatives. Static type checkers do not infer all accepted synonyms or
 generated properties from these annotations.
 
+## Fields that start with an underscore
+
+A field written as `_size` is passed to the constructor as `size`. The
+leading underscore is dropped from the input name, and the stored attribute
+keeps the underscore:
+
+```pycon
+>>> class Cached(Magic):
+...     _size: int
+>>> Cached(size=3)
+Cached(size=3)
+>>> Cached(_size=3)
+Traceback (most recent call last):
+TypeError: ...
+```
+
+Static type checkers do not know this rule. They follow the
+dataclass-transform convention, which takes each constructor parameter
+name from the attribute name, so pyright and mypy both expect
+`Cached.__init__` to accept `_size`. As a result, both checkers report an
+error on the correct call `Cached(size=3)`, and neither reports anything on
+`Cached(_size=3)`, even though that call raises a `TypeError` at runtime.
+
+Declaring the input name explicitly makes the checkers agree with the
+constructor. Both pyright and mypy honour the `alias` argument of `field`:
+
+```python
+from bagof.magic import Magic, field
+
+class Cached(Magic):
+    _size: int = field(alias="size")
+```
+
+With this declaration, both checkers show the constructor as taking `size`
+and report `Cached(_size=3)` as an unexpected keyword argument. At runtime
+nothing changes, because `size` was already the preferred input name.
+
+A class that would rather use the same name for the attribute and the
+constructor argument can set `alias=False` on the class statement. The
+underscore is then kept in the input name, and both checkers agree with the
+constructor without further help:
+
+```pycon
+>>> class Kept(Magic, alias=False):
+...     _size: int
+>>> Kept(_size=3)
+Kept(_size=3)
+```
+
+Writing `alias=False` on a single field, as in `field(alias=False)`, has the
+same effect at runtime, but mypy rejects it because it expects the `alias`
+argument of a field to be a string.
+
 See [Settings](settings.md) for the `alias` and `property` class settings,
 and [Extras](extras.md) for `mapping`, which these aliases also feed into.
