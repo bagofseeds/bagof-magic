@@ -173,7 +173,7 @@ class Field(SlotsBase):
 
     Every annotation in a Magic class body becomes a `Field`. A `Field`
     is rarely created directly: the annotation family, such as
-    [`Factory`][], [`KwOnly`][] and [`ConvertTo`][], and the `field()`
+    [`Factory`][], `KwOnly` and [`ConvertTo`][], and the `field()`
     function are the usual ways to declare one.
     """
 
@@ -252,7 +252,7 @@ class Field(SlotsBase):
             Whether the field is a pseudo-field. An `InitVar` is passed
             to the constructor but not stored, and a `ClassVar` is a
             class attribute, shared by every instance and absent from
-            the constructor. The [`InitVar`][] and [`ClassVar`][]
+            the constructor. The `InitVar` and `ClassVar`
             annotations are usually clearer.
         doc : str, optional
             The field's documentation, which can also be given with the
@@ -288,8 +288,8 @@ class Field(SlotsBase):
             and also `True` for "pin" and `False` for "keep". It wins
             over `pin_discriminant` on every class that matches on the
             field, including subclasses that inherit the field. It can
-            also be given with the [`Pin`][], [`Narrow`][] and
-            [`NoPin`][] annotations.
+            also be given with the [`Pin`][], `Narrow` and
+            `NoPin` annotations.
         inherit : bool or str, optional
             How the field relates to a field the class inherits. `False`
             removes the inherited field of this name instead of
@@ -1189,8 +1189,8 @@ class Kw(BoolAnnotatedField):
     Allow a field to be passed by keyword, or forbid it.
 
     Together with [`Positional`][], `Kw` says exactly how a field may be
-    passed. [`KwOnly`][] and [`PositionalOnly`][] are the two useful
-    combinations, ready-made, and forbidding both ways is [`NoInit`][].
+    passed. `KwOnly` and `PositionalOnly` are the two useful
+    combinations, ready-made, and forbidding both ways is `NoInit`.
 
     !!! example "How it lowers"
         ```pycon
@@ -1219,7 +1219,7 @@ class Positional(BoolAnnotatedField):
     Allow a field to be passed by position, or forbid it.
 
     Together with [`Kw`][], `Positional` says exactly how a field may be
-    passed. [`PositionalOnly`][] and [`KwOnly`][] are the two useful
+    passed. `PositionalOnly` and `KwOnly` are the two useful
     combinations, ready-made.
 
     !!! example "How it lowers"
@@ -1304,9 +1304,9 @@ class Var(BoolAnnotatedField):
     """
     Declare a pseudo-field, which is not stored on each instance.
 
-    An [`InitVar`][] is passed to `__init__` and used, but not kept. It
+    An `InitVar` is passed to `__init__` and used, but not kept. It
     reaches `__pre_init__` and `__post_init__` like any other argument.
-    A [`ClassVar`][] is a plain class attribute, shared by every
+    A `ClassVar` is a plain class attribute, shared by every
     instance and absent from `__init__`.
 
     !!! example "How it lowers"
