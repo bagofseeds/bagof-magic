@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/link
----
-
 # Input aliases and forwarding properties
 
 Give a field several input names with `Alias`. The first name is the

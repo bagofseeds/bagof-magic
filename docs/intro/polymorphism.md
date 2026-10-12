@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/code-branch
----
-
 # Building the right subclass
 
 A class can hand back one of its subclasses, chosen from the arguments:

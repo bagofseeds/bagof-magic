@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/toolbox
----
-
 # Extras
 
 **Dict-like access**, when you want it:

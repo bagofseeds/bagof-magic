@@ -1,7 +1,3 @@
----
-icon: fontawesome/solid/list-ul
----
-
 # Field annotations
 
 Each field says what it does, right where it is declared:
