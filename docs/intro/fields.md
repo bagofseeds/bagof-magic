@@ -117,6 +117,8 @@ Each of these can be used bare (`x: Frozen[int]`) or with a value
 | `Pin[T, mode]` | how a subclass that matches on it keeps it (see [polymorphism](polymorphism.md#pinning-one-field)) | `NoPin` |
 | `Narrow[T]` | `Pin[T, "narrow"]`: pinned, and narrowed to what the subclass stands for | `NoPin` |
 | `Forget` | remove a field the class inherits (see [below](#forgetting-an-inherited-field)) | -- |
+| `Inherit[T]` | change a field the class inherits, keeping the rest of it (see [below](#changing-an-inherited-field)) | -- |
+| `Inherit[T, "x"]` | take over the inherited field `x` under this field's name (see [below](#taking-over-an-inherited-field)) | -- |
 
 Each annotation sets exactly what its name says, and that wins over the
 class setting: on a `kw_only=True` class, `x: Positional[int]` can still
@@ -296,6 +298,173 @@ class Both(Flat, Plain):
     Type checkers such as mypy and pyright have no way of knowing that a
     field was forgotten, so they still show the field in the constructor's
     signature.
+
+## Changing an inherited field
+
+When a subclass declares a field again, the new declaration replaces the
+inherited field completely, and the default, the aliases and every other
+setting written in the base class are lost. `dataclasses`, `attrs` and
+`pydantic` behave in the same way. A subclass that wants to change only
+part of an inherited field writes `...` in place of the type, and the field
+then keeps everything that the base class declared for it except what the
+new annotation says again:
+
+```python
+class Reading(Magic):
+    value: float = 0.0
+    unit: Doc[str, "The unit the value is measured in."] = "m"
+
+class Locked(Reading):
+    value: Frozen[...]
+    unit: ... = "cm"
+```
+
+```pycon
+>>> Locked()
+Locked(value=0.0, unit='cm')
+>>> Locked().value = 1.0
+Traceback (most recent call last):
+AttributeError: Cannot set frozen field 'value'
+>>> fields_dict(Locked)["unit"].doc
+'The unit the value is measured in.'
+```
+
+In `Locked`, the field `value` becomes frozen and keeps its type and its
+default, while the field `unit` receives a new default and keeps its type
+and its documentation. Every annotation in the family accepts `...` as its
+type in the same way, and a bare `...` with a value changes nothing but the
+default. A default of `REQUIRED` removes the inherited default, so that the
+field has to be passed.
+
+The annotation behind these spellings is `Inherit`, which can be written
+on its own. The three classes below are equivalent:
+
+=== "`...`"
+
+    ```python
+    class LockedA(Reading):
+        value: Frozen[...]
+    ```
+
+=== "`Inherit` with a field"
+
+    ```python
+    class LockedB(Reading):
+        value: Inherit[...] = field(frozen=True)
+    ```
+
+=== "`Inherit` with metadata"
+
+    ```python
+    class LockedC(Reading):
+        value: Inherit[..., Field(frozen=True)]
+    ```
+
+From Python 3.12, `value: Annotated[..., Frozen()]` is a fourth equivalent
+spelling. Older versions of `Annotated` refuse `...` as a type, so code
+that has to run on those versions uses the spellings above.
+
+A type other than `...` replaces the inherited type, as in
+`amount: Inherit[float]`. A converter, a validator or a factory that the
+base class asked to work out from the type, for example with `ConvertTo`
+or `Validate`, is then worked out again from the new type. A converter or
+a validator that was written as a function is kept unchanged:
+
+```python
+class Measure(Magic):
+    amount: ConvertTo[int] = 0
+
+class Precise(Measure):
+    amount: Inherit[float]
+```
+
+```pycon
+>>> Precise("2.5")
+Precise(amount=2.5)
+```
+
+A setting that the new annotation gives replaces the inherited setting, and
+this applies to a converter or a validator as well, which is replaced
+rather than run after the inherited one. Any setting that neither the base
+class nor the new annotation gives is taken from the subclass, so a field
+changed in `class Sub(Base, convert=True)` is converted even though the
+fields that `Sub` does not mention keep the behaviour they had in `Base`.
+
+## Taking over an inherited field
+
+A subclass sometimes needs to store an inherited field under a private name
+and give access to the value through a property of the public name.
+`Inherit` takes over the inherited field when it is given the field's name
+after the type:
+
+```python
+class Tile(Magic):
+    size: int = 1
+    colour: str = "grey"
+
+class CachedTile(Tile):
+    _size: Inherit[..., "size"]
+
+    @property
+    def size(self) -> int:
+        return self._size
+```
+
+```pycon
+>>> CachedTile(3)
+CachedTile(size=3, colour='grey')
+>>> CachedTile(3).size
+3
+>>> [f.name for f in fields(CachedTile)]
+['_size', 'colour']
+```
+
+The inherited field `size` leaves the class in the same way as a forgotten
+field does, and the field `_size` starts from the declaration of `size`.
+The new field therefore keeps the type, the default, the public name and
+the place in the constructor of the field that it takes over, so
+`CachedTile(3)` means what `Tile(3)` means. Any of these can be changed in
+the same annotation: `alias=` gives the field another public name, and
+`position=False` places it where it is written in the class body instead
+of where the inherited field was.
+
+```python
+class Hidden(Tile):
+    _size: Inherit[..., "size", Field(alias=False, position=False)]
+```
+
+```pycon
+>>> Hidden(colour="red", _size=2)
+Hidden(colour='red', _size=2)
+>>> Hidden(size=2)
+Traceback (most recent call last):
+TypeError: Hidden() got an argument 'size', but Hidden took that field over as '_size', so Hidden does not take it.
+```
+
+As for every annotation in the family, the first argument in the brackets
+is the type, so `Inherit["size"]` would read `"size"` as the name of a
+type. When that name is not a type but the name of an inherited field, the
+class is refused with a message that points to `Inherit[..., "size"]`.
+
+Linters such as Ruff and Pyflakes read a string inside an annotation as the
+name of a type, and report `"size"` in `Inherit[..., "size"]` as an
+undefined name. The take-over can also be written as a default, which
+linters do not read in this way:
+
+```python
+class CachedTileB(Tile):
+    _size: ... = field(inherit="size")
+
+    @property
+    def size(self) -> int:
+        return self._size
+```
+
+!!! warning "Type checkers still see the old field"
+    Type checkers have no way of knowing that a field was changed or taken
+    over. They read each annotation as a new field of its own, so they do
+    not understand `...` as the inherited type, and they show a field that
+    was taken over in the constructor next to the field that replaced it.
 
 ## A required field after one with a default
 

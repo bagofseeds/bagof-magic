@@ -42,6 +42,8 @@ want the type hints to do.
 | Keyword-only and positional-only fields | keyword only | keyword only | keyword only | **both** |
 | Required field after a defaulted one | refused | refused | keyword only | **yes** |
 | Remove an inherited field | no | no | no | **yes** |
+| Change part of an inherited field | no | no | no | **yes** |
+| Store an inherited field under another name | no | no | no | **yes** |
 | Rename a generated method | no | no | no | **yes** |
 | Dict-like instances | no | no | partly | **yes** |
 | Docstring built from the fields | no | no | no | **yes** |
