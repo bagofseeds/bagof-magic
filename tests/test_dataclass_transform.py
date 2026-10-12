@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import inspect
+import pickle
 import shutil
 import subprocess
 import sys
@@ -24,10 +25,15 @@ from bagof.magic import (
     Alias,
     ConvertTo,
     Default,
+    Doc,
     Factory,
     Field,
     Frozen,
+    HideIf,
+    HideIfDefault,
+    HideIfNone,
     Init,
+    Key,
     Kw,
     KwOnly,
     Magic,
@@ -39,6 +45,7 @@ from bagof.magic import (
     Positional,
     PositionalOnly,
     Repr,
+    ShowIf,
     field,
     fields,
 )
@@ -373,9 +380,119 @@ class TestAMarkerAsTheValue:
         )
 
 
+class TestATestOrADocAsTheValue:
+    """`Doc`, `ShowIf`, `HideIf`, `HideIfNone` and `HideIfDefault` take
+    the field's keywords beside their own argument, like every other
+    member of the family.
+    """
+
+    def test_they_take_the_field_settings(self) -> None:
+        class C(Magic):
+            d: int = Doc("text", default=3)
+            n: tx.Optional[int] = HideIfNone(default=None)
+            s: int = ShowIf(bool, kw_only=True, default=0)
+            t: int = HideIf(bool, default=0)
+            h: int = HideIfDefault(default=5)
+            a: tx.Annotated[int, HideIfNone(default=7)]
+
+        params = _parameters(C)
+        assert [(p.name, p.default) for p in params.values()] == [
+            ("d", 3), ("n", None), ("t", 0), ("h", 5), ("a", 7), ("s", 0),
+        ]
+        assert params["s"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert repr(C()) == "C(d=3, t=0, a=7)"
+        assert repr(C(1, 2, 4, 8, 6, s=9)) == (
+            "C(d=1, n=2, s=9, h=8, a=6)"
+        )
+        assert {f.name: f for f in fields(C)}["d"].doc == "text"
+
+    def test_the_settings_show_in_the_repr(self) -> None:
+        assert repr(HideIfNone()) == "HideIfNone()"
+        assert repr(HideIfNone(default=None)) == "HideIfNone(default=None)"
+        assert repr(HideIfDefault(eq=False)) == "HideIfDefault(eq=False)"
+        assert repr(ShowIf(bool, default=1)) == (
+            "ShowIf(<class 'bool'>, default=1)"
+        )
+        assert repr(Doc("x", default=3)) == "Doc(default=3, doc='x')"
+
+    def test_the_field_takes_a_test_without_the_settings(self) -> None:
+        test = HideIfNone(default=None)
+        assert test.default is None
+        assert test.repr is not test
+        assert repr(test.repr) == "HideIfNone()"
+        lenient = HideIfDefault(default=0)
+        assert lenient.repr._lenient is False
+
+    def test_they_pickle(self) -> None:
+        for test in (HideIfNone(), HideIfNone(default=None)):
+            again = pickle.loads(pickle.dumps(test))
+            assert repr(again) == repr(test)
+            assert again.repr._predicate(None)
+
+    def test_a_doc_is_still_a_doc(self) -> None:
+        # Tools that read `Annotated` metadata through typing_extensions
+        # still find the documentation.
+        [doc] = tx.get_args(tx.Annotated[int, Doc("hi", default=1)])[1:]
+        assert isinstance(doc, tx.Doc)
+        assert doc.documentation == "hi"
+
+    def test_a_plain_test_is_still_a_setting(self) -> None:
+        class C(Magic, repr=HideIfNone()):
+            x: tx.Optional[int] = None
+            y: int = field(default=0, repr=HideIfDefault())
+
+        assert repr(C()) == "C()"
+
+    @pytest.mark.parametrize("make", [
+        lambda: Field(repr=HideIfNone(default=3)),
+        lambda: field(repr=HideIfDefault(default=0)),
+        lambda: Repr(ShowIf(bool, default=1)),
+        lambda: Key(ShowIf(bool, default=1)),
+        lambda: Key("k", HideIfNone(default=1)),
+    ])
+    def test_a_test_with_settings_is_not_a_setting(
+        self, make: tx.Callable
+    ) -> None:
+        # The settings belong to the field, and a repr or key setting
+        # would drop them.
+        with pytest.raises(TypeError) as caught:
+            make()
+        assert "is only the test" in str(caught.value)
+        assert "on the field itself" in str(caught.value)
+
+    def test_a_class_setting_with_settings_is_refused(self) -> None:
+        with pytest.raises(TypeError) as caught:
+            class C(Magic, repr=HideIfNone(default=1)):
+                x: int = 0
+        assert str(caught.value) == (
+            "repr=HideIfNone(default=1) gives the field settings "
+            "default=1 as well as a test, but a repr setting is only the "
+            "test. Put default=1 on the field itself: write "
+            "HideIfNone(default=1) as the field's value, or "
+            "field(default=1, repr=HideIfNone())."
+        )
+
+    def test_a_test_takes_no_repr_setting(self) -> None:
+        with pytest.raises(TypeError, match="takes no repr="):
+            ShowIf(bool, repr=False)
+
+    @pytest.mark.parametrize("make", [
+        lambda: HideIfNone(kw_only=None),
+        lambda: Doc("x", init="no"),
+        lambda: Doc("x", bogus=1),
+        lambda: HideIfDefault(kw_only=True, kw=False),
+    ])
+    def test_the_keywords_are_checked(self, make: tx.Callable) -> None:
+        with pytest.raises(TypeError):
+            make()
+
+
 MARKERS_FIXTURE = '''\
+from typing import Optional
+
 from bagof.magic import (
-    Magic, Alias, Default, Factory, Frozen, KwOnly, NoInit, Repr,
+    Magic, Alias, Default, Doc, Factory, Frozen, HideIfNone, KwOnly,
+    NoInit, Repr,
 )
 
 
@@ -387,12 +504,15 @@ class Spec(Magic):
     w: int = NoInit(init=False)
     v: int = Default(default=3)
     r: int = Repr(False, default=1)
+    d: int = Doc("text", default=3)
+    n: Optional[int] = HideIfNone(default=None)
 
 
 Spec(0, why="a", x=1)  # ok
+Spec(0, "a", [], 4, 2, 5, None, x=1)  # ok
 Spec(0, "a", [], 4, 2, x=1)  # ok
 Spec(0, "a", x=1, v=4, r=2)  # ok
-Spec(0, "a", [], 4, 2, 5)  # error: x is keyword-only
+Spec(0, "a", [], 4, 2, 5, None, 1)  # error: x is keyword-only
 Spec(0, _y="a", x=1)  # error: the parameter is called why
 Spec(0, "a", x=1, w=2)  # error: w is not a parameter
 Spec(0, "a")  # error: x has no default
@@ -481,9 +601,9 @@ def test_the_fixture_does_what_the_checkers_are_told() -> None:
 
 
 def test_the_fixture_marks_the_lines_it_means() -> None:
-    assert len(_lines("# ok")) == 3
+    assert len(_lines("# ok")) == 4
     assert len(_lines("# error")) == 5
-    assert len(_class_body()) == 7
+    assert len(_class_body()) == 9
 
 
 def test_a_report_is_read_by_line() -> None:

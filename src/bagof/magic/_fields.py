@@ -54,6 +54,7 @@ __all__ = [
     "CLASSVAR_NARROW",
     "KEEP_NARROW",
 ]
+import copy
 import difflib
 from functools import partial
 
@@ -380,13 +381,18 @@ class Field(SlotsBase, metaclass=_Specifier):
         # annotation carries, so wrapping one in another never stacks.
         # A test (`ShowIf(...)`) is its own setting and is kept.
         value = kwargs.get("repr", MISSING)
+        _only_a_test(value, "repr")
         while isinstance(value, Repr) and value.repr is not value:
             value = value.repr
+            _only_a_test(value, "repr")
         if value is not MISSING:
             kwargs["repr"] = value
         value = kwargs.get("key", MISSING)
         while isinstance(value, Key):
             value = value.key
+        # A key setting is a test, or a name and a test.
+        _only_a_test(value[1] if isinstance(value, tuple) and len(value) == 2
+                     else value, "key")
         if value is not MISSING:
             kwargs["key"] = value
         # set slots from keywords
@@ -770,8 +776,42 @@ def _test(value: tx.Any, setting: str) -> tx.Optional["ShowIf"]:
             )
         return value()
     if isinstance(value, ShowIf):
+        _only_a_test(value, setting)
         return value
     return None
+
+
+def _field_settings(test: "ShowIf") -> tx.Dict[str, tx.Any]:
+    """The field settings a test was given beside itself.
+
+    `HideIfNone(default=None)` written as a field's value declares the
+    field's default as well as its repr test.
+    """
+    return {
+        slot: getattr(test, slot)
+        for slot in Field._slots()
+        if slot != "repr" and not slot.startswith("_")
+        and getattr(test, slot) is not MISSING
+    }
+
+
+def _only_a_test(value: tx.Any, setting: str) -> None:
+    """Refuse a test that carries field settings where only a test is read.
+
+    In `Field(repr=HideIfNone(default=3))` the default would otherwise
+    be dropped without a word.
+    """
+    if not isinstance(value, ShowIf):
+        return
+    settings = _field_settings(value)
+    if settings:
+        given = ", ".join(f"{k}={v!r}" for k, v in settings.items())
+        raise TypeError(
+            f"{setting}={value!r} gives the field settings {given} as well "
+            f"as a test, but a {setting} setting is only the test. Put "
+            f"{given} on the field itself: write {value!r} as the field's "
+            f"value, or field({given}, {setting}={value.repr!r})."
+        )
 
 
 def _repr_setting(value: tx.Any, var: bool) -> tx.Any:
@@ -1485,6 +1525,11 @@ class ShowIf(Repr):
     (`Key(ShowIf(test))`), where it leaves the key out while the test
     fails.
 
+    After the test, `ShowIf` takes the same keywords as `field()`, so it
+    can be written as a field's value: `notes: str = ShowIf(bool,
+    default="")`. A test given such keywords also declares the field,
+    and so it cannot be used as a repr or key setting on its own.
+
     !!! example "How it lowers"
         ```pycon
         >>> ShowIf(bool)
@@ -1510,23 +1555,45 @@ class ShowIf(Repr):
 
     __set_slots__ = ('repr',)
 
-    def __init__(self, predicate: tx.Callable[[tx.Any], tx.Any], /) -> None:
+    def __init__(
+        self, predicate: tx.Callable[[tx.Any], tx.Any], /, **kwargs: tx.Any
+    ) -> None:
         if not callable(predicate):
             raise TypeError(
                 f"{type(self).__name__}() takes a function of the value, "
                 f"called to decide whether the field is shown; got "
                 f"{predicate!r}."
             )
-        super().__init__()
+        if "repr" in kwargs:
+            raise TypeError(
+                f"{type(self).__name__}() is itself the field's repr "
+                f"setting, so it takes no repr=."
+            )
+        super().__init__(**kwargs)
         self._predicate = predicate
-        # The setting a field takes from this is the test itself.
-        self.repr = self
+        # The setting a field takes from this is the test itself. When
+        # the test also declares other settings of the field, as in
+        # `HideIfNone(default=None)`, the field takes a copy without
+        # them, so that the copy is a test and nothing more.
+        if _field_settings(self):
+            plain = copy.copy(self)
+            for slot in _field_settings(self):
+                setattr(plain, slot, MISSING)
+            plain.repr = plain
+            self.repr = plain
+        else:
+            self.repr = self
 
     def __call__(self, value: tx.Any) -> bool:
         return bool(self._predicate(value))
 
+    def _arguments(self) -> tx.List[str]:
+        # The field settings, as the call that made this would write them.
+        return [f"{k}={v!r}" for k, v in _field_settings(self).items()]
+
     def __repr__(self) -> str:
-        return f"{type(self).__name__}({self._predicate!r})"
+        arguments = [repr(self._predicate), *self._arguments()]
+        return f"{type(self).__name__}({', '.join(arguments)})"
 
     def __class_getitem__(
         cls, args: tx.Union[type, tx.Tuple]
@@ -1567,7 +1634,8 @@ class HideIf(ShowIf):
     Hide a field from `__repr__` while a test of its value passes.
 
     The opposite of `ShowIf`: `HideIf(test)` hides the field when
-    `test(value)` is true.
+    `test(value)` is true. Like `ShowIf`, it takes the keywords of
+    `field()` after the test.
 
     !!! example "In a class"
         ```pycon
@@ -1601,6 +1669,9 @@ class HideIfNone(HideIf):
     setting, `class C(Magic, repr=HideIfNone())`, it applies to every
     field.
 
+    It takes the keywords of `field()`, so it can be written as a
+    field's value: `nickname: Optional[str] = HideIfNone(default=None)`.
+
     !!! example "In a class"
         ```pycon
         >>> class Person(Magic):
@@ -1617,11 +1688,11 @@ class HideIfNone(HideIf):
     __set_slots__ = ('repr',)
     _takes_test = False
 
-    def __init__(self) -> None:
-        super().__init__(_is_none)
+    def __init__(self, **kwargs: tx.Any) -> None:
+        super().__init__(_is_none, **kwargs)
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}()"
+        return f"{type(self).__name__}({', '.join(self._arguments())})"
 
 
 def _equals(default: tx.Any, value: tx.Any) -> bool:
@@ -1651,6 +1722,10 @@ class HideIfDefault(HideIf):
     applies to every field that has a plain default, and the others are
     always shown.
 
+    It takes the keywords of `field()`, so it can be written as a
+    field's value together with the default it compares with:
+    `method: str = HideIfDefault(default="GET")`.
+
     !!! example "In a class"
         ```pycon
         >>> class Request(Magic):
@@ -1667,9 +1742,11 @@ class HideIfDefault(HideIf):
     __set_slots__ = ('repr',)
     _takes_test = False
 
-    def __init__(self) -> None:
-        super().__init__(_equals)
+    def __init__(self, **kwargs: tx.Any) -> None:
+        super().__init__(_equals, **kwargs)
         self._lenient = False
+        if self.repr is not self:
+            self.repr._lenient = False
 
     def __call__(self, value: tx.Any) -> bool:
         raise TypeError(
@@ -1678,7 +1755,7 @@ class HideIfDefault(HideIf):
         )
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}()"
+        return f"{type(self).__name__}({', '.join(self._arguments())})"
 
     def _spread(self) -> tx.Self:
         # The copy a class setting hands to each of its fields: one with
@@ -1905,12 +1982,16 @@ class Doc(AnnotatedField, tx.Doc):
     Document a field.
 
     The text appears in the class docstring and in the documentation of the
-    generated `__init__`.
+    generated `__init__`. After the text, `Doc` takes the same keywords as
+    `field()`, so it can be written as a field's value with a default:
+    `retries: int = Doc("how many times to retry", default=3)`.
 
     !!! example "How it lowers"
         ```pycon
         >>> Doc("how many times to retry")
         Doc(doc='how many times to retry')
+        >>> Doc("how many times to retry", default=3)
+        Doc(default=3, doc='how many times to retry')
         >>> Doc[int, "how many times to retry"]
         typing.Annotated[int, Doc(doc='how many times to retry')]
         ```
@@ -1918,9 +1999,9 @@ class Doc(AnnotatedField, tx.Doc):
 
     __set_slots__ = ('doc',)
 
-    def __init__(self, documentation: str, /) -> None:
+    def __init__(self, documentation: str, /, **kwargs: tx.Any) -> None:
         tx.Doc.__init__(self, documentation)
-        AnnotatedField.__init__(self, documentation)
+        AnnotatedField.__init__(self, documentation, **kwargs)
 
 
 @slots

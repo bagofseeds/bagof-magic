@@ -160,7 +160,9 @@ An annotation that does not shape the constructor, such as `Frozen()` or
 `Repr(False)`, is read the same way: the field is required unless the call
 also gives `default=` or `factory=`. So `x: int = Frozen()` is a required
 field to a checker, as it is to the class, and `x: int = Frozen(default=0)`
-is an optional one.
+is an optional one. The annotations that take an argument of their own,
+such as `Doc("...")`, `ShowIf(test)` and `HideIfNone()`, take the same
+keywords after it, as in `nickname: Optional[str] = HideIfNone(default=None)`.
 
 When the annotation and the value both say something about the same field,
 the value is read second. A setting that both of them give takes the

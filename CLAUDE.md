@@ -752,7 +752,13 @@ call a checker does not recognise is read as the field's default, so
 marker that says nothing about how a field is passed takes `init=` and
 `kw_only=` as `field()` does; `default_factory=` is accepted on every
 marker for `dataclasses` compatibility but documented only on `Field`
-and `field()`. A checker reads
+and `field()`. Every subclass takes the field keywords, including those
+with an argument of their own (`Doc(text, **kw)`, `ShowIf(test,
+**kw)`, `HideIfNone(**kw)`, `HideIfDefault(**kw)`). A repr test given
+field settings is two things at once, so its `repr` slot holds a copy
+of the test without them, which is what a field takes; used directly
+as a repr or key setting or as the class option, it is refused by
+`_only_a_test` rather than having its settings dropped. A checker reads
 only the keywords written in such a call as a field's value --
 `default`, `factory`/`default_factory`, `init`, `kw_only`, `alias`,
 `converter` (pyright) -- never a positional argument, and, for a
