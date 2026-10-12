@@ -173,7 +173,7 @@ class Field(SlotsBase):
 
     Every annotation in a Magic class body becomes a `Field`. A `Field`
     is rarely created directly: the annotation family, such as
-    [`Factory`][], `KwOnly` and [`ConvertTo`][], and the `field()`
+    [`Factory`][], [`KwOnly`][] and [`ConvertTo`][], and the `field()`
     function are the usual ways to declare one.
     """
 
@@ -252,7 +252,7 @@ class Field(SlotsBase):
             Whether the field is a pseudo-field. An `InitVar` is passed
             to the constructor but not stored, and a `ClassVar` is a
             class attribute, shared by every instance and absent from
-            the constructor. The `InitVar` and `ClassVar`
+            the constructor. The [`InitVar`][] and [`ClassVar`][]
             annotations are usually clearer.
         doc : str, optional
             The field's documentation, which can also be given with the
@@ -288,8 +288,8 @@ class Field(SlotsBase):
             and also `True` for "pin" and `False` for "keep". It wins
             over `pin_discriminant` on every class that matches on the
             field, including subclasses that inherit the field. It can
-            also be given with the [`Pin`][], `Narrow` and
-            `NoPin` annotations.
+            also be given with the [`Pin`][], [`Narrow`][] and
+            [`NoPin`][] annotations.
         inherit : bool or str, optional
             How the field relates to a field the class inherits. `False`
             removes the inherited field of this name instead of
@@ -1180,6 +1180,13 @@ class Init(BoolAnnotatedField):
 
 @slots
 class NoInit(Init, InversedBoolAnnotatedField):
+    """Leave a field out of the generated `__init__`.
+
+    `x: NoInit[int]` can be passed neither by name nor by position, so
+    the field takes its default or factory value, or holds nothing until
+    something sets it. It is the opposite of [`Init`][].
+    """
+
     __set_slots__ = ('kw', 'positional')
 
 
@@ -1189,8 +1196,8 @@ class Kw(BoolAnnotatedField):
     Allow a field to be passed by keyword, or forbid it.
 
     Together with [`Positional`][], `Kw` says exactly how a field may be
-    passed. `KwOnly` and `PositionalOnly` are the two useful
-    combinations, ready-made, and forbidding both ways is `NoInit`.
+    passed. [`KwOnly`][] and [`PositionalOnly`][] are the two useful
+    combinations, ready-made, and forbidding both ways is [`NoInit`][].
 
     !!! example "How it lowers"
         ```pycon
@@ -1210,6 +1217,12 @@ class Kw(BoolAnnotatedField):
 
 @slots
 class NotKw(Kw, InversedBoolAnnotatedField):
+    """Forbid passing a field by keyword.
+
+    `x: NotKw[int]` can still be passed by position, unless something
+    forbids that too. It is the opposite of [`Kw`][].
+    """
+
     __set_slots__ = 'kw'
 
 
@@ -1219,7 +1232,7 @@ class Positional(BoolAnnotatedField):
     Allow a field to be passed by position, or forbid it.
 
     Together with [`Kw`][], `Positional` says exactly how a field may be
-    passed. `PositionalOnly` and `KwOnly` are the two useful
+    passed. [`PositionalOnly`][] and [`KwOnly`][] are the two useful
     combinations, ready-made.
 
     !!! example "How it lowers"
@@ -1238,26 +1251,55 @@ class Positional(BoolAnnotatedField):
 
 @slots
 class NotPositional(Positional, InversedBoolAnnotatedField):
+    """Forbid passing a field by position.
+
+    `x: NotPositional[int]` can still be passed by keyword, unless
+    something forbids that too. It is the opposite of [`Positional`][].
+    """
+
     __set_slots__ = 'positional'
 
 
 @slots
-class KwOnly(Kw, NotPositional): ...
+class KwOnly(Kw, NotPositional):
+    """Make a field keyword-only.
+
+    `x: KwOnly[int]` can be passed by name but not by position, as with
+    `field(kw_only=True)`. It combines [`Kw`][] with
+    [`NotPositional`][].
+    """
 
 
 # Each inverse negates its own name: not keyword-only means the field may
 # also be passed by position, and not positional-only means it may also be
 # passed by name. Neither says anything about the other half of the pair.
 @slots
-class NotKwOnly(Positional): ...
+class NotKwOnly(Positional):
+    """Let a field be passed by position as well as by keyword.
+
+    `x: NotKwOnly[int]` undoes a keyword-only setting, such as
+    `kw_only=True` on the class, and leaves passing by keyword as it
+    was. It is the same as [`Positional`][].
+    """
 
 
 @slots
-class PositionalOnly(Positional, NotKw): ...
+class PositionalOnly(Positional, NotKw):
+    """Make a field positional-only.
+
+    `x: PositionalOnly[int]` can be passed by position but not by name.
+    It combines [`Positional`][] with [`NotKw`][].
+    """
 
 
 @slots
-class NotPositionalOnly(Kw): ...
+class NotPositionalOnly(Kw):
+    """Let a field be passed by keyword as well as by position.
+
+    `x: NotPositionalOnly[int]` undoes a positional-only setting, such
+    as `positional_only=True` on the class, and leaves passing by
+    position as it was. It is the same as [`Kw`][].
+    """
 
 
 @slots
@@ -1296,6 +1338,12 @@ class Frozen(BoolAnnotatedField):
 
 @slots
 class NotFrozen(Frozen, InversedBoolAnnotatedField):
+    """Allow assignment to a field after the object is built.
+
+    `x: NotFrozen[int]` stays assignable on a class built with
+    `frozen=True`. It is the opposite of [`Frozen`][].
+    """
+
     __set_slots__ = 'frozen'
 
 
@@ -1304,9 +1352,9 @@ class Var(BoolAnnotatedField):
     """
     Declare a pseudo-field, which is not stored on each instance.
 
-    An `InitVar` is passed to `__init__` and used, but not kept. It
+    An [`InitVar`][] is passed to `__init__` and used, but not kept. It
     reaches `__pre_init__` and `__post_init__` like any other argument.
-    A `ClassVar` is a plain class attribute, shared by every
+    A [`ClassVar`][] is a plain class attribute, shared by every
     instance and absent from `__init__`.
 
     !!! example "How it lowers"
@@ -1338,11 +1386,23 @@ class Var(BoolAnnotatedField):
 
 
 @slots
-class InitVar(Var): ...
+class InitVar(Var):
+    """Declare a value that is passed to `__init__` but not stored.
+
+    `x: InitVar[float]` reaches `__pre_init__` and `__post_init__` like
+    any other argument, and is not kept on the instance. [`Var`][]
+    describes both kinds of pseudo-field.
+    """
 
 
 @slots
-class ClassVar(Var, NoInit): ...
+class ClassVar(Var, NoInit):
+    """Declare a class attribute that is not a field.
+
+    `x: ClassVar[str] = "clicks"` is shared by every instance and is not
+    a parameter of `__init__`. [`Var`][] describes both kinds of
+    pseudo-field.
+    """
 
 
 @slots
@@ -1417,6 +1477,12 @@ class Repr(BoolAnnotatedField):
 
 @slots
 class NoRepr(Repr, InversedBoolAnnotatedField):
+    """Hide a field from the generated `__repr__`.
+
+    `x: NoRepr[str]` is never shown, which suits a password or a token.
+    It is the opposite of [`Repr`][].
+    """
+
     __set_slots__ = ('repr',)
 
 
@@ -1705,6 +1771,13 @@ class Eq(BoolAnnotatedField):
 
 @slots
 class NoEq(Eq, InversedBoolAnnotatedField):
+    """Leave a field out of the generated `__eq__`.
+
+    Two objects that differ only in `x: NoEq[float]` compare equal, and
+    a field left out of equality is left out of the ordering and the
+    hash too. It is the opposite of [`Eq`][].
+    """
+
     __set_slots__ = ('eq',)
 
 
@@ -1732,6 +1805,12 @@ class Order(BoolAnnotatedField):
 
 @slots
 class NoOrder(Order, InversedBoolAnnotatedField):
+    """Leave a field out of the generated ordering methods.
+
+    `x: NoOrder[int]` still counts towards `==`. It is the opposite of
+    [`Order`][].
+    """
+
     __set_slots__ = ('order',)
 
 
@@ -1756,6 +1835,12 @@ class Compare(Eq, Order):
 
 @slots
 class NoCompare(Compare, InversedBoolAnnotatedField):
+    """Leave a field out of both equality and ordering.
+
+    `x: NoCompare[int]` is [`NoEq`][] and [`NoOrder`][] together. It is
+    the opposite of [`Compare`][].
+    """
+
     __set_slots__ = ('eq', 'order')
 
 
@@ -1783,6 +1868,12 @@ class Hash(BoolAnnotatedField):
 
 @slots
 class NoHash(Hash, InversedBoolAnnotatedField):
+    """Leave a field out of the generated `__hash__`.
+
+    `x: NoHash[int]` still counts towards `==`. It is the opposite of
+    [`Hash`][].
+    """
+
     __set_slots__ = ('hash',)
 
 
@@ -1845,6 +1936,13 @@ class Key(BoolAnnotatedField):
 
 @slots
 class NotKey(Key, InversedBoolAnnotatedField):
+    """Leave a field out of the dict-like interface.
+
+    On a class built with `mapping=True`, `x: NotKey[int]` is not a key,
+    although `asdict` still includes it. It is the opposite of
+    [`Key`][].
+    """
+
     __set_slots__ = ('key',)
 
 
@@ -1931,11 +2029,25 @@ class Pin(AnnotatedField):
 
 @slots
 class Narrow(Pin, BoolAnnotatedField):
+    """Pin a field, and narrow it to what the subclass stands for.
+
+    `x: Narrow[str]` is `Pin[str, "narrow"]`: a subclass that matches on
+    the field gives it the matched value as its default, narrows its
+    type, and refuses any other value. [`Pin`][] describes every mode.
+    """
+
     __set_slots__ = {'pin': 'narrow'}
 
 
 @slots
 class NoPin(Pin, BoolAnnotatedField):
+    """Leave a field as the subclass that matches on it wrote it.
+
+    `x: NoPin[str]` is `Pin[str, False]`, the same as the "keep" mode,
+    whatever the subclass's `pin_discriminant` setting says. [`Pin`][]
+    describes every mode.
+    """
+
     __set_slots__ = {'pin': False}
 
 
