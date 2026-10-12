@@ -4718,6 +4718,77 @@ class TestInheritingADiscriminant:
         assert Stored(kind="deep").kind == "deep"
         assert Stored().kind == "inverse"
 
+    def test_a_subclass_below_a_take_over_is_reached_from_above(
+        self
+    ) -> None:
+        class Voice(Magic, polymorphic=True):
+            kind: str
+            grade: int = 0
+
+        class Logged(Voice):
+            _kind: Inherit[..., "kind"]  # noqa: F821
+
+        class Again(Logged, on={"kind": "again"}):
+            pass
+
+        for entry in (Voice, Logged):
+            built = entry(kind="again", grade=2)
+            assert type(built) is Again
+            assert built._kind == built.kind == "again"
+        assert type(Voice("again")) is Again
+        assert type(Voice(kind="other")) is Voice
+
+    def test_the_registering_class_takes_it_over(self) -> None:
+        Signal, Inverse = self._signals()
+
+        class Stored(Signal, on={"kind": "stored"}):
+            _kind: Inherit[..., "kind"]  # noqa: F821
+
+        built = Signal(kind="stored")
+        assert type(built) is Stored
+        assert built._kind == built.kind == "stored"
+        assert Stored().kind == "stored"
+
+    def test_below_a_registered_class_as_in_a_plain_chain(self) -> None:
+        # A subclass that stands for another value than the registered
+        # class above it is reached from that class down, as in any
+        # chain -- not from the root, which hands "again" to nobody.
+        class Voice(Magic, polymorphic=True):
+            kind: str
+            grade: int = 0
+
+        class Inverted(Voice, on={"kind": "inverse"}):
+            pass
+
+        class Logged(Inverted):
+            _kind: Inherit[..., "kind"]  # noqa: F821
+
+        class Again(Logged, on={"kind": "again"}):
+            pass
+
+        assert type(Inverted(kind="again")) is Again
+        assert type(Logged(kind="again")) is Again
+        assert type(Voice(kind="again")) is Voice
+        assert type(Voice(kind="inverse")) is Inverted
+
+    def test_a_field_dropped_on_the_way_down_is_found_by_name(self) -> None:
+        # Below the take-over, a class that does not take the field
+        # keeps it as a class attribute; the class above still knows to
+        # leave the argument out of the call.
+        class Voice(Magic, polymorphic=True):
+            kind: str = ""
+            grade: int = 0
+
+        class Logged(Voice):
+            _kind: Inherit[..., "kind"]  # noqa: F821
+
+        class Fixed(Logged, on={"kind": "fixed"}, pin_discriminant=CLASSVAR):
+            pass
+
+        built = Voice(kind="fixed", grade=1)
+        assert type(built) is Fixed
+        assert built.grade == 1
+
     def test_taking_it_over_under_another_name_is_refused(self) -> None:
         Signal, Inverse = self._signals()
         with pytest.raises(

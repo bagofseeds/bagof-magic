@@ -52,6 +52,7 @@ __all__ = [
 ]
 
 # stdlib
+import copy
 import enum
 
 # dependencies
@@ -480,10 +481,47 @@ def check_fields(
             )
 
 
+def field_for(table: tx.Mapping[str, tx.Any], spec: _Spec) -> tx.Any:
+    """
+    The field of `table` that `spec` constrains, or None.
+
+    A spec names the field the way the class that wrote it stores it. A
+    class above or below may store the same field under another name --
+    one that took it over keeps its public name -- so a table without
+    that stored name is searched by the public name, which is the name
+    the call passes it by.
+    """
+    found = table.get(spec.name)
+    if found is not None:
+        return found
+    return next(
+        (field for field in table.values() if spec.label in field.aliases),
+        None,
+    )
+
+
+def for_owner(owner: type, specs: tx.Sequence[_Spec]) -> tx.Tuple[_Spec, ...]:
+    """
+    `specs` with each field named the way `owner` stores it.
+
+    The owner reads the arguments of a call into its own fields, so the
+    constraints it checks have to name those.
+    """
+    table = getattr(owner, _FIELDS)
+    renamed = []
+    for spec in specs:
+        field = field_for(table, spec)
+        if field is not None and field.name != spec.name:
+            spec = copy.copy(spec)
+            spec.name = field.name
+        renamed.append(spec)
+    return tuple(renamed)
+
+
 def has_fields(owner: type, specs: tx.Iterable[_Spec]) -> bool:
     """Whether `owner` has every field `specs` constrains."""
     table = getattr(owner, _FIELDS)
-    return all(spec.name in table for spec in specs)
+    return all(field_for(table, spec) is not None for spec in specs)
 
 
 # ----------------------------------------------------------------------
@@ -826,7 +864,7 @@ def _delegation_plan(
     drops = []
     for spec in specs:
         owner_field = owner_fields.get(spec.name)
-        target_field = target_fields.get(spec.name)
+        target_field = field_for(target_fields, spec)
         if owner_field is None or target_field is None:  # pragma: no cover
             # Defensive: a spec name is validated against the owner's
             # fields, and the target is a subclass carrying all of them,

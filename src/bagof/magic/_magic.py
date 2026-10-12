@@ -203,6 +203,8 @@ from ._polymorph import check as _check_invariant
 from ._polymorph import check_fields as _check_spec_fields
 from ._polymorph import conjoin as _conjoin
 from ._polymorph import delegate as _delegate_polymorph
+from ._polymorph import field_for as _field_for
+from ._polymorph import for_owner as _for_owner
 from ._polymorph import forgotten_by as _forgotten_by
 from ._polymorph import has_fields as _has_spec_fields
 from ._polymorph import how_removed as _how_removed
@@ -248,7 +250,10 @@ def __post_new__(cls: type) -> type:
     if registration is not None:
         owners, specs, priority, claim = registration
         for owner in owners:
-            _register_polymorph(owner, cls, specs, priority, claim)
+            _register_polymorph(
+                owner, cls, _for_owner(owner, specs), priority,
+                _for_owner(owner, claim),
+            )
 
     # A class built by filling in a generic's type parameters chooses
     # between the same subclasses the class it came from does, each
@@ -1868,7 +1873,7 @@ def _check_discriminants(
     base_fields = getattr(polymorphic_base, _FIELDS)
     for spec in specs:
         field = fields[spec.name]
-        base_field = base_fields[spec.name]
+        base_field = _field_for(base_fields, spec)
         # (i)
         if field.init:
             continue
