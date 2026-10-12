@@ -945,6 +945,11 @@ def _read_annotation(
         # The type is not available yet: carry it by name, the way a
         # quoted annotation is carried.
         type = tx.ForwardRef(type)
+    elif type is Ellipsis and marker is tx.Annotated:
+        # `Annotated` refuses `...` before Python 3.12; the family's own
+        # subscriptions put the placeholder in its place, and so does
+        # this, so the text reads the same on every Python.
+        type = _InheritedType
     values = []
     for meta in metadata:
         if not _is_metadata_expression(meta, globals):
@@ -985,7 +990,7 @@ def _structural_marker(node: ast.AST, globals: dict, where: str) -> tx.Any:
 
 #: The members of the family written bare, with no brackets: the whole
 #: annotation is the marker.
-_BARE_MARKERS = frozenset({"Forget"})
+_BARE_MARKERS = frozenset({"Forget", "Inherit"})
 
 
 def _check_bare_marker(node: ast.AST, globals: dict, where: str) -> None:
