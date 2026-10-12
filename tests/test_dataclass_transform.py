@@ -19,12 +19,14 @@ from pathlib import Path
 import pytest
 import typing_extensions as tx
 
+import bagof.magic._fields as _fields
 from bagof.magic import (
     Alias,
     ConvertTo,
     Default,
     Factory,
     Field,
+    Frozen,
     Init,
     Kw,
     KwOnly,
@@ -36,16 +38,20 @@ from bagof.magic import (
     NotPositionalOnly,
     Positional,
     PositionalOnly,
+    Repr,
     field,
     fields,
 )
 from bagof.magic._magic import MetaMagic, magic
 from bagof.magic._options import Options
 
-_SPECIFIERS = (
-    Field, field, Default, Factory, Alias, ConvertTo, Init, NoInit,
-    Kw, NotKw, Positional, NotPositional, KwOnly, NotKwOnly,
-    PositionalOnly, NotPositionalOnly,
+# Every public class of the annotation family, in the order the module
+# lists them, after `Field` and `field()`.
+_SPECIFIERS = (Field, field) + tuple(
+    getattr(_fields, name) for name in _fields.__all__
+    if isinstance(getattr(_fields, name), type)
+    and issubclass(getattr(_fields, name), Field)
+    and getattr(_fields, name) is not Field
 )
 
 # The transform's defaults are written out as literals, because that is
@@ -251,6 +257,21 @@ class TestAMarkerAsTheValue:
         # The default is left on the class, the marker is not.
         assert C.v == 3
 
+    def test_any_marker_works_as_the_value(self) -> None:
+        # A marker that does not shape the constructor takes the same
+        # keywords, so a checker can be told the rest.
+        class C(Magic):
+            x: int = Frozen(kw_only=True)
+            y: int = Repr(False, default=2)
+
+        params = _parameters(C)
+        assert params["x"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["y"].default == 2
+        c = C(x=1)
+        assert repr(c) == "C(x=1)"
+        with pytest.raises(AttributeError):
+            c.x = 3
+
     def test_without_the_keyword_it_means_the_same(self) -> None:
         # Only a checker needs the keyword; the class reads the marker.
         class C(Magic):
@@ -296,6 +317,10 @@ class TestAMarkerAsTheValue:
         (Positional, {"kw_only": False}),
         (NotPositional, {"kw_only": True}),
         (NotPositionalOnly, {"kw_only": True}),
+        # A marker that says nothing about how the field is passed takes
+        # either keyword as `field()` does.
+        (Frozen, {"kw_only": True}),
+        (Repr, {"init": False}),
     ])
     def test_a_keyword_that_agrees_is_accepted(
         self, marker: type, keyword: dict
@@ -330,7 +355,9 @@ class TestAMarkerAsTheValue:
         )
         assert f"field({key}={value!r})" in str(caught.value)
 
-    @pytest.mark.parametrize("marker", [KwOnly, NoInit, Init, Positional])
+    @pytest.mark.parametrize(
+        "marker", [KwOnly, NoInit, Init, Positional, Frozen]
+    )
     @pytest.mark.parametrize("key", ["init", "kw_only"])
     @pytest.mark.parametrize("value", [None, 0, "yes"])
     def test_a_keyword_that_is_not_a_bool_is_refused(
@@ -347,24 +374,29 @@ class TestAMarkerAsTheValue:
 
 
 MARKERS_FIXTURE = '''\
-from bagof.magic import Magic, Alias, Default, Factory, KwOnly, NoInit
+from bagof.magic import (
+    Magic, Alias, Default, Factory, Frozen, KwOnly, NoInit, Repr,
+)
 
 
 class Spec(Magic):
+    f: int = Frozen()
     _y: str = Alias(alias="why")
     x: int = KwOnly(kw_only=True)
     z: list = Factory(factory=list)
     w: int = NoInit(init=False)
     v: int = Default(default=3)
+    r: int = Repr(False, default=1)
 
 
-Spec(why="a", x=1)  # ok
-Spec("a", [], 4, x=1)  # ok
-Spec("a", x=1, v=4)  # ok
-Spec("a", 1)  # error: x is keyword-only
-Spec(_y="a", x=1)  # error: the parameter is called why
-Spec("a", x=1, w=2)  # error: w is not a parameter
-Spec("a")  # error: x has no default
+Spec(0, why="a", x=1)  # ok
+Spec(0, "a", [], 4, 2, x=1)  # ok
+Spec(0, "a", x=1, v=4, r=2)  # ok
+Spec(0, "a", [], 4, 2, 5)  # error: x is keyword-only
+Spec(0, _y="a", x=1)  # error: the parameter is called why
+Spec(0, "a", x=1, w=2)  # error: w is not a parameter
+Spec(0, "a")  # error: x has no default
+Spec(why="a", x=1)  # error: f has no default, Frozen() is not one
 '''
 
 
@@ -450,8 +482,8 @@ def test_the_fixture_does_what_the_checkers_are_told() -> None:
 
 def test_the_fixture_marks_the_lines_it_means() -> None:
     assert len(_lines("# ok")) == 3
-    assert len(_lines("# error")) == 4
-    assert len(_class_body()) == 5
+    assert len(_lines("# error")) == 5
+    assert len(_class_body()) == 7
 
 
 def test_a_report_is_read_by_line() -> None:

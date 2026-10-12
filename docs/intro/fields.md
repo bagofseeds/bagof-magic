@@ -90,10 +90,10 @@ out of the constructor, but they read these only from a call written as
 the field's value. An annotation such as `KwOnly[int]` changes nothing that
 a checker can see.
 
-The annotations that shape the constructor can therefore also be written
-as the value. Written there, each one takes the keyword that a checker
-reads: `alias=`, `default=`, `factory=` (or `default_factory=`), `kw_only=`,
-`init=` and, for pyright, `converter=`.
+Every annotation in the table below can therefore also be written as the
+value, and a checker reads it there as declaring the field. Written there,
+each one takes the keywords that a checker reads: `alias=`, `default=`,
+`factory=`, `kw_only=`, `init=` and, for pyright, `converter=`.
 
 === "In the annotation"
 
@@ -155,6 +155,12 @@ Traceback (most recent call last):
   ...
 TypeError: KwOnly(kw_only=False) says two different things: ...
 ```
+
+An annotation that does not shape the constructor, such as `Frozen()` or
+`Repr(False)`, is read the same way: the field is required unless the call
+also gives `default=` or `factory=`. So `x: int = Frozen()` is a required
+field to a checker, as it is to the class, and `x: int = Frozen(default=0)`
+is an optional one.
 
 When the annotation and the value both say something about the same field,
 the value is read second. A setting that both of them give takes the

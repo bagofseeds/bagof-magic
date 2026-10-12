@@ -744,9 +744,15 @@ mean "this field" or "forget it", which `Inherit()` and `Forget` say.
 ### What a type checker reads
 
 `MetaMagic` and `magic` carry `@tx.dataclass_transform`, whose
-`field_specifiers` names `Field`, `field` and the markers whose meaning
-a PEP 681 keyword can say (`Default`, `Factory`, `Alias`, `ConvertTo`,
-`Init`/`NoInit`, and the `Kw`/`Positional` family). A checker reads
+`field_specifiers` names `Field`, `field` and every public `Field`
+subclass in `_fields.__all__` (the test derives the list from there).
+All of them, not only those whose meaning a PEP 681 keyword can say: a
+call a checker does not recognise is read as the field's default, so
+`x: int = Frozen()` would look optional when it is required. A
+marker that says nothing about how a field is passed takes `init=` and
+`kw_only=` as `field()` does; `default_factory=` is accepted on every
+marker for `dataclasses` compatibility but documented only on `Field`
+and `field()`. A checker reads
 only the keywords written in such a call as a field's value --
 `default`, `factory`/`default_factory`, `init`, `kw_only`, `alias`,
 `converter` (pyright) -- never a positional argument, and, for a

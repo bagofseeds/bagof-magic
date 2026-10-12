@@ -982,7 +982,9 @@ class AnnotatedField(Field):
             for name, value in set_slots.items()
         ):
             raise TypeError(f"Missing required argument for {cls.__name__!r}")
-        # `Factory(default_factory=list)` is `Factory(factory=list)`:
+        # `default_factory=` is the `dataclasses` spelling of `factory=`,
+        # accepted for compatibility and left undocumented on the markers:
+        # `Factory(default_factory=list)` is `Factory(factory=list)`, and
         # the class's own `factory=True` must not be added beside it.
         if "default_factory" in kwvalues and "factory" not in kwvalues:
             kwvalues["factory"] = kwvalues.pop("default_factory")

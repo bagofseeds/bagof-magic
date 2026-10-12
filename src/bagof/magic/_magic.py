@@ -177,23 +177,50 @@ from ._fields import (
     _OVERRIDABLE,
     HIDE_IF_NONE,
     Alias,
+    ClassVar,
+    Compare,
     ConvertTo,
     Default,
+    Doc,
+    Eq,
     Factory,
     Field,
     Forget,
+    Frozen,
+    Hash,
+    HideIf,
+    HideIfDefault,
+    HideIfNone,
     Inherit,
     Init,
+    InitVar,
+    Key,
     Kw,
     KwOnly,
+    Narrow,
+    NoCompare,
+    NoEq,
+    NoHash,
     NoInit,
+    NoOrder,
+    NoPin,
+    NoRepr,
+    NotFrozen,
+    NotKey,
     NotKw,
     NotKwOnly,
     NotPositional,
     NotPositionalOnly,
+    Order,
+    Pin,
     Positional,
     PositionalOnly,
+    Property,
+    ReadOnlyProperty,
+    Repr,
     ShowIf,
+    Validate,
+    Var,
     _annotated,
     _chain,
     _field_key_test,
@@ -4738,15 +4765,22 @@ def _parameterised_class(cls: type, alias: tx.Any, arguments: tuple) -> type:
 # is the value: `x: int = KwOnly(kw_only=True)`. A checker reads only the
 # PEP 681 keywords written in that call -- `default`, `factory` or
 # `default_factory`, `init`, `kw_only`, `alias` and (pyright) `converter`
-# -- never a positional argument and never what the class does with it,
-# so these are the classes whose meaning those keywords can say. The
-# tuple is written out four times, once per decorator, because mypy reads
-# nothing but a tuple literal there; the tests check they agree.
+# -- never a positional argument and never what the class does with it.
+# Every class of the annotation family is named, not only the ones those
+# keywords can describe: a call a checker does not recognise is read as
+# the field's default, so `x: int = Frozen()` would look optional to it
+# when the field is in fact required. The tuple is written out four
+# times, once per decorator, because mypy reads nothing but a tuple
+# literal there; the tests check they agree.
 @tx.dataclass_transform(
     field_specifiers=(
-        Field, _field, Default, Factory, Alias, ConvertTo, Init, NoInit,
-        Kw, NotKw, Positional, NotPositional, KwOnly, NotKwOnly,
-        PositionalOnly, NotPositionalOnly,
+        Field, _field, Alias, Property, ReadOnlyProperty, Default,
+        Factory, ConvertTo, Validate, Init, NoInit, Kw, NotKw, KwOnly,
+        NotKwOnly, Positional, NotPositional, PositionalOnly,
+        NotPositionalOnly, Frozen, NotFrozen, Var, InitVar, ClassVar,
+        Repr, NoRepr, ShowIf, HideIf, HideIfNone, HideIfDefault, Compare,
+        NoCompare, Eq, NoEq, Order, NoOrder, Hash, NoHash, Key, NotKey,
+        Doc, Pin, Narrow, NoPin, Forget, Inherit,
     ),
     eq_default=True,
     order_default=False,
@@ -5216,9 +5250,13 @@ class Magic(metaclass=MetaMagic):
 
 @tx.dataclass_transform(
     field_specifiers=(
-        Field, _field, Default, Factory, Alias, ConvertTo, Init, NoInit,
-        Kw, NotKw, Positional, NotPositional, KwOnly, NotKwOnly,
-        PositionalOnly, NotPositionalOnly,
+        Field, _field, Alias, Property, ReadOnlyProperty, Default,
+        Factory, ConvertTo, Validate, Init, NoInit, Kw, NotKw, KwOnly,
+        NotKwOnly, Positional, NotPositional, PositionalOnly,
+        NotPositionalOnly, Frozen, NotFrozen, Var, InitVar, ClassVar,
+        Repr, NoRepr, ShowIf, HideIf, HideIfNone, HideIfDefault, Compare,
+        NoCompare, Eq, NoEq, Order, NoOrder, Hash, NoHash, Key, NotKey,
+        Doc, Pin, Narrow, NoPin, Forget, Inherit,
     ),
     eq_default=True,
     order_default=False,
@@ -5231,9 +5269,13 @@ def magic(**kwargs) -> tx.Callable[[type], type]: ...
 
 @tx.dataclass_transform(
     field_specifiers=(
-        Field, _field, Default, Factory, Alias, ConvertTo, Init, NoInit,
-        Kw, NotKw, Positional, NotPositional, KwOnly, NotKwOnly,
-        PositionalOnly, NotPositionalOnly,
+        Field, _field, Alias, Property, ReadOnlyProperty, Default,
+        Factory, ConvertTo, Validate, Init, NoInit, Kw, NotKw, KwOnly,
+        NotKwOnly, Positional, NotPositional, PositionalOnly,
+        NotPositionalOnly, Frozen, NotFrozen, Var, InitVar, ClassVar,
+        Repr, NoRepr, ShowIf, HideIf, HideIfNone, HideIfDefault, Compare,
+        NoCompare, Eq, NoEq, Order, NoOrder, Hash, NoHash, Key, NotKey,
+        Doc, Pin, Narrow, NoPin, Forget, Inherit,
     ),
     eq_default=True,
     order_default=False,
@@ -5246,9 +5288,13 @@ def magic(cls: type, **kwargs) -> type: ...
 
 @tx.dataclass_transform(
     field_specifiers=(
-        Field, _field, Default, Factory, Alias, ConvertTo, Init, NoInit,
-        Kw, NotKw, Positional, NotPositional, KwOnly, NotKwOnly,
-        PositionalOnly, NotPositionalOnly,
+        Field, _field, Alias, Property, ReadOnlyProperty, Default,
+        Factory, ConvertTo, Validate, Init, NoInit, Kw, NotKw, KwOnly,
+        NotKwOnly, Positional, NotPositional, PositionalOnly,
+        NotPositionalOnly, Frozen, NotFrozen, Var, InitVar, ClassVar,
+        Repr, NoRepr, ShowIf, HideIf, HideIfNone, HideIfDefault, Compare,
+        NoCompare, Eq, NoEq, Order, NoOrder, Hash, NoHash, Key, NotKey,
+        Doc, Pin, Narrow, NoPin, Forget, Inherit,
     ),
     eq_default=True,
     order_default=False,
