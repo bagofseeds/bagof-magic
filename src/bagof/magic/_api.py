@@ -216,14 +216,14 @@ def fields(
 
 
 def dictfields(
-    cls: type, *, by: tx.Literal["name", "public_name"] = "name",
+    cls: type, *, by: tx.Literal["name", "public_name"] = "public_name",
     var: tx.Optional[bool] = False, **filters: tx.Any,
 ) -> tx.Dict[str, Field]:
     """Return a Magic class's fields as a dictionary.
 
-    Keys are variable names from the class body by default. Use
-    `by="public_name"` for the names the constructor takes, including
-    aliases and names with a leading underscore removed. Filters and
+    Keys are public names by default: the names the constructor takes,
+    including aliases and names with a leading underscore removed.
+    Use `by="name"` for variable names from the class body. Filters and
     field order are the same as for [`iterfields`][].
 
     !!! example
@@ -232,10 +232,10 @@ def dictfields(
         ...     _x: int
         ...     y: int
         >>> list(dictfields(Point))
-        ['_x', 'y']
-        >>> list(dictfields(Point, by="public_name"))
         ['x', 'y']
-        >>> dictfields(Point)["_x"].type
+        >>> list(dictfields(Point, by="name"))
+        ['_x', 'y']
+        >>> dictfields(Point)["x"].type
         <class 'int'>
         ```
 
@@ -243,7 +243,7 @@ def dictfields(
     ----------
     cls : type
         A Magic class (not an instance). A plain class has no fields.
-    by : {"name", "public_name"}, default="name"
+    by : {"name", "public_name"}, default="public_name"
         Which field attribute to use as the dictionary key.
     var : bool or None, default=False
         Select concrete fields (`False`), pseudo-fields (`True`), or

@@ -82,13 +82,13 @@ def test_return_types_and_iterator(example: type) -> None:
 
 
 def test_dict_key_choices(example: type) -> None:
-    assert list(dictfields(example, frozen=True)) == ["_value"]
+    assert list(dictfields(example, frozen=True)) == ["amount"]
     assert list(dictfields(example, by="name", frozen=True)) == ["_value"]
     public = dictfields(example, by="public_name", frozen=True)
     assert list(public) == ["amount"]
     assert list(fields_dict(example, frozen=True)) == ["amount"]
     assert list(fields_dict(example, by="name", frozen=True)) == ["_value"]
-    assert dictfields(example, by="public_name") == fields_dict(example)
+    assert dictfields(example) == fields_dict(example)
 
 
 @pytest.mark.parametrize("query", [dictfields, fields_dict])
@@ -96,6 +96,7 @@ def test_public_names_strip_underscores(query: tx.Callable) -> None:
     class Example(Magic):
         _value: int
 
+    assert list(query(Example)) == ["value"]
     assert list(query(Example, by="name")) == ["_value"]
     assert list(query(Example, by="public_name")) == ["value"]
 

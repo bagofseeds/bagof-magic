@@ -78,10 +78,10 @@ value is left out of the dictionary. `astuple` raises an error for such a
 field instead, because a missing position would shift every value after it.
 
 `fields` returns a tuple of fields, `iterfields` returns an iterator, and
-`dictfields` returns a dictionary keyed by variable names. Use
-`dictfields(cls, by="public_name")` to key by the names the constructor
-takes instead. `fields_dict` is kept for compatibility, with public names
-as its default keys. `is_magic` tells whether
+`dictfields` returns a dictionary keyed by public names, as the constructor
+accepts them. Use `dictfields(cls, by="name")` to key by variable names
+from the class body instead. `fields_dict` is kept for compatibility,
+with the same public-name default. `is_magic` tells whether
 a class was built by `Magic`.
 
 These queries exclude `ClassVar` and `InitVar` by default, like
