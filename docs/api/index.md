@@ -10,6 +10,8 @@ icon: fontawesome/brands/python
         - magic
         - Arguments
         - fields
+        - iterfields
+        - dictfields
         - fields_dict
         - asdict
         - astuple

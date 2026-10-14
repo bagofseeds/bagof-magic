@@ -4,8 +4,10 @@ Functions you call on a Magic class or one of its instances.
 Every function here uses the name the constructor takes. A field whose
 class-body name starts with an underscore, or that has an alias, reaches
 ``__init__`` under a different name. That public name is the key in
-``fields_dict``, the keyword in ``replace``, and the label in ``repr``.
+``dictfields``, the keyword in ``replace``, and the label in ``repr``.
 """
+from types import MemberDescriptorType
+
 import typing_extensions as tx
 
 from ._constants import _FIELDS, MISSING, _HasFactory
@@ -13,6 +15,8 @@ from ._fields import Field, _stored
 
 __all__ = [
     "fields",
+    "iterfields",
+    "dictfields",
     "fields_dict",
     "asdict",
     "astuple",
@@ -110,67 +114,167 @@ def _concrete(obj: tx.Any, caller: str) -> tx.Dict[str, Field]:
     return _keyed(field for field in table.values() if not field.var)
 
 
-def fields(cls: type) -> tx.Tuple[Field]:
-    """
-    Return the fields of a Magic class as a tuple.
+# Public data attributes and computed properties, excluding methods and
+# private bookkeeping. Validate once even when the class has no fields.
+_FIELD_ATTRIBUTES = frozenset(
+    name for name in dir(Field)
+    if not name.startswith("_")
+    and isinstance(getattr(Field, name), (MemberDescriptorType, property))
+)
 
-    Only concrete fields are included, so `ClassVar` and `InitVar`
-    fields are left out. A class that Magic did not build has no
-    fields, and the result for it is an empty tuple.
+
+def iterfields(
+    cls: type, *, var: tx.Optional[bool] = False, **filters: tx.Any,
+) -> tx.Iterator[Field]:
+    """Iterate over a Magic class's fields, optionally filtering them.
+
+    Only concrete fields are included by default. Use `var=True` for
+    pseudo-fields (`ClassVar` and `InitVar`), or `var=None` for both
+    kinds. Additional filters match public `Field` attributes by
+    equality, and every filter must match. For example,
+    `iterfields(cls, var=True, init=True)` selects only init variables.
 
     Parameters
     ----------
     cls : type
-        A Magic class (not an instance).
+        A Magic class (not an instance). A plain class has no fields.
+    var : bool or None, default=False
+        Select concrete fields (`False`), pseudo-fields (`True`), or
+        both (`None`).
+    **filters
+        Public `Field` attributes to match, such as `init`, `frozen`,
+        `convert`, `name`, `type` or `default`. `None` is an ordinary
+        filter value here; only `var=None` disables a filter.
+
+    Returns
+    -------
+    fields : Iterator[Field]
+        Matching fields in declaration order, including inherited ones.
+        The field objects are the ones held by the class, not copies.
+
+    Raises
+    ------
+    TypeError
+        If a filter names no public field attribute, or `var` is not
+        `True`, `False` or `None`.
+    """
+    if var is not None and var is not True and var is not False:
+        raise TypeError("var must be True, False or None")
+    for name in filters:
+        if name not in _FIELD_ATTRIBUTES:
+            raise TypeError(f"Unknown field attribute {name!r}")
+    return (
+        field for field in getattr(cls, _FIELDS, {}).values()
+        if (var is None or field.var == var)
+        and all(getattr(field, name) == value
+                for name, value in filters.items())
+    )
+
+
+def fields(
+    cls: type, *, var: tx.Optional[bool] = False, **filters: tx.Any,
+) -> tx.Tuple[Field, ...]:
+    """Return a Magic class's fields as a tuple.
+
+    `ClassVar` and `InitVar` are excluded by default. Use `var=True`
+    to get those pseudo-fields, or `var=None` to include all fields.
+    Filters and field order are the same as for [`iterfields`][].
+
+    !!! example
+        ```pycon
+        >>> class Counter(Magic):
+        ...     count: int
+        ...     scale: InitVar[int] = 1
+        ...     unit: ClassVar[str] = "clicks"
+        >>> [f.name for f in fields(Counter)]
+        ['count']
+        >>> [f.name for f in fields(Counter, var=True)]
+        ['scale', 'unit']
+        >>> [f.name for f in fields(Counter, var=True, init=False)]
+        ['unit']
+        >>> [f.name for f in fields(Counter, var=None, init=True)]
+        ['count', 'scale']
+        ```
+
+    Parameters
+    ----------
+    cls : type
+        A Magic class (not an instance). A plain class has no fields.
+    var : bool or None, default=False
+        Select concrete fields (`False`), pseudo-fields (`True`), or
+        both (`None`).
+    **filters
+        Public `Field` attributes to match by equality. All must match.
 
     Returns
     -------
     fields : tuple[Field, ...]
-        The class's concrete fields, in declaration order.
+        Matching fields in declaration order, or an empty tuple for
+        a class that Magic did not build.
     """
-    return tuple(
-        field for field in getattr(cls, _FIELDS, {}).values()
-        if not field.var
-    )
+    return tuple(iterfields(cls, var=var, **filters))
 
 
-def fields_dict(cls: type) -> tx.Dict[str, Field]:
-    """
-    Return the fields of a Magic class, keyed by their public names.
+def dictfields(
+    cls: type, *, by: tx.Literal["name", "public_name"] = "name",
+    var: tx.Optional[bool] = False, **filters: tx.Any,
+) -> tx.Dict[str, Field]:
+    """Return a Magic class's fields as a dictionary.
 
-    The result holds the same fields as [`fields`][], in the same order.
-    Each field is keyed by its public name, which is the name the
-    constructor takes. For a field with an alias, or a field whose name
-    starts with an underscore, the public name differs from the name
-    used in the class body.
+    Keys are variable names from the class body by default. Use
+    `by="public_name"` for the names the constructor takes, including
+    aliases and names with a leading underscore removed. Filters and
+    field order are the same as for [`iterfields`][].
 
     !!! example
         ```pycon
         >>> class Point(Magic):
-        ...     x: int
+        ...     _x: int
         ...     y: int
-        ...
-        >>> list(fields_dict(Point))
+        >>> list(dictfields(Point))
+        ['_x', 'y']
+        >>> list(dictfields(Point, by="public_name"))
         ['x', 'y']
-        >>> fields_dict(Point)["x"].type
+        >>> dictfields(Point)["_x"].type
         <class 'int'>
         ```
 
     Parameters
     ----------
     cls : type
-        The class to get the fields of.
+        A Magic class (not an instance). A plain class has no fields.
+    by : {"name", "public_name"}, default="name"
+        Which field attribute to use as the dictionary key.
+    var : bool or None, default=False
+        Select concrete fields (`False`), pseudo-fields (`True`), or
+        both (`None`).
+    **filters
+        Public `Field` attributes to match by equality. All must match.
 
     Returns
     -------
     fields : dict[str, Field]
-        Every field that is not a `ClassVar` or an `InitVar`. A class
-        that Magic did not build has no fields, so the result for it is
-        an empty dict, as with [`fields`][]. [`asdict`][], [`astuple`][]
-        and [`replace`][] need an instance of a Magic class instead, and
-        raise an error for anything else.
+        Matching fields in declaration order, or an empty dict for
+        a class that Magic did not build.
     """
-    return _keyed(fields(cls))
+    if by not in ("name", "public_name"):
+        raise TypeError("by must be 'name' or 'public_name'")
+    return {
+        getattr(field, by): field
+        for field in iterfields(cls, var=var, **filters)
+    }
+
+
+def fields_dict(
+    cls: type, *, by: tx.Literal["name", "public_name"] = "public_name",
+    var: tx.Optional[bool] = False, **filters: tx.Any,
+) -> tx.Dict[str, Field]:
+    """Compatibility name for [`dictfields`][].
+
+    Accepts the same filters, with `by="public_name"` as its default
+    to preserve existing behavior. Prefer `dictfields` in new code.
+    """
+    return dictfields(cls, by=by, var=var, **filters)
 
 
 def asdict(obj: tx.Any) -> tx.Dict[str, tx.Any]:

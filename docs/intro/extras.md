@@ -77,8 +77,36 @@ tuples and dicts, and returns every other value as it is. A field with no
 value is left out of the dictionary. `astuple` raises an error for such a
 field instead, because a missing position would shift every value after it.
 
-`fields` and `fields_dict` return the fields themselves, and `is_magic` tells
-whether a class was built by `Magic`.
+`fields` returns a tuple of fields, `iterfields` returns an iterator, and
+`dictfields` returns a dictionary keyed by variable names. Use
+`dictfields(cls, by="public_name")` to key by the names the constructor
+takes instead. `fields_dict` is kept for compatibility, with public names
+as its default keys. `is_magic` tells whether
+a class was built by `Magic`.
+
+These queries exclude `ClassVar` and `InitVar` by default, like
+`dataclasses.fields`. Use `var=True` to get pseudo-fields, or `var=None` to
+include every field. Other keyword arguments filter by public `Field`
+attributes; all supplied filters must match.
+
+```pycon
+>>> class Counter(Magic):
+...     count: int
+...     scale: InitVar[int] = 1
+...     unit: ClassVar[str] = "clicks"
+>>> [f.name for f in fields(Counter)]
+['count']
+>>> list(dictfields(Counter, var=True))
+['scale', 'unit']
+>>> [f.name for f in iterfields(Counter, var=True, init=False)]
+['unit']
+>>> [f.name for f in fields(Counter, var=None, init=True)]
+['count', 'scale']
+```
+
+`var=None` turns off the pseudo-field filter. For other attributes, `None`
+is a value to match: `fields(Counter, default=None)` selects concrete
+fields whose default is `None`.
 
 ## Fields with no value
 
