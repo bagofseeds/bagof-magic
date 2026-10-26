@@ -145,6 +145,16 @@ Tests that exercise internals import them from the module that defines them
   test, goes through `field_error`. `HIDE_IF_NONE` is a subclass of
   `HideIfNone` kept for compatibility; its key name is used only as a
   key setting.
+- **A field's `eq` setting is `True`, `False` or a function of two
+  values** (#135), normalised by `_eq_setting`. `_compile_eq` keeps the
+  `==` fields in the tuple comparison and asks each function after it
+  through `_equal`, which reads the answer with `bool()` inside the
+  guard and sends a failure through `field_error` (action `"eq"`, the
+  two values as a pair); the looped `_matching` does the same. Such a
+  field defaults to `order=False` and, with `hash=None`, is left out of
+  `_hash_add`. `_check_comparison` refuses a function on `order=`,
+  `compare=`, `Order`/`Compare` and `NoEq`. Only the two-argument form
+  exists: a key function cannot be told apart from a comparator.
 - **A class installs `__setattr__` / `__delattr__` only when it needs
   them** -- to freeze a field, or run a converter or a validator on
   assignment (or because a base installs one). A class that does none of

@@ -25,13 +25,16 @@ from bagof.magic import (
     Alias,
     Arguments,
     ClassVar,
+    Compare,
     ConvertTo,
     Default,
     Doc,
+    Eq,
     Factory,
     Field,
     Forget,
     Frozen,
+    Hash,
     HideIf,
     HideIfDefault,
     HideIfNone,
@@ -54,6 +57,7 @@ from bagof.magic import (
     NotKwOnly,
     NotPositional,
     NotPositionalOnly,
+    Order,
     Pin,
     Positional,
     PositionalOnly,
@@ -1015,6 +1019,231 @@ class TestEqOrder:
         with pytest.raises(ValueError, match="eq must be true"):
             class Bad(Magic):
                 x: Annotated[int, Field(order=True, eq=False)]
+
+
+def _same_text(a: str, b: str) -> bool:
+    return a.casefold() == b.casefold()
+
+
+class _Counted:
+    """A comparator that counts its calls."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, a: tx.Any, b: tx.Any) -> bool:
+        self.calls += 1
+        return _same_text(a, b)
+
+
+class TestEqComparator:
+    """A field compared in `__eq__` with a function of two values."""
+
+    def test_the_markers_lower_to_the_eq_setting(self) -> None:
+        assert Eq(_same_text).eq is _same_text
+        assert Field(eq=_same_text).eq is _same_text
+        hint = Eq[str, _same_text]
+        assert tx.get_args(hint)[0] is str
+        assert tx.get_args(hint)[1].eq is _same_text
+        assert Eq().eq is True
+        assert NoEq().eq is False
+
+    @pytest.mark.parametrize("spelling", ["field", "marker", "subscript"])
+    def test_the_function_decides(self, spelling: str) -> None:
+        class Tag(Magic):
+            if spelling == "field":
+                label: str = Field(eq=_same_text)
+            elif spelling == "marker":
+                label: Annotated[str, Eq(_same_text)]
+            else:
+                label: Eq[str, _same_text]
+
+        assert Tag("Python") == Tag("PYTHON")
+        assert Tag("Python") != Tag("Rust")
+
+    def test_the_other_fields_still_compare_with_eq(self) -> None:
+        same = _Counted()
+
+        class Tag(Magic):
+            label: Eq[str, same]
+            weight: int
+
+        assert Tag("a", 1) != Tag("A", 2)
+        # The plain fields settle the answer before the function is asked.
+        assert same.calls == 0
+        assert Tag("a", 1) == Tag("A", 1)
+        assert same.calls == 1
+
+    def test_a_field_set_by_hand_is_compared_with_the_function(self) -> None:
+        class Tag(Magic):
+            label: str
+            alias: Annotated[str, NoInit(), Eq(_same_text)]
+
+        assert "__eq__" in vars(Tag)
+        a, b = Tag("x"), Tag("x")
+        assert a == b
+        a.alias = "Py"
+        assert a != b
+        b.alias = "PY"
+        assert a == b
+        b.alias = "Rust"
+        assert a != b
+
+    @pytest.mark.parametrize("hand_set", [False, True])
+    def test_a_failing_function_names_the_field(self, hand_set: bool) -> None:
+        def broken(a: tx.Any, b: tx.Any) -> bool:
+            raise ZeroDivisionError("no way to tell")
+
+        class Tag(Magic):
+            label: Eq[str, broken]
+            if hand_set:
+                note: NoInit[str]
+
+        with pytest.raises(ZeroDivisionError) as caught:
+            operator.eq(Tag("a"), Tag("b"))
+        message = str(caught.value)
+        assert message.startswith("Tag.label: could not compare 'a' with 'b'")
+        assert "no way to tell" in message
+        assert "__magic" not in message
+        assert isinstance(caught.value.__cause__, ZeroDivisionError)
+
+    def test_an_answer_with_no_truth_value_names_the_field(self) -> None:
+        class Ambiguous:
+            def __bool__(self) -> bool:
+                raise ValueError("ambiguous")
+
+        class Tag(Magic):
+            label: Eq[str, lambda a, b: Ambiguous()]
+
+        with pytest.raises(ValueError, match="Tag.label: could not compare"):
+            operator.eq(Tag("a"), Tag("a"))
+
+    def test_left_out_of_the_hash(self) -> None:
+        class Tag(Magic, frozen=True):
+            label: Eq[str, _same_text]
+            weight: int = 0
+
+        assert Tag("Python") == Tag("PYTHON")
+        assert hash(Tag("Python")) == hash(Tag("PYTHON"))
+        assert hash(Tag("a", 1)) != hash(Tag("a", 2))
+        assert len({Tag("Python"), Tag("PYTHON")}) == 1
+
+    def test_hashed_when_the_field_says_so(self) -> None:
+        class Tag(Magic, frozen=True):
+            label: Annotated[str, Eq(_same_text), Hash()]
+
+        assert hash(Tag("a")) == hash(Tag("a"))
+        assert hash(Tag("a")) != hash(Tag("b"))
+
+    def test_left_out_of_the_ordering(self) -> None:
+        class Tag(Magic, order=True):
+            label: Eq[str, _same_text]
+            weight: int
+
+        # Ordered by `weight` alone.
+        assert Tag("z", 1) < Tag("a", 2)
+        assert not Tag("a", 1) < Tag("z", 1)
+        assert not Tag("z", 1) < Tag("a", 1)
+        assert vars(Tag)[_FIELDS]["label"].order is False
+
+    def test_ordered_by_value_when_the_field_says_so(self) -> None:
+        class Tag(Magic, order=True):
+            label: str = Field(eq=_same_text, order=True)
+
+        assert Tag("a") < Tag("b")
+        assert Tag("B") < Tag("a")
+
+    @pytest.mark.parametrize("make", [
+        lambda: Field(order=_same_text),
+        lambda: Field(compare=_same_text),
+        lambda: Order(_same_text),
+        lambda: Order(eq=_same_text),
+        lambda: Compare(_same_text),
+        lambda: Compare[str, _same_text],
+        lambda: NoEq(_same_text),
+    ])
+    def test_a_function_where_it_cannot_be_used_is_refused(
+        self, make: tx.Callable
+    ) -> None:
+        with pytest.raises(TypeError, match="Eq\\(|eq="):
+            make()
+
+    def test_compare_takes_a_bool_as_before(self) -> None:
+        assert Field(compare=False).eq is False
+        assert Field(compare=False).order is False
+        assert NoCompare().eq is False
+
+    def test_a_setting_that_is_not_a_bool_is_read_as_one(self) -> None:
+        class Tag(Magic):
+            label: str = Field(eq=1)
+            weight: int = Field(eq=0, default=0)
+
+        assert vars(Tag)[_FIELDS]["label"].eq is True
+        assert vars(Tag)[_FIELDS]["weight"].eq is False
+        assert Tag("a", 1) == Tag("a", 2)
+
+    def test_a_subclass_inherits_the_function(self) -> None:
+        class Tag(Magic):
+            label: Eq[str, _same_text]
+
+        class Child(Tag):
+            weight: int = 0
+
+        assert Child("a") == Child("A")
+        assert Child("a", 1) != Child("A", 2)
+
+    def test_a_patch_can_give_or_take_the_function(self) -> None:
+        class Tag(Magic, frozen=True):
+            label: str
+            weight: int = 0
+
+        class Loose(Tag):
+            label: ... = Inherit(eq=_same_text)
+
+        class Strict(Loose):
+            label: ... = Inherit(eq=True)
+
+        assert Loose("a") == Loose("A")
+        assert hash(Loose("a")) == hash(Loose("A"))
+        assert Strict("a") != Strict("A")
+        assert Strict("a") == Strict("a")
+        assert vars(Strict)[_FIELDS]["label"].eq is True
+        assert vars(Strict)[_FIELDS]["label"].hash is None
+
+    def test_an_array_like_value(self) -> None:
+        # Behaves like a NumPy array: `==` compares element by element,
+        # the result has no truth value, and the value is unhashable.
+        class Array:
+            __hash__ = None
+
+            def __init__(self, *items: int) -> None:
+                self.items = items
+
+            def __eq__(self, other: tx.Any) -> tx.Any:
+                return _NoTruth()
+
+        class _NoTruth:
+            def __bool__(self) -> bool:
+                raise ValueError("the truth value of an array is ambiguous")
+
+        def array_equal(a: Array, b: Array) -> bool:
+            return a.items == b.items
+
+        class Image(Magic, frozen=True):
+            name: str
+            data: Eq[Array, array_equal]
+
+        a = Image("x", Array(0, 1, 2))
+        assert a == Image("x", Array(0, 1, 2))
+        assert a != Image("x", Array(0, 1, 2, 3))
+        assert a != Image("y", Array(0, 1, 2))
+        assert hash(a) == hash(Image("x", Array(0, 1, 2)))
+
+        class Plain(Magic):
+            data: Array
+
+        with pytest.raises(ValueError, match="ambiguous"):
+            assert Plain(Array(0)) == Plain(Array(0))
 
 
 # ======================================================================

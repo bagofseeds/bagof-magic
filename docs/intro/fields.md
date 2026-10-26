@@ -202,6 +202,7 @@ column.
 | `HideIfNone[T]` | hide from `repr()` while it is `None` | -- |
 | `HideIfDefault[T]` | hide from `repr()` while it holds its default | -- |
 | `Eq[T]` | count towards `==` | `NoEq` |
+| `Eq[T, fn]` | count towards `==`, compared with `fn(a, b)` (see [below](#choosing-how-a-field-compares)) | -- |
 | `Order[T]` | count towards `<` | `NoOrder` |
 | `Compare[T]` | both of the above | `NoCompare` |
 | `Hash[T]` | count towards `hash()` | `NoHash` |
@@ -291,6 +292,49 @@ dict-like class, a test also works as a key setting, either alone or together
 with a new name: `Key("labels", ShowIf(bool))` keeps the key only while the
 value is true. A key setting accepts only a test, because a key is either kept
 or left out and is never reformatted.
+
+## Choosing how a field compares
+
+A field's eq setting can be a function of two values. The generated `__eq__`
+calls it with the field's value on each of the two objects, and the objects
+can be equal only when its answer is true. Every other field is compared with
+`==`, as before.
+
+```pycon
+>>> def same_text(a, b):
+...     return a.casefold() == b.casefold()
+...
+>>> class Tag(Magic):
+...     label: Eq[str, same_text]
+...     weight: int = 0
+...
+>>> Tag("Python") == Tag("PYTHON")
+True
+>>> Tag("Python", 1) == Tag("PYTHON", 2)
+False
+```
+
+`Eq(same_text)` and `field(eq=same_text)` say the same thing. A function is
+the way to compare a value whose `==` does not answer with a single `True` or
+`False`. A NumPy array compares element by element, so a field holding one
+needs `numpy.array_equal`, which compares the two arrays as wholes:
+
+```python title="Needs NumPy"
+import numpy as np
+
+class Image(Magic):
+    name: str
+    pixels: Eq[np.ndarray, np.array_equal]
+```
+
+Two values that the function calls equal can still hash differently, so a
+field compared with a function is left out of the generated `__hash__`.
+Add `Hash()` beside it if its values do hash consistently with the
+function. The function says only whether two values are equal and not which
+one comes first, so the field is also left out of the ordering of a class
+with `order=True`, unless the field says `order=True` itself, in which case
+its values are ordered with `<`. `Compare` and `Order` therefore take no
+function, and `compare=` takes only `True` or `False`.
 
 ## Forgetting an inherited field
 

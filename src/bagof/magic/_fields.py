@@ -162,7 +162,7 @@ else:
     'factory',          # Default: False (none), True (from hint), callable.
     'repr',             # In __repr__: True, False, or a function of the value.
     'hash',             # Include this field in the generated __hash__ method.
-    'eq',               # Include this field in the generated __eq__ method.
+    'eq',               # In __eq__: True, False, or a function of two values.
     'order',            # Include this field in the generated __lt__ methods.
     'metadata',         # User-defined metadata
     'kw',               # Field is a keyword argument in __init__.
@@ -231,14 +231,26 @@ class Field(SlotsBase, metaclass=_Specifier):
         hash : bool, default=None (follows `eq`)
             Whether the field counts towards the generated `__hash__`.
             By default it follows `eq`, since equal instances must have
-            equal hashes.
-        eq : bool, default=True
-            Whether the field counts towards the generated `__eq__`.
+            equal hashes: a field that `__eq__` compares with `==` is
+            hashed, and one that it leaves out or compares with a
+            function is not, because two values that the function calls
+            equal can still hash differently.
+        eq : bool or Callable[[any, any], bool], default=True
+            Whether the field counts towards the generated `__eq__`, and
+            how. `True` compares the two values with `==`, and `False`
+            leaves the field out. A function is called with the field's
+            value on each of the two objects, and the objects can be
+            equal only when its answer is true. This suits a value whose
+            `==` does not answer with a single `True` or `False`, such
+            as an array.
         order : bool, default=follows `eq`
             Whether the field counts towards the generated ordering
             methods. A field left out of `__eq__` is left out of the
             ordering too, and `eq=False` together with `order=True` is an
-            error.
+            error. A field compared with a function is left out of the
+            ordering unless `order=True` is given, and then the values
+            themselves are ordered, since the function says only whether
+            two values are equal.
         metadata : dict, optional
             Arbitrary user-defined metadata.
         kw : bool, default=`not Options().positional_only`
@@ -328,7 +340,8 @@ class Field(SlotsBase, metaclass=_Specifier):
         Other Parameters
         ----------------
         compare : bool, optional
-            A shorthand that sets both `eq` and `order`.
+            A shorthand that sets both `eq` and `order`. It takes only
+            `True` or `False`: a function to compare with goes on `eq`.
         kw_only : bool, optional
             The `dataclasses` spelling. `kw_only=True` makes the field
             keyword-only, as the `KwOnly` annotation does. `kw_only=False`
@@ -356,6 +369,7 @@ class Field(SlotsBase, metaclass=_Specifier):
         for flag, call in _FLAG_TO_CALL.items():
             if flag in kwargs:
                 kwargs.setdefault(call, kwargs.pop(flag))
+        _check_comparison(type(self), kwargs)
         # `compare` sets both `eq` and `order` at once.
         compare = kwargs.pop("compare", MISSING)
         if compare is not MISSING:
@@ -708,9 +722,12 @@ class Field(SlotsBase, metaclass=_Specifier):
         self.key = _key_setting(self.key)
         if self.eq is MISSING:
             self.eq = True
+        self.eq = _eq_setting(self.eq)
         if self.order is MISSING:
-            # A field out of eq is out of ordering too.
-            self.order = self.eq
+            # A field out of eq is out of ordering too, and so is one
+            # compared with a function, which cannot say which of two
+            # values comes first.
+            self.order = self.eq is True
         if options.kw_only:
             if self.kw is MISSING:
                 self.kw = True
@@ -839,6 +856,42 @@ def _repr_setting(value: tx.Any, var: bool) -> tx.Any:
     if value is True or value is False or callable(value):
         return value
     return bool(value)
+
+
+def _eq_setting(value: tx.Any) -> tx.Any:
+    # A field's eq setting as the generated `__eq__` reads it: True,
+    # False, or a function of two values.
+    if value is True or value is False or callable(value):
+        return value
+    return bool(value)
+
+
+def _check_comparison(cls: type, kwargs: tx.Mapping[str, tx.Any]) -> None:
+    # Refuse a function where it would be read as something else: a
+    # function decides whether two values are equal, so it belongs on
+    # `eq`, and only on a marker that compares the field.
+    eq = kwargs.get("eq", MISSING)
+    if callable(eq) and issubclass(cls, NoEq):
+        raise TypeError(
+            f"{cls.__name__} leaves the field out of ==, so it takes no "
+            f"function to compare with. To compare the field with "
+            f"{eq!r}, write Eq({eq!r}) instead."
+        )
+    if callable(eq) and issubclass(cls, Order):
+        raise TypeError(
+            f"{cls.__name__}({eq!r}) cannot use a function: a function "
+            f"says whether two values are equal, not which comes first. "
+            f"Write Eq({eq!r}) to compare the field with it in ==."
+        )
+    for key in ("order", "compare"):
+        value = kwargs.get(key, MISSING)
+        if callable(value):
+            raise TypeError(
+                f"{key}= takes True or False, not {value!r}: a function "
+                f"says whether two values are equal, not which comes "
+                f"first. Write eq={value!r} to compare the field with it "
+                f"in ==."
+            )
 
 
 def _key_setting(value: tx.Any) -> tx.Any:
@@ -1889,10 +1942,20 @@ class HIDE_IF_NONE(HideIfNone):
 @slots
 class Eq(BoolAnnotatedField):
     """
-    Compare a field in the generated `__eq__`, or ignore it.
+    Compare a field in the generated `__eq__`, ignore it, or choose how.
 
     A field that is ignored takes no part in equality, so two objects
     that differ only in that field compare equal.
+
+    Besides `True` and `False`, a field's eq setting can be a function
+    of two values, which is called with the field's value on each of the
+    two objects. The objects can be equal only when its answer is true.
+    A function suits a value whose `==` does not answer with a single
+    `True` or `False`: `numpy.array_equal` compares two arrays as wholes,
+    where `==` compares them element by element. A field compared with a
+    function is left out of the hash, since two values that the function
+    calls equal can still hash differently, and it is left out of the
+    ordering unless the field says `order=True`.
 
     !!! example "How it lowers"
         ```pycon
@@ -1913,9 +1976,41 @@ class Eq(BoolAnnotatedField):
         >>> Sample(1, 100.0) == Sample(1, 999.0)
         True
         ```
+
+    !!! example "Comparing with a function"
+        ```pycon
+        >>> def same_text(a, b):
+        ...     return a.casefold() == b.casefold()
+        ...
+        >>> class Tag(Magic):
+        ...     label: Eq[str, same_text]
+        ...
+        >>> Tag("Python") == Tag("PYTHON")
+        True
+        >>> Tag("Python") == Tag("Rust")
+        False
+        ```
     """
 
     __set_slots__ = ('eq',)
+
+    def __class_getitem__(
+        cls, args: tx.Union[type, tx.Tuple]
+    ) -> tx.TypeAlias:
+        # `Eq[float, isclose]` puts the function in the eq setting, as
+        # `Repr[float, fn]` does for repr. Anything after the type that
+        # is not callable stays as metadata. `Compare[T, fn]` reaches
+        # `Compare(fn)`, which refuses the function.
+        if (
+            isinstance(args, tuple) and len(args) > 1 and callable(args[1])
+            and not issubclass(cls, InversedBoolAnnotatedField)
+        ):
+            t, how, *rest = args
+            return _annotated(t, cls(how), *rest)
+        # Named rather than `super()`, as in `Repr.__class_getitem__`.
+        return BoolAnnotatedField.__dict__["__class_getitem__"].__func__(
+            cls, args
+        )
 
 
 @slots

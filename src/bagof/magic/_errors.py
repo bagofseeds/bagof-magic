@@ -30,6 +30,7 @@ _WHAT = {
     "validate": "{value!r} is not a valid value",
     "repr": "could not decide how to show {value!r}",
     "key": "could not decide whether {value!r} keeps its key",
+    "eq": "could not compare {value[0]!r} with {value[1]!r}",
 }
 
 
@@ -51,8 +52,9 @@ def field_error(
         Name of the field.
     action : str
         What was being done: "build", "convert", "validate", "repr"
-        (deciding how the value is shown) or "key" (deciding whether it
-        is in the dict-like view).
+        (deciding how the value is shown), "key" (deciding whether it
+        is in the dict-like view) or "eq" (comparing two values, which
+        are given as a pair).
     error : Exception
         What was raised while doing it.
     value : Any, optional

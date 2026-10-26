@@ -39,6 +39,7 @@ depends mostly on what the type hints should do.
 | **Generated methods** | | | | |
 | `__init__` / `__repr__` / `__eq__` | yes | yes | yes | **yes** |
 | Full set of ordering methods | yes | yes | no | **yes** |
+| A field compared with your own function | no | yes | no | **yes** |
 | `__slots__` | yes | yes | no | **yes** |
 | Keyword-only and positional-only fields | keyword only | keyword only | keyword only | **both** |
 | Required field after a defaulted one | refused | refused | keyword only | **yes** |
