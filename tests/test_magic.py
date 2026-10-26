@@ -1157,6 +1157,7 @@ class TestEqComparator:
         lambda: Field(order=_same_text),
         lambda: Field(compare=_same_text),
         lambda: Order(_same_text),
+        lambda: Order(eq=_same_text),
         lambda: Compare(_same_text),
         lambda: Compare[str, _same_text],
         lambda: NoEq(_same_text),
@@ -1171,6 +1172,15 @@ class TestEqComparator:
         assert Field(compare=False).eq is False
         assert Field(compare=False).order is False
         assert NoCompare().eq is False
+
+    def test_a_setting_that_is_not_a_bool_is_read_as_one(self) -> None:
+        class Tag(Magic):
+            label: str = Field(eq=1)
+            weight: int = Field(eq=0, default=0)
+
+        assert vars(Tag)[_FIELDS]["label"].eq is True
+        assert vars(Tag)[_FIELDS]["weight"].eq is False
+        assert Tag("a", 1) == Tag("a", 2)
 
     def test_a_subclass_inherits_the_function(self) -> None:
         class Tag(Magic):
@@ -1200,18 +1210,40 @@ class TestEqComparator:
         assert vars(Strict)[_FIELDS]["label"].eq is True
         assert vars(Strict)[_FIELDS]["label"].hash is None
 
-    def test_numpy_arrays(self) -> None:
-        np = pytest.importorskip("numpy")
+    def test_an_array_like_value(self) -> None:
+        # Behaves like a NumPy array: `==` compares element by element,
+        # the result has no truth value, and the value is unhashable.
+        class Array:
+            __hash__ = None
+
+            def __init__(self, *items: int) -> None:
+                self.items = items
+
+            def __eq__(self, other: tx.Any) -> tx.Any:
+                return _NoTruth()
+
+        class _NoTruth:
+            def __bool__(self) -> bool:
+                raise ValueError("the truth value of an array is ambiguous")
+
+        def array_equal(a: Array, b: Array) -> bool:
+            return a.items == b.items
 
         class Image(Magic, frozen=True):
             name: str
-            data: Eq[np.ndarray, np.array_equal]
+            data: Eq[Array, array_equal]
 
-        a = Image("x", np.arange(3))
-        assert a == Image("x", np.arange(3))
-        assert a != Image("x", np.arange(4))
-        assert a != Image("y", np.arange(3))
-        assert hash(a) == hash(Image("x", np.arange(3)))
+        a = Image("x", Array(0, 1, 2))
+        assert a == Image("x", Array(0, 1, 2))
+        assert a != Image("x", Array(0, 1, 2, 3))
+        assert a != Image("y", Array(0, 1, 2))
+        assert hash(a) == hash(Image("x", Array(0, 1, 2)))
+
+        class Plain(Magic):
+            data: Array
+
+        with pytest.raises(ValueError, match="ambiguous"):
+            assert Plain(Array(0)) == Plain(Array(0))
 
 
 # ======================================================================
