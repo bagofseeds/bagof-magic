@@ -319,7 +319,7 @@ the way to compare a value whose `==` does not answer with a single `True` or
 `False`. A NumPy array compares element by element, so a field holding one
 needs `numpy.array_equal`, which compares the two arrays as wholes:
 
-```python
+```python title="Needs NumPy"
 import numpy as np
 
 class Image(Magic):
