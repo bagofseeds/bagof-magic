@@ -147,6 +147,8 @@ from ._constants import (
     _DEFAULT,
     _DISCARD,
     _DISPATCHING,
+    _EQ,
+    _EQUAL,
     _ERROR,
     _EXCEPTION,
     _FIELD_ERROR,
@@ -3416,9 +3418,11 @@ def _hash_exception(qualname: str, fields: dict) -> tx.NoReturn:
 def _hash_add(qualname: str, fields: dict) -> int:
     # `compare` is a constructor alias for `eq` + `order`, not a slot of
     # its own -- reading it raised AttributeError for `hash=None`.
+    # A field compared with a function is not hashed unless it says so:
+    # two values the function calls equal can hash differently.
     fields = [
         f for f in fields.values()
-        if (f.eq if f.hash is None else f.hash)
+        if (f.eq is True if f.hash is None else f.hash)
     ]
 
     def __hash__(self: tx.Self) -> int:
@@ -4146,8 +4150,28 @@ def _make_repr(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     return __repr__
 
 
+def _equal(
+    how: tx.Callable, this: tx.Any, that: tx.Any, owner: str, name: str
+) -> bool:
+    """Whether a field's two values are equal, by the field's function.
+
+    `how` is the field's eq setting when it is a function of two values.
+    Its answer is read as true or false here, so that an answer which
+    cannot be -- an array, say -- fails naming the field. Whatever it
+    raises is raised again naming the class and the field.
+    """
+    try:
+        return bool(how(this, that))
+    except Exception as error:
+        field_error(owner, name, "eq", error, (this, that))
+
+
 def _matching(
-    this: tx.Tuple[bool, tx.Any], that: tx.Tuple[bool, tx.Any]
+    this: tx.Tuple[bool, tx.Any],
+    that: tx.Tuple[bool, tx.Any],
+    how: tx.Any,
+    owner: str,
+    name: str,
 ) -> tx.Any:
     """Whether two fields hold the same thing, or neither holds one.
 
@@ -4155,12 +4179,18 @@ def _matching(
     value. Two objects that differ in *which* of their fields have been
     given a value are different objects, even where the values they do
     have match -- otherwise `a == b` would be true while reading `a.x`
-    raises and reading `b.x` does not.
+    raises and reading `b.x` does not. `how` is the field's eq setting:
+    `True` compares the values with `==`, a function compares them
+    itself.
     """
     (this_has_value, this_value), (that_has_value, that_value) = this, that
     if this_has_value != that_has_value:
         return False
-    return not this_has_value or this_value == that_value
+    if not this_has_value:
+        return True
+    if how is True:
+        return this_value == that_value
+    return _equal(how, this_value, that_value, owner, name)
 
 
 def _comparison_class(cls: type) -> type:
@@ -4187,15 +4217,32 @@ def _always_set(field: Field) -> bool:
     )
 
 
-def _compile_eq(qualname: str, names: tx.List[str]) -> tx.Callable:
+def _compile_eq(qualname: str, fields: tx.List[Field]) -> tx.Callable:
     # With every compared field always set, equality is the plain tuple
     # comparison `dataclasses` compiles, reading each field directly
     # rather than looping and guarding a `getattr` per field. The class
     # check keeps a fast identity path in front of the generic-origin one
-    # that lets `Box[int](1)` equal `Box(1)`.
+    # that lets `Box[int](1)` equal `Box(1)`. A field compared with a
+    # function is left out of the tuple and asked after it, through
+    # `_equal`, so the cheap comparison settles most unequal pairs before
+    # any function is called.
+    names = [field.name for field in fields if field.eq is True]
     ours = "(" + "".join(f"self.{name}, " for name in names) + ")"
     theirs = "(" + "".join(f"other.{name}, " for name in names) + ")"
-    namespace: tx.Dict[str, tx.Any] = {"_comparison_class": _comparison_class}
+    namespace: tx.Dict[str, tx.Any] = {
+        "_comparison_class": _comparison_class,
+        _EQUAL: _equal,
+    }
+    tests = [f"{ours} == {theirs}"] if names or not fields else []
+    for field in fields:
+        if field.eq is True:
+            continue
+        name = field.name
+        namespace[_EQ(name)] = field.eq
+        tests.append(
+            f"{_EQUAL}({_EQ(name)}, self.{name}, other.{name}, "
+            f"self.__class__.__name__, {name!r})"
+        )
     exec(
         "def __eq__(self, other):\n"
         "    if self is other:\n"
@@ -4204,7 +4251,7 @@ def _compile_eq(qualname: str, names: tx.List[str]) -> tx.Callable:
         "        _comparison_class(other.__class__)\n"
         "        is _comparison_class(self.__class__)\n"
         "    ):\n"
-        f"        return {ours} == {theirs}\n"
+        f"        return {' and '.join(tests)}\n"
         "    return NotImplemented\n",
         namespace,
     )
@@ -4216,7 +4263,7 @@ def _compile_eq(qualname: str, names: tx.List[str]) -> tx.Callable:
 def _make_eq(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
     eq_fields = [field for field in fields.values() if field.eq]
     if all(_always_set(field) for field in eq_fields):
-        return _compile_eq(qualname, [field.name for field in eq_fields])
+        return _compile_eq(qualname, eq_fields)
 
     # A field that is not always set is compared through `_stored`, which
     # tells "holds a value" from "holds this value" -- two instances that
@@ -4228,10 +4275,13 @@ def _make_eq(qualname: str, fields: tx.Dict[str, Field]) -> tx.Callable:
         if _comparison_class(other.__class__) is _comparison_class(
             self.__class__
         ):
+            owner = self.__class__.__name__
             return all(
-                _matching(_stored(self, field), _stored(other, field))
-                for field in fields.values()
-                if field.eq
+                _matching(
+                    _stored(self, field), _stored(other, field),
+                    field.eq, owner, field.name,
+                )
+                for field in eq_fields
             )
         return NotImplemented
 

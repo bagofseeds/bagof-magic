@@ -180,6 +180,12 @@ _ABSENT = "__magic_absent__"
 def _REPR(x: str) -> str: return f"__magic_{x}_repr__"
 _SHOWN = "__magic_shown__"
 
+# Names given, when generating __eq__, to the local holding a field's eq
+# setting when it is a function of two values, and to the helper that
+# calls it and reads its answer
+def _EQ(x: str) -> str: return f"__magic_{x}_eq__"
+_EQUAL = "__magic_equal__"
+
 # Name given to a method's return type variable when generating it
 def _RETURN_TYPE(x: str) -> str: return f"__magic_{x}_return_type__"
 
